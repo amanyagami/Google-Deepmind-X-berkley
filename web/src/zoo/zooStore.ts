@@ -150,6 +150,11 @@ export const useZoo = create<Z>((set, get) => ({
     if (ex && st.repo.toLowerCase() !== ex.repo.toLowerCase()) await st.loadExample(ex.id)
     const cur = useStore.getState()
     if (cur.probeErr || (!cur.spec && !cur.probe)) { useStore.setState({ runErr: cur.probeErr ?? 'This model could not be read. Pick another model.', runErrCode: 'unsupported' }); return }
+    // offline and not cached: say so now, not after a failed download
+    if (cur.spec && cur.fit && (cur.fit.where === 'webgpu' || cur.fit.where === 'wasm') && typeof navigator !== 'undefined' && navigator.onLine === false) {
+      const plan = await get().planFor(cur.spec, cur.fit).catch(() => null)
+      if (plan && !plan.cached) { useStore.setState({ runErr: 'You are offline, so the model cannot download. Connect, then try again.', runErrCode: 'offline' }); return }
+    }
     await useStore.getState().run()
     // the button showed the size, so the click is the consent for a normal download; a big one waits for its own button
     const p = useStore.getState().pendingDownload
