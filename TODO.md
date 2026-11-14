@@ -17,7 +17,7 @@ with the owner's requirements. Section 9 lists what the reviews changed and the 
 2. **One page, no tabs.** The sections (Model → Machine & electricity) stay stacked on one scrolling page (owner's
    choice). Only on-screen scenes draw. A sticky **top bar** (model picker, jump links) and a sticky **bottom dock**
    (Run, Test all, progress, Cancel) are always visible, so the main action never scrolls away.
-3. **Consent before downloads.** Nothing over 25 MB downloads without a click that shows the size and time.
+3. **Consent before downloads. SUPERSEDED by Round 2 (§11, D5): models download automatically with visible progress.** Nothing over 25 MB downloads without a click that shows the size and time.
    The page opens "already run" by playing a **recorded run** (no download); the live run starts on the visitor's click.
 4. **Honest numbers.** Every value is tagged `measured`, `estimated` (≈) or `not available`. Browsers have no power
    sensor, so every browser watt/joule is "estimated" and is **not** in the score. Browser and companion scores are
@@ -457,6 +457,294 @@ whether the f16 zero-output issue appears on other GPUs.
 - [ ] Independent fresh-eyes review from screenshots and code only; fix findings; re-run.
 - [ ] Freeze REF v1 on the reference device; regenerate `machine.json` with `make_examples.py machine`.
 - [ ] README: how to use, what is measured and how, privacy, companion pairing. Deploy (D1).
+
+---
+
+## 11. Round 2: owner changes after the first build (14 items)
+
+State today: all 10 streams merged, 26 of 31 checks pass on a fresh build (5 tier-3 skips), the real-Hub smoke run
+passes, `dist` is 32 MB. These 14 requests change the product. Each item says what it **overrides**, who owns it, the
+exact design, and how we check it.
+
+### 11.1 Decisions (read before the items)
+| # | Decision | Overrides |
+|---|---|---|
+| D5 | Models **download automatically**. No consent click. Size and a progress bar with Cancel stay visible (feedback, not a gate). | §0.3, S4 consent states, check A8 |
+| D6 | **Both animations side by side** (Model left, Machine right) when wide, stacked when narrow. Side panels are **closed by default** and open with a button. | §3 S1 "stage + always-open rail" |
+| D7 | **Light and dark mode**, following the system setting, with a manual toggle that is remembered. | §6.1 tokens (dark only) |
+| D8 | **Name first.** One field on the first visit, kept only on this device, shown in the top bar, score hero and share card. Never sent anywhere. | privacy chip text |
+| D9 | **Stress test and robustness test removed** from the zoo. The compare card, draw pad and five nets stay. | zoo cards, README zoo section |
+| D10 | Defaults are the **smallest models that still give a good result** (target ≤ ~100 MB each, verified by a real run). Bigger models stay in the picker. | `examples/index.json` |
+| D11 | **Vibrant look**: a richer colour system with one signature gradient, glow on live parts, colourful layer types and pillars, in both themes. Value colours (amber +, blue −) keep their meaning. | §6.1 palette, §6.3 plate tints (desaturated) |
+| D12 | **Speed is a feature**: hard budgets for load, first animation, frame time and memory (§11.5). Anything over budget is a bug. | §3 S1 budgets |
+
+### 11.2 The 14 items
+
+**R2-1 Language input for the language model** (S6 UI; S4 data)
+- A language picker next to the prompt: English, Español, Français, Deutsch, हिन्दी, 中文, العربية, Português.
+  Picking one fills the box with a short default prompt in that language ("La capital de Francia es").
+- The user can type anything. Token tiles show the real text (no "?" boxes: check the font covers each script).
+- If the model is English-only, show one line ("This model knows English best.") and a button that switches to the
+  smallest multilingual model in the catalog. Whisper gets the same picker for the spoken language when it supports it.
+- *Check A34:* each of the 8 languages fills a prompt and runs with no page error; tiles render; the English-only note shows.
+
+**R2-2 Download automatically** (S4 store; S6 UI)
+- On load the default model starts downloading by itself and the run starts when it is ready. The first-visit card
+  becomes a slim progress strip: "Getting SmolLM2 · 82 MB · 41 %" with `Cancel`.
+- A big model picked later also starts at once, with its size beside the bar. Cellular or `saveData` adds one quiet line; nothing blocks.
+- While it downloads, the scene plays the recorded run so the page is never empty.
+- *Check A8′:* a model request starts ≤ 2 s after load with no click; the bar updates ≥ 1/s.
+
+**R2-3 Floating explainer on every animation** (S7 builds `<Explainer>`; S5, S6, S8 mount it)
+- A small floating card near each animation, 2–3 short lines ("Each dot is a word. Lines show what it listens to.").
+- **It appears by itself on each page refresh** for about 6 s (staggered per animation), then fades.
+- A 💡 bulb stays next to each animation. Hovering or clicking it shows the card again; **the card vanishes as soon as
+  the mouse leaves the bulb**. Touch: tap opens, tap elsewhere closes. Esc closes. It never blocks the 3D.
+- Copy per animation (≤ 3 lines, Hemingway): real model, machine (incl. what the colours mean), each tiny net, inspector, draw pad.
+- *Check A27:* on load each visible animation shows its card and it hides ≤ 7 s later; hover shows it; mouse-leave
+  hides it ≤ 300 ms; no overlap with controls (A2 still passes).
+
+**R2-4 Layout: tight margins, side by side, side panel closed** (S1; S5 and S6 fill the drawers)
+- Wide (≥ 1000 px): a `.pair` grid, **Model | Machine**, each stage as tall as the column allows (`min(80dvh, …)`),
+  8 px gap and 8 px page margin. The canvas is the card: no extra padding or borders around it.
+- The side panel becomes a **drawer, closed by default**: a `Details` tab on the stage edge opens it over the stage
+  (340 px, slides in with `transform`). Esc or a click outside closes it. Remembered per section.
+- Narrow (< 1000 px): the sections stack and the drawer becomes the bottom sheet, closed by default.
+- *Check A13′:* side by side at 1480 and 1100 with ≤ 16 px between stages; stacked at 390; drawers closed on a fresh
+  profile; opening one causes no layout shift (CLS ≤ 0.02); A5 and A6 still pass.
+
+**R2-5 The machine animation freezes: measure, then fix** (S8 diagnoses and fixes the scene; S2 only if a test blocks the main thread)
+- Measure first: a Chrome performance trace and rAF deltas while (a) idle, (b) `Test all` runs, (c) the journey plays,
+  (d) a 16-core layout. Record long tasks, GPU time, React renders per second and draw calls.
+- Likely causes to rule in or out: the GPU benchmark and `layerFrames` on the main thread; 10 Hz telemetry re-rendering
+  every subscriber; allocations every frame in `PowerScene`; many `<Html>` labels writing the DOM every frame; bloom
+  at DPR 2; the frame loop running while hidden.
+- Fixes, as the trace says: move blocking work to workers or slice it to ≤ 8 ms; narrow store selectors; label text at
+  4 Hz; reuse vectors; instanced meshes for repeated parts; faster DPR/bloom step-down; full pause when hidden.
+- *Check A28:* during `Test all`, p95 frame ≤ 33 ms and no task > 100 ms on this PC; idle p95 ≤ 20 ms; before/after numbers in the report.
+
+**R2-6 Smallest good default models** (S6 catalog; S4 selection logic)
+- For each task, pick the smallest model that gives a good result, proven by a real run on WebGPU and on WASM, with its
+  size read from the Hub (not from memory). Candidates to verify: SmolLM2-135M-Instruct (text), distilbert-base-uncased
+  (fill-mask), distilbert-sst-2 (sentiment), a small image model (ViT q8 or smaller), whisper-tiny (speech), plus one small
+  multilingual text model for R2-1.
+- Code: `chooseDefault(task, caps)` returns the smallest catalog entry that passes `checkFit`; the `lite` profile prefers the smallest of all.
+- *Check:* a README table, task · model · MB · time to first result here (WebGPU / WASM). Each default ≤ ~100 MB or the table says why.
+
+**R2-7 Save everything: never download twice** (S4 model cache and settings; S1 service worker; S3 results)
+- Model files stay in Cache Storage. Call `navigator.storage.persist()` automatically after the first good download so
+  the browser keeps them. A line behind a 💡 says "Saved on this device: 82 MB · Clear".
+- Remember: model, prompt, language, input per task, theme, name, drawer states, last results, history and the last journey.
+- **Offline app shell:** one file, `web/public/sw.js` (the second allowed new file after `_headers`). It precaches the
+  built assets and the `/ort/` runtime, is versioned by the build hash, and never caches Hub requests itself. A new
+  version shows a one-line "New version · Reload" strip.
+- *Check A10′:* the second load makes zero network requests for app files and model files and works with the network off.
+
+**R2-8 Light mode and a UI polish pass** (S1 tokens and toggle; every stream uses tokens only)
+- Light palette under `:root[data-theme="light"]` and under `prefers-color-scheme: light` (guarded by
+  `:root:not([data-theme="dark"])`). Starting values, to be validated: `--bg #f6f7fb`, `--panel #ffffff`,
+  `--surface #eef0f8`, `--line #d9deee`, `--fg #151a2e`, `--muted #4a5578`, `--faint #5d6890`, `--pos #b45d00`, `--neg #1f6fd1`.
+- A sun/moon toggle in the top bar: System, Light, Dark. Remembered.
+- 3D scenes, labels, plates, heatmaps and legends read the theme. Bloom is off in light mode; plates and outlines get a
+  darker stroke so the layer types stay clear.
+- Polish: 8-pt spacing, one card style, one button hierarchy (primary, secondary, text), tabular numbers, skeletons,
+  220 ms easing on drawers and hovers only, icons instead of emoji in controls, focus rings in both themes.
+- *Check:* A1 runs in both themes; **A29**: the toggle flips `data-theme`, persists, and no element keeps a dark-only
+  colour in light mode; a fresh agent reviews screenshots of every view in both themes.
+
+**R2-9 Compact dashboard: overall score on top, details below** (S5)
+- A slim **score strip** above the two stages, always visible: `▲ 1,184 · Strong · 5 of 7 tested · ±2 % · Weakest: RAM · Test all`.
+- Inside the Machine drawer, the same hero at the top, then **five pillar rows** (Compute, Memory, GPU, Storage, Model):
+  a thin gradient bar on a log scale, the number, a small delta vs the last run, `Test` and a 💡. Click a row to expand
+  its components (CPU 1-core and all cores; RAM and cache; …) with the existing Test cards. Connection and Energy sit under "More".
+- 8 px outer margin, 12 px inside, no box inside a box.
+```
+┌ YOUR DEVICE · <name> ─────────────┐
+│  ▲ 1,184   Strong   5 of 7 · ±2 % │
+│  Weakest: RAM            [Test all]│
+├───────────────────────────────────┤
+│ Compute  ████████░░  1,340  +62  ▶ │
+│ Memory   ██████░░░░    928       ▶ │
+│ GPU      ███████░░░  1,100       ▶ │
+│ Storage  █████░░░░░    776       ▶ │
+│ Model    ████░░░░░░      —       ▶ │
+│ More ▾   Connection · Energy        │
+└───────────────────────────────────┘
+```
+- *Check A30:* the strip is visible without opening anything; the hero is first in the drawer; five rows show; one
+  click expands a row; no nesting deeper than 2; A2, A4 and A19 still pass.
+
+**R2-10 Remove the stress test and the robustness test** (S6)
+- Delete `StressCard`, `RobustCard`, `Fx`/`applyFx`/`FX0`/`isNeutral`, `SWEEP_LEVELS`/`accuracyAt`/`runSweep`, the sweep
+  state in `zooStore.ts`, the noise/shift/blur controls, their CSS and their tests. Keep `CompareCard`, the draw pad, the
+  digit picker, the five nets and their timing. Update the README and hints.
+- *Check A33:* no `Stress`, `Robust`, `sweep` or `applyFx` left in `web/src`; build, tests and L5 pass.
+
+**R2-11 Name at the start** (S1 card; S4 store; S5 shows it; S3 stores it)
+- First visit: a small centred card before anything else, "What's your name?", one field, Enter to continue, and a
+  💡 ("Stays on this device. It goes on your score card."). Required; a "Use Guest" link for people who prefer not to type.
+- Kept in `localStorage` (`ns.name`). Shown in the top bar, the score hero and the share card and JSON. Change it from the top bar.
+- *Check A31:* a fresh profile sees the name card first; it never returns after; the name shows in the hero and the share
+  PNG; no network request carries it; a reload keeps it.
+
+**R2-12 Draw-a-digit: simpler and easier** (S6)
+- One big square pad (≥ 280 px, fills the column on phones), a thick smooth brush, mouse, touch and pen through Pointer Events.
+- Drawing recomputes all five nets live (at most once per frame) and auto-centres and scales the digit like MNIST, so guesses are good.
+- Three controls only: **Clear**, **Undo** (last stroke), and a row of **0–9 chips** ("Try a digit"). The rest goes with R2-10.
+- A big result line under the pad: "I see a **7** · 94 %", runner-up in muted text, and one small pill per net with its
+  guess (colour plus a shape glyph).
+- An empty pad shows a faint dashed guide and "Draw a number". Keys: C clears, Z undoes.
+- *Check A32:* drawing a 3 with pointer events updates the result ≤ 300 ms and shows 3; the pad is ≥ 280 px at 390;
+  Clear and Undo work; touch drawing works; zoo unit tests still match PyTorch.
+
+**R2-13 Vibrant and visually appealing** (S1 design tokens and shell; S8 scenes; S5, S6, S7 apply)
+- **Colour system**, validated with the palette tool in both themes:
+  - Signature gradient `--brand: linear-gradient(135deg, #7c5cff, #22d3ee 55%, #ff7ab6)` on the logo, the primary
+    button, the score hero number and progress bars. Used sparingly (≤ 4 places on screen).
+  - Layer types get vivid but distinct hues (embedding cyan, attention violet, MLP amber, conv teal, pool mint,
+    recurrent pink, norm slate, output lime) on plates and labels at 12–16 % opacity, shape glyphs kept. Nodes keep the
+    amber/blue value meaning.
+  - Pillars get one hue each (Compute violet, Memory cyan, GPU pink, Storage lime, Model amber) for bars and chips, with a
+    glyph and a label so meaning never rests on colour alone.
+- **Depth and light:** soft glow on live parts (emissive pulse on the active block and the busy core), subtle grain-free
+  background gradient (dark: deep indigo to navy; light: white to lavender), cards with a 1 px gradient border on hover.
+- **Motion with purpose:** a 600 ms intro on first load (stages fade and rise in sequence), the score number counts up
+  once, bars fill with a spring; all disabled under reduced motion and none longer than 600 ms.
+- **Type:** one display face for headings and the score (self-hosted, subset, `font-display: swap`), Inter-like UI text,
+  mono for numbers. Bigger hero number (`--t4` 44 px).
+- *Check:* A1 contrast still passes in both themes; a fresh design reviewer rates screenshots of every view in both
+  themes against a short rubric (hierarchy, colour harmony, consistency, clarity) and lists fixes; fixes land before release.
+
+**R2-14 Fast, smooth, quick to load** (S1 build and shell; S8 scenes; S4 model load; S10 measures)
+- **Load budget** (cold cache, 20 Mbit, mid laptop): first paint ≤ 1.0 s; interactive top bar ≤ 1.5 s; first animation
+  frame ≤ 2.5 s; repeat visit (service worker) first frame ≤ 1.0 s.
+- **Bytes:** first JS ≤ 90 kB gzip; three.js chunk ≤ 280 kB gzip; Transformers.js and ORT load only when a model runs
+  (they already do); fonts subset ≤ 40 kB; no unused drei/postprocessing imports (tree-shake check).
+- **Start-up order:** paint the shell and a static poster of each scene instantly (a small pre-rendered image per
+  scene), start the 3D when the stage is visible and the main thread is idle (`requestIdleCallback`), then fetch the
+  model. Preload the critical chunk and font with `<link rel="modulepreload">` / `preload`.
+- **Smooth:** p95 frame ≤ 16.7 ms idle and ≤ 33 ms during tests (A28); no long task > 50 ms after first frame except
+  model compile; memory ≤ 400 MB on the page with the default model.
+- **Runtime:** narrow store selectors everywhere, throttled label text, instanced meshes, shared geometries and
+  materials, render on demand when nothing moves, `content-visibility:auto` for off-screen cards.
+- *Check A35:* the load budget measured by the harness with CDP throttling (cold and warm), JS chunk sizes from the
+  build manifest, long-task count via PerformanceObserver, memory via `performance.measureUserAgentSpecificMemory`
+  where available. Over budget fails.
+
+### 11.3 Contracts to freeze first (gate, about 1 h, coordinator)
+- `data-theme` on `<html>`, the light token set, the brand gradient and the pillar and layer hue tokens (S1 publishes).
+- Drawer state: `railOpen: Record<'model'|'machine', boolean>` and `setRail(id, open)` in `store.ts`; class names
+  `.pair`, `.drawer`, `.score-strip`.
+- Name: `name`, `setName()` in `store.ts` (`ns.name`); the name card in `App.tsx`.
+- `<Explainer id text placement? />` and `useExplainerIntro()` in `charts.tsx`.
+- Auto-download: `autoStart()` in `store.ts`; `pendingDownload` stays only as the progress holder.
+- Theme hook for 3D: `useTheme()` returning `'light'|'dark'` plus the resolved token values (S1, in `aspect.tsx`).
+
+### 11.4 Streams, order, merge
+| Stream | Items | Files |
+|---|---|---|
+| S1 | R2-4, R2-7 (sw.js), R2-8, R2-11 (card), R2-13 (tokens, shell), R2-14 (build, start-up order, posters) | `App.tsx`, `main.tsx`, `aspect.tsx`, `styles.css`, `index.html`, `vite.config.ts`, `public/sw.js` |
+| S4 | R2-2, R2-6 (logic), R2-7 (persist, settings), name store, R2-14 (model load) | `api.ts`, `store.ts` |
+| S7 | R2-3 (Explainer), light and vibrant styles for inspector and heatmap | `charts.tsx` |
+| S6 | R2-1, R2-2 (UI), R2-6 (catalog), R2-10, R2-12, Explainer on the model and zoo | `ZooUI.tsx`, `zooStore.ts`, `nets.ts`, `zoo.test.ts`, `public/examples/index.json` |
+| S5 | R2-9, name in hero and share, Explainer on the machine, pillar colours | `MachineUI.tsx`, `PowerUI.tsx`, `panels.tsx` |
+| S8 | R2-5, theme and vibrant colours in scenes, tighter camera fit for half-width stages, scene posters for R2-14 | `ZooScene.tsx`, `PowerScene.tsx` |
+| S3 | name and theme in results and export | `score.ts`, `hwStore.ts` |
+| S2 | R2-5 only if a test blocks the main thread | `browserBench.ts`, `benchWorker.ts` |
+| S10 | rewrite A8, A10, A13; add A27–A35; A1 in both themes; README | `tests/e2e/**` |
+| S9 | no change | none |
+
+Order: gate (contracts) → S1, S4, S7 (they publish what others use) → S6, S5, S8, S3, S2 → S10 → copy pass → full
+harness in both themes → real-browser tier → design review → tick this file.
+Merge order: S7, S4, S1, S8, S6, S5, S3, S2, S10. Every merge runs `tsc`, unit tests, build and a harness subset.
+
+### 11.5 New and changed checks
+A8′ download starts by itself ≤ 2 s · A10′ second load fully offline · A13′ side by side, drawers closed ·
+A27 explainers appear and vanish · A28 frame budget during Test all · A29 theme toggle, no dark leftovers ·
+A30 score strip and pillar rows · A31 name first · A32 draw pad · A33 stress and robustness gone · A34 eight languages ·
+A35 load and runtime budget. A1 runs in both themes. Target: all green on a fresh build, plus tier 3 on the real Hub.
+
+### 11.6 Risks
+- Auto-download on mobile data can surprise people: small defaults (R2-6), a visible Cancel and a quiet note.
+- A service worker can serve stale files: versioned by build hash, plus a "New version · Reload" strip.
+- Side by side halves each stage's width: the camera fit and label chips must re-flow (S8), tested at 1100 and 1480.
+- Vibrant colour can hurt contrast and meaning: tokens validated in both themes; value colours never reused as decoration.
+- The name is personal data: local only, shown only on the score card, never in requests (A12).
+
+### 11.7 Review: what makes this plan state of the art (changes folded in)
+Checked against current web practice; each line is a change to the items above.
+1. **Run the model in a Web Worker** (new, S4): Transformers.js inside a dedicated module worker, the page talks to it
+   by messages (`load`, `run`, `progress`, `frame`, `cancel`). The main thread never stalls during download, compile or
+   inference, which removes the main cause of jank while a model runs. Frames stream back as transferable buffers.
+2. **Warm start**: `<link rel="preconnect">` to `huggingface.co` and its CDN; the model download starts in the worker
+   at the same moment the 3D starts, not after it; WebGPU shader compile happens once and the session stays warm.
+3. **Modern CSS for themes**: `color-scheme: light dark` plus `light-dark()` in the tokens, so one token list serves
+   both themes; the toggle sets `data-theme` and `color-scheme`; theme change uses a View Transition.
+4. **Popover API + CSS anchor positioning** for the Explainer and hints (native top layer, no z-index fights), with a
+   JS fallback where anchor positioning is missing.
+5. **Adaptive 3D quality**: drei `PerformanceMonitor` drives DPR and bloom (step down in ≤ 10 frames, up slowly);
+   `frameloop="demand"` when nothing animates; shared geometries/materials; instancing for repeated parts.
+6. **Smooth drawing**: Pointer Events with `getCoalescedEvents()` and `touch-action: none` on the pad; strokes as a
+   path, recompute once per frame; the digit is cropped to its box and scaled to the nets' 8×8 grid with antialiasing.
+7. **Caching done right**: hand-written service worker with cache-first for hashed assets and network-first for
+   `index.html`; model files in Cache Storage (Transformers.js); `storage.persist()` after the first good download
+   (Chrome grants silently for engaged sites; Firefox may ask once).
+8. **Multilingual without a big default**: the default stays the smallest English model; picking a non-English
+   language switches to the smallest multilingual model and downloads it then (auto, with progress). Its size is
+   verified on the Hub before it enters the catalog.
+9. **Budgets enforced by the harness**: chunk sizes from the build manifest, CDP-throttled cold and warm loads, long
+   tasks and frame times, so "fast" cannot regress silently.
+10. **One source of motion truth**: all motion tokens (`--d1..3`, easing) and `prefers-reduced-motion` respected by
+   CSS, the 3D camera and the count-up animations alike.
+
+Rejected after review: pre-rendered scene poster images (extra bytes and a build step; a fast first 3D frame with a CSS
+skeleton gives the same result); a UI framework or component library (more bytes, fights the token system).
+
+### 11.8 To-do list by lane (lanes run in parallel; a lane's items run in order)
+**Gate G (coordinator, first, ~1 h)**
+- [ ] G1 Freeze contracts in §11.3 + the worker message API (`load|run|cancel` → `progress|frame|done|error`).
+- [ ] G2 Create worktrees r2-s1 … r2-s10 from master; brief each lane with its items and checks.
+
+**Lane 1 · S1 shell, theme, look, speed (`App.tsx`, `main.tsx`, `aspect.tsx`, `styles.css`, `index.html`, `vite.config.ts`, `public/sw.js`)**
+- [ ] 1.1 Tokens with `light-dark()`, light palette, brand gradient, pillar and layer hues; validate contrast (R2-8, R2-13).
+- [ ] 1.2 Theme toggle (System/Light/Dark), `useTheme()` for 3D, View Transition on switch (R2-8).
+- [ ] 1.3 `.pair` side-by-side layout, 8 px margins, drawers closed by default, score-strip slot (R2-4).
+- [ ] 1.4 Name card first, name in top bar (R2-11).
+- [ ] 1.5 Service worker + "New version" strip (R2-7).
+- [ ] 1.6 Start-up order, preconnect/preload, font subset, chunk budget, intro motion (R2-14, R2-13).
+**Lane 2 · S4 models (`api.ts`, `store.ts`)**
+- [ ] 2.1 Model worker (load/run/cancel/progress/frames) and switch `runInBrowser` onto it (§11.7-1).
+- [ ] 2.2 Auto-download + `autoStart()`, progress holder, Cancel, quiet cellular note (R2-2).
+- [ ] 2.3 `chooseDefault(task, caps)`, multilingual switch hook (R2-6, R2-1).
+- [ ] 2.4 `persist()` after first download, settings memory, name store, drawer state store (R2-7, R2-11, R2-4).
+**Lane 3 · S7 explainer and inspector look (`charts.tsx`)**
+- [ ] 3.1 `<Explainer>` with Popover API + anchor positioning, intro on refresh, bulb hover/leave (R2-3).
+- [ ] 3.2 Inspector, heatmap, legend and hints in both themes and the vibrant palette (R2-8, R2-13).
+**Lane 4 · S6 model section and zoo (`ZooUI.tsx`, `zooStore.ts`, `nets.ts`, `zoo.test.ts`, `examples/index.json`)**
+- [ ] 4.1 Remove stress and robustness everywhere (R2-10).
+- [ ] 4.2 New draw pad (R2-12).
+- [ ] 4.3 Language picker + prompts + English-only note (R2-1).
+- [ ] 4.4 Progress strip instead of the start card; catalog of smallest verified defaults with a README table (R2-2, R2-6).
+- [ ] 4.5 Explainers on the model scene, each tiny net and the pad (R2-3).
+**Lane 5 · S5 dashboard (`MachineUI.tsx`, `PowerUI.tsx`, `panels.tsx`)**
+- [ ] 5.1 Score strip + hero + five pillar rows with expand, pillar colours (R2-9, R2-13).
+- [ ] 5.2 Name in hero and share card; Explainer on the machine scene (R2-11, R2-3).
+**Lane 6 · S8 scenes (`ZooScene.tsx`, `PowerScene.tsx`)**
+- [ ] 6.1 Trace the machine freeze; write before numbers (R2-5).
+- [ ] 6.2 Fix it; `PerformanceMonitor`, demand frameloop, instancing, throttled labels; after numbers (R2-5, §11.7-5).
+- [ ] 6.3 Theme-aware and vibrant scenes: background, fog, plates, glow, layer hues; bloom off in light (R2-8, R2-13).
+- [ ] 6.4 Camera fit and chip re-flow for half-width stages (R2-4).
+**Lane 7 · S3 + S2 (`score.ts`, `hwStore.ts`; `browserBench.ts`, `benchWorker.ts`)**
+- [ ] 7.1 Name and theme in results and export (S3).
+- [ ] 7.2 Only if 6.1 blames a test: move or slice the blocking work (S2).
+**Lane 8 · S10 checks (`tests/e2e/**`)** (starts at once with mocks; tightens as lanes merge)
+- [ ] 8.1 Rewrite A8, A10, A13; add A27–A35; A1 in both themes; budget numbers from the build manifest.
+**Finish F (coordinator, after merges)**
+- [ ] F1 Merge in order S7, S4, S1, S8, S6, S5, S3, S2, S10; checks after each.
+- [ ] F2 Copy pass (Hemingway, §6.4) over every new string, in both themes.
+- [ ] F3 Full harness, dark and light, four widths; tier 3 on the real Hub and real companion.
+- [ ] F4 Fresh-eyes design review from screenshots; fix; re-run.
+- [ ] F5 README (defaults table, saving, themes, privacy), tick this file honestly.
 
 ## Backlog (not in this plan)
 - Per-operation core attribution; real cache/DRAM counters; die temperature and RAM/SSD power (need admin counters).
