@@ -66,8 +66,8 @@ export function PowerHUD() {
         </>
       ) : <div className="psub">{info?.source === 'browser' ? 'Run the test for watts' : 'Waiting for sensors…'}</div>}
       <div className="row">
-        {!running && <button className="btn sm" onClick={() => run()}>{power && !power.reference ? 'Test again' : 'Run the test'}</button>}
-        {!running && info?.source === 'browser' && !power?.reference && <button className="btn2 sm" onClick={() => loadRef()}>Replay a measured run</button>}
+        {!running && <button className="btn sm" onClick={() => run()}>{power && !power.reference ? 'Test again' : 'Test energy'}</button>}
+        {!running && info?.source === 'browser' && !power?.reference && <button className="btn2 sm" onClick={() => loadRef()}>Play a recorded run</button>}
       </div>
     </div>
   )
@@ -213,7 +213,7 @@ export function EnergyTab() {
   const browser = info?.source === 'browser'
   const settings = browser && (
     <div className="ccard">
-      <h4>Browser-only mode<Hint>Web pages cannot read power sensors. Watts here come from a simple model of how a CPU's power rises with busy cores, scaled by its power class. For measured watts, run the companion on this PC (start.ps1); this page connects to it automatically.</Hint></h4>
+      <h4>Browser only<Hint>Web pages cannot read power sensors, so these watts are estimates. Run the companion on this PC for measured watts.</Hint></h4>
       <label className="lbl">CPU power class: <b className="mono">{tdp} W</b></label>
       <input type="range" min={10} max={170} step={5} value={tdp} onChange={(e) => useHW.getState().setTdp(+e.target.value)} aria-label="CPU power class in watts" />
       <label className="chk"><input type="checkbox" checked={ai} onChange={(e) => useHW.getState().setAiInBrowser(e.target.checked)} /> include a real language model running in this page (downloads ~120 MB once)</label>
