@@ -185,7 +185,7 @@ export const checks = [
 
   { id: 'A21', title: 'no-WebGPU / out-of-memory / offline / mic-denied: message + button <= 2 s', needs: ['S5', 'S6'], run: async (env) => {
     const cases = [['nogpu', { profile: { nogpu: 1 } }, '[data-test=gpu],[data-start]'], ['oom', { profile: { oom: 1, mem: 2 } }, '[data-start]', false, 'distilgpt2'],
-      ['offline', {}, '[data-start]', true, 'distilgpt2'], ['mic', { profile: { mic: 1 } }, 'button:has-text("Record")', false, 'whisper']], out = []
+      ['offline', {}, '[data-start]', true, 'distilgpt2'], ['mic', { profile: { mic: 1 } }, '[data-test=mic]', false, 'whisper']], out = []
     for (const [name, o, sel, off, ex] of cases) { const p = await env.open({ ...o, hub: off ? false : undefined }); await p.goto(); if (ex) { await p.page.evaluate((e) => window.__studio.getState().loadExample(e), ex); await p.page.waitForTimeout(1500) } if (off) await p.ctx.setOffline(true)
       const b = p.page.locator(sel).first(); if (!(await b.count())) { out.push(`${name}: no trigger ${sel}`); continue }
       const t = Date.now(); await b.click(); const e = p.page.locator('[data-error]').first(); await e.waitFor({ timeout: 2000 }).catch(() => {})
