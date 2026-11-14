@@ -132,8 +132,8 @@ export const checks = [
     const q = p95(r.fr); return ok(q <= 20 && !r.bad, `p95 ${q.toFixed(1)} ms over ${r.fr.length} frames; ${r.bad} canvases with wrong buffer (cap ${r.cap})`) } },
 
   { id: 'A15', title: 'inspector: click → card <= 500 ms → Esc back; max zoom value = tensor', needs: ['S7', 'S6'], run: async (env) => {
-    const p = await env.open(); await p.goto('#zoo'); const t0 = Date.now()
-    await p.page.evaluate(() => window.__zoo.getState().select({ kind: 'block', layer: 0, index: 0, name: 'w' }))
+    const p = await env.open({ query: '?mockTensor' }); await p.goto('#zoo'); const t0 = Date.now()
+    await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' }))
     await p.page.waitForSelector('[data-inspector]', { timeout: 2000 }); const ms = Date.now() - t0
     const z = await p.page.evaluate(() => window.__inspector.zoomMax()), exp = valueAt(z.r, z.c)
     await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(300); const gone = (await p.page.locator('[data-inspector]').count()) === 0
@@ -154,26 +154,26 @@ export const checks = [
     return ok(ring.length > 0 && !thin.length && (fallback || ring.length >= want), `${seen.size} stops${fallback ? ' (no [data-test]/[data-block] yet, all buttons)' : `, ${ring.length}/${want} targets`}; ${thin.length} with ring < 2px or < 3:1 (e.g. ${thin[0]?.id ?? '-'} ${thin[0]?.w ?? ''}px ${thin[0]?.c?.toFixed(1) ?? ''}:1)`) } },
 
   { id: 'A17', title: 'hint: click opens, leave closes <= 300 ms, tap outside on touch, in viewport', run: async (env) => {
-    const p = await env.open(); await p.goto(); const b = p.page.locator('.hintbtn').first()
-    if (!(await b.count())) return F('no .hintbtn on page')
+    const p = await env.open(); await p.goto(); const b = p.page.locator('.hintbtn,.nshint-btn').first()
+    if (!(await b.count())) return F('no .hintbtn,.nshint-btn on page')
     await b.scrollIntoViewIfNeeded(); await b.click(); const open = (await b.getAttribute('aria-expanded')) === 'true'
-    const inView = await p.page.evaluate(() => { const r = document.querySelector('.hintpop')?.getBoundingClientRect(); return !!r && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
-    await p.page.mouse.move(2, 2); const t = Date.now(); await p.page.waitForFunction(() => !document.querySelector('.hintpop'), null, { timeout: 1500 }).catch(() => {}); const ms = Date.now() - t
-    const q = await env.open({ w: 390, touch: true }); await q.goto(); const tb = q.page.locator('.hintbtn').first(); await tb.scrollIntoViewIfNeeded(); const tapped = await tb.tap({ timeout: 4000 }).then(() => true, () => false); if (!tapped) return F('touch tap on first hint blocked (covered by another element, see A2)'); const tOpen = (await tb.getAttribute('aria-expanded')) === 'true'
+    const inView = await p.page.evaluate(() => { const r = document.querySelector('.hintpop,.nshint-pop')?.getBoundingClientRect(); return !!r && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
+    await p.page.mouse.move(2, 2); const t = Date.now(); await p.page.waitForFunction(() => !document.querySelector('.hintpop,.nshint-pop'), null, { timeout: 1500 }).catch(() => {}); const ms = Date.now() - t
+    const q = await env.open({ w: 390, touch: true }); await q.goto(); const tb = q.page.locator('.hintbtn,.nshint-btn').first(); await tb.scrollIntoViewIfNeeded(); const tapped = await tb.tap({ timeout: 4000 }).then(() => true, () => false); if (!tapped) return F('touch tap on first hint blocked (covered by another element, see A2)'); const tOpen = (await tb.getAttribute('aria-expanded')) === 'true'
     await q.page.touchscreen.tap(4, 4); await q.page.waitForTimeout(300); const tClosed = (await tb.getAttribute('aria-expanded')) !== 'true'
     return ok(open && inView && ms <= 300 && tOpen && tClosed, `opens ${open}; in viewport ${inView}; closes in ${ms} ms; touch opens ${tOpen}, outside tap closes ${tClosed}`) } },
 
   { id: 'A18', title: 'glyphs ▲/○ and +/− present', run: async (env) => {
-    const p = await env.open(); await p.goto(); const t = await p.page.evaluate(() => document.body.innerText), f = await p.features()
+    const p = await env.open({ query: '?mockTensor' }); await p.goto(); const t = await p.page.evaluate(() => document.body.innerText), f = await p.features()
     const gl = t.includes('▲') && t.includes('○')
-    let pm = 'n/a (needs S7)'; if (f.S7) { await p.page.evaluate(() => window.__zoo.getState().select({ kind: 'block', layer: 0, index: 0, name: 'w' })); await p.page.waitForTimeout(500)
+    let pm = 'n/a (needs S7)'; if (f.S7) { await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' })); await p.page.waitForTimeout(800)
       pm = /[+−]\d/.test(await p.page.locator('[data-inspector]').innerText().catch(() => '')) }
     return ok(gl && pm !== false, `▲ ${t.includes('▲')}, ○ ${t.includes('○')}, +/− in heatmap ${pm}`) } },
 
   { id: 'A19', title: 'card text diet: <= 1 sentence of <= 120 chars', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500)
     const r = await p.page.evaluate(() => { const cards = [...document.querySelectorAll('.card,.ccard,[data-card]')].filter(__h.vis), bad = []
-      for (const c of cards) { const parts = []; for (const { t, e } of __h.texts()) { if (!c.contains(e) || e.closest('button,.hintpop,[data-detail]')) continue; parts.push(...t.split(/(?<=[.!?])\s+/)) }
+      for (const c of cards) { const parts = []; for (const { t, e } of __h.texts()) { if (!c.contains(e) || e.closest('button,.hintpop,.nshint-pop,[data-detail]')) continue; parts.push(...t.split(/(?<=[.!?])\s+/)) }
         const sent = parts.filter((s) => s.split(/\s+/).length >= 4); if (sent.length > 1 || sent.some((s) => s.length > 120)) bad.push(`${sent.length} sentences, longest ${Math.max(0, ...sent.map((s) => s.length))}: "${(sent[0] ?? '').slice(0, 30)}"`) }
       return { n: cards.length, bad } })
     return r.n ? ok(!r.bad.length, `${r.n} cards, ${r.bad.length} over budget${r.bad[0] ? ' e.g. ' + r.bad[0] : ''}`) : S('no .card elements') } },
@@ -184,13 +184,13 @@ export const checks = [
     const c = await p.page.evaluate(() => __cls); return ok(c <= 0.02, `CLS ${c.toFixed(4)}`) } },
 
   { id: 'A21', title: 'no-WebGPU / out-of-memory / offline / mic-denied: message + button <= 2 s', needs: ['S5', 'S6'], run: async (env) => {
-    const cases = [['nogpu', { profile: { nogpu: 1 } }, '[data-test=gpu],[data-start]'], ['oom', { profile: { oom: 1, mem: 2 } }, '[data-start]'],
-      ['offline', {}, '[data-start]', true], ['mic', { profile: { mic: 1 } }, '[data-test=mic]']], out = []
-    for (const [name, o, sel, off] of cases) { const p = await env.open({ ...o, hub: off ? false : undefined }); await p.goto(); if (off) await p.ctx.setOffline(true)
+    const cases = [['nogpu', { profile: { nogpu: 1 } }, '[data-test=gpu],[data-start]'], ['oom', { profile: { oom: 1, mem: 2 } }, '[data-start]', false, 'distilgpt2'],
+      ['offline', {}, '[data-start]', true, 'distilgpt2'], ['mic', { profile: { mic: 1 } }, 'button:has-text("Record")', false, 'whisper']], out = []
+    for (const [name, o, sel, off, ex] of cases) { const p = await env.open({ ...o, hub: off ? false : undefined }); await p.goto(); if (ex) { await p.page.evaluate((e) => window.__studio.getState().loadExample(e), ex); await p.page.waitForTimeout(1500) } if (off) await p.ctx.setOffline(true)
       const b = p.page.locator(sel).first(); if (!(await b.count())) { out.push(`${name}: no trigger ${sel}`); continue }
-      const t = Date.now(); await b.click(); const e = await p.page.waitForSelector('[data-error]', { timeout: 2000 }).catch(() => null)
-      const ms = Date.now() - t, has = e && (await e.innerText()).trim().length > 3 && (await e.locator('button').count()) > 0, errs = await p.errCount()
-      if (!has || errs) out.push(`${name}: ${has ? '' : 'no message+button in 2 s '}${errs ? errs + ' page errors' : ''}`.trim()); else out.push(`${name} ok ${ms}ms`) }
+      const t = Date.now(); await b.click(); const e = p.page.locator('[data-error]').first(); await e.waitFor({ timeout: 2000 }).catch(() => {})
+      const ms = Date.now() - t, has = (await e.count()) && (await e.innerText()).trim().length > 3 && (await e.locator('button').count()) > 0, errs = await p.errCount()
+      if (!has || errs) out.push(`${name}: ${has ? '' : 'no message+button in 2 s '}${errs ? errs + ' page errors: ' + String(p.errors[0] ?? '').slice(0, 70) : ''}`.trim()); else out.push(`${name} ok ${ms}ms`) }
     return ok(out.every((x) => / ok \d+ms$/.test(x)), out.join('; ')) } },
 
   { id: 'A22', title: 'reduced motion: no transition > 1 ms, no camera tween', run: async (env) => {
@@ -229,9 +229,9 @@ export const checks = [
   { id: 'A26', title: 'plain words: avg sentence <= 12, none > 20, grade <= 8, no banned words', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500); const strings = []
     for (const hash of ['', '#zoo', '#machine']) { await p.page.evaluate((h) => { location.hash = h }, hash); await p.page.waitForTimeout(600)
-      strings.push(...(await p.page.evaluate(() => __h.texts().filter((x) => !x.e.closest('.hintbtn')).map((x) => x.t))))
-      const n = Math.min(await p.page.locator('.hintbtn').count(), 40)
-      for (let i = 0; i < n; i++) { const b = p.page.locator('.hintbtn').nth(i); try { await b.scrollIntoViewIfNeeded({ timeout: 800 }); await b.click({ timeout: 800 }); strings.push(await p.page.locator('.hintpop').first().innerText({ timeout: 500 })); await p.page.keyboard.press('Escape') } catch {} } }
+      strings.push(...(await p.page.evaluate(() => __h.texts().filter((x) => !x.e.closest('.hintbtn,.nshint-btn')).map((x) => x.t))))
+      const n = Math.min(await p.page.locator('.hintbtn,.nshint-btn').count(), 40)
+      for (let i = 0; i < n; i++) { const b = p.page.locator('.hintbtn,.nshint-btn').nth(i); try { await b.scrollIntoViewIfNeeded({ timeout: 800 }); await b.click({ timeout: 800 }); strings.push(await p.page.locator('.hintpop,.nshint-pop').first().innerText({ timeout: 500 })); await p.page.keyboard.press('Escape') } catch {} } }
     const sent = [...new Set(strings)].flatMap((s) => s.split(/(?<=[.!?])\s+|\n+/)).map((s) => s.trim()).filter((s) => /[A-Za-z]{2}/.test(s) && (/[.!?]$/.test(s) || s.split(/\s+/).length >= 4)), words = sent.map((s) => s.split(/\s+/).filter(Boolean).length)
     const W = words.reduce((a, b) => a + b, 0), avg = W / sent.length, longest = Math.max(...words), sy = sent.join(' ').split(/\s+/).reduce((a, w) => a + syl(w), 0)
     const fk = 0.39 * avg + 11.8 * (sy / W) - 15.59, banned = [...new Set(sent.join(' ').match(BANNED)?.map((x) => x.toLowerCase()) ?? [])]
