@@ -19,7 +19,7 @@ let lastProg = 0
 export type ComponentId = 'cpu1' | 'cpun' | 'cache' | 'ram' | 'storage' | 'gpu' | 'net' | 'energy' | `model:${string}`
 export type Pillar = 'compute' | 'memory' | 'gpu' | 'storage' | 'model'
 export type Scale = 'browser' | 'native'
-export type Flag = 'noisy' | 'hidden-tab' | 'on-battery' | 'not-isolated' | 'coarse-timer' | 'software-gpu' | 'size-halved' | 'estimated' | 'cancelled' | 'custom' | `fallback:${string}`
+export type Flag = 'noisy' | 'hidden-tab' | 'on-battery' | 'not-isolated' | 'coarse-timer' | 'software-gpu' | 'size-halved' | 'estimated' | 'cancelled' | 'custom' | 'sustained-low' | 'no-knee' | 'cached-read' | 'small-quota' | 'confirm-needed' | 'save-data' | 'cellular' | `fallback:${string}`
 export interface TestResult {
   v: 1
   component: ComponentId
@@ -33,6 +33,7 @@ export interface TestResult {
   env: { where: 'companion' | 'webgpu' | 'wasm'; threads?: number; isolated?: boolean; adapter?: string }
   energy?: { joules: number; estimated: boolean }
   at: string                                                   // ISO time
+  extra?: Record<string, unknown>                              // runner details: cache curve + knees, sustained ratio, latency stats
 }
 export interface InputSchema {
   type: 'number' | 'text' | 'file' | 'url'; label: string; unit?: string; min?: number; max?: number; step?: number; default: number | string; cap?: string

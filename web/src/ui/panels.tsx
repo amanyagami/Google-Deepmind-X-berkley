@@ -3,6 +3,7 @@ import { animate, motion } from 'framer-motion'
 import { useStore, type Edit } from '../store'
 import { DimBars, Heat, Hint, Spark, TopBars, showTok } from './charts'
 import { RUNTIME_NAME, scoreRun } from '../hw/score'
+import { useHW } from '../hw/hwStore'
 import type { Fit, RunStats } from '../api'
 
 const fmt = (n: number) => n.toLocaleString('en-US')
@@ -29,7 +30,7 @@ export function ModelPanel() {
         </div>
       </div>
       <dl className="kv">
-        <div className="wide"><dt>Parameters, counted from the header</dt><dd className="big">{fmt(g.params)}</dd></div>
+        <div className="wide"><dt>Parameters</dt><dd className="big">{fmt(g.params)}</dd></div>
         {g.runnable && <>
           <div><dt>Layers</dt><dd>{d.L}</dd></div>
           <div><dt>Hidden size</dt><dd>{fmt(d.H)}</dd></div>
@@ -43,7 +44,7 @@ export function ModelPanel() {
         <div><dt>On disk</dt><dd>{bytes(g.bytes)}</dd></div>
       </dl>
       <div className="probe">
-        <h4>How this was read</h4>
+        <h4>What we read</h4>
         <p className="big2"><b>{r.requests}</b> requests · <b>{bytes(r.bytes)}</b> · <b>{r.weights_downloaded}</b> weights downloaded{r.seconds ? ` · ${r.seconds}s` : ''}</p>
         <ul className="log mono">
           {r.log.map((l: any, i: number) => <li key={i}><span>{l.what}</span><em>{bytes(l.bytes)}</em></li>)}
@@ -96,6 +97,7 @@ export function RunPanel() {
         </div>
       )}
       {!final && !running && !runErr && <p className="hint">Press Run.<Hint>Each layer streams in as the forward pass reaches it and lights up its block.</Hint></p>}
+      {s.lastStats && !running && <RunScoreCard stats={s.lastStats} fit={s.fit} params={s.probe?.graph?.params ?? null} info={null} />}
     </div>
   )
 }
@@ -351,8 +353,10 @@ function Count({ value }: { value: number }) {
 }
 
 /** How well this computer ran this model: hero number on an arc gauge, tier, four part bars. Reuses .gauge / .gnum. */
-export function RunScoreCard({ stats, fit, params, info }: { stats: RunStats | null | undefined; fit: Fit | null; params: number | null; info: any | null }) {
-  if (!stats) return <div className="stack"><p className="hint">Run a model to score this computer.<Hint>The score compares your speed, response time, energy use and memory headroom with a reference run.</Hint></p></div>
+export function RunScoreCard({ stats, fit, params, info: infoIn }: { stats: RunStats | null | undefined; fit: Fit | null; params: number | null; info: any | null }) {
+  const live = useHW((h) => h.info)
+  const info = infoIn ?? live
+  if (!stats) return <div className="stack"><p className="hint">Run a model to score this computer.<Hint>The score compares speed, response time, energy and memory room with a reference run.</Hint></p></div>
   const r = scoreRun(stats, fit, { params, info })
   const size = 150, rad = size / 2 - 12, c = size / 2
   const a0 = Math.PI * 0.8, a1 = Math.PI * 2.2
@@ -374,21 +378,24 @@ export function RunScoreCard({ stats, fit, params, info }: { stats: RunStats | n
           <div className="badges"><span className="badge on">{RUNTIME_NAME[stats.where]}</span><span className="badge">{stats.task}</span></div>
         </div>
       </div>
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
-        {r.parts.map((p) => (
-          <li key={p.id}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
-              <span>{p.label}<Hint label={`How ${p.label} is scored`}><span className="mono">{p.detail}</span></Hint></span>
-              <span className="mono dim">{p.value}</span>
-              <b className="mono">{p.score === null ? '—' : p.score}</b>
-            </div>
-            <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden', marginTop: 3 }}>
-              <motion.div initial={{ width: 0 }} animate={{ width: `${p.score === null ? 0 : Math.min(100, p.score / 20)}%` }} transition={{ type: 'spring', stiffness: 60, damping: 16 }} style={{ height: '100%', background: 'var(--pos)' }} />
-            </div>
-          </li>
-        ))}
-      </ul>
-      <p className="hint">{r.summary}<Hint label="Reference">{r.reference}. Scores are linear, 1000 = the reference, bar full at 2000; overall is a weighted geometric mean (speed 40%, others 20%).</Hint></p>
+      {[r.parts.filter((p) => p.id === 'speed' || p.id === 'response'), r.parts.filter((p) => p.id === 'efficiency' || p.id === 'headroom')].map((group, gi) => (
+        <ul key={gi} style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }} aria-label={gi ? 'Shown apart, not in the score' : 'In the score'}>
+          {group.map((p) => (
+            <li key={p.id}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
+                <span>{gi ? '○ ' : '▲ '}{p.label}<Hint label={`How ${p.label} is scored`}><span className="mono">{p.detail}</span></Hint></span>
+                <span className="mono dim">{p.id === 'efficiency' && stats.estimatedEnergy && p.score !== null ? '≈ ' : ''}{p.value}</span>
+                <b className="mono">{p.score === null ? '—' : p.score}</b>
+              </div>
+              <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden', marginTop: 3 }}>
+                <motion.div initial={{ width: 0 }} animate={{ width: `${p.score === null ? 0 : Math.min(100, p.score / 20)}%` }} transition={{ type: 'spring', stiffness: 60, damping: 16 }}
+                  style={{ height: '100%', background: gi ? 'repeating-linear-gradient(90deg, var(--neg) 0 6px, transparent 6px 9px)' : 'var(--pos)' }} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ))}
+      <p className="hint">{r.summary}<Hint label="Reference">{r.reference}. 1000 is the reference. A full bar is 2000. Speed counts 65 %, response 35 %. Memory fit and energy are shown apart.</Hint></p>
     </div>
   )
 }

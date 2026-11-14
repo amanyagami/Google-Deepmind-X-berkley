@@ -1,6 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Hint } from './ui/charts'
-import { probe } from './hw/browserBench'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
 // Each view loads its own code on first use, so the first page needs only what it shows.
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
@@ -27,7 +26,7 @@ function useDevice() {
     let live = true
     const mem = (c: number | null) => (c ? ` · ~${c} GB` : '')
     const guess = () => `This device · ${(navigator as any).gpu ? 'WebGPU' : 'WebAssembly (slower)'}${mem((navigator as any).deviceMemory ?? null)}`
-    probe().then((c) => live && setT(`This device · ${c.gpu.available && !c.gpu.software ? 'WebGPU' : 'WebAssembly (slower)'}${mem(c.deviceMemoryGB)}`)).catch(() => live && setT(guess()))
+    Promise.all([import('./hw/browserBench'), import('./hw/hwStore')]).then(([b, h]) => b.probe().then((c) => { h.useHW.getState().setCaps(c); return c })).then((c) => live && setT(`This device · ${c.gpu.available && !c.gpu.software ? 'WebGPU' : 'WebAssembly (slower)'}${mem(c.deviceMemoryGB)}`)).catch(() => live && setT(guess()))
     return () => { live = false }
   }, [])
   return t

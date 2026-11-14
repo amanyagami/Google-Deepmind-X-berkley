@@ -5,15 +5,15 @@
 // that core's watts, and the regulator phases fire in turn at a rate that follows the load.
 // When a prompt's journey exists, its timeline (activityAt) drives the same scene: cores, RAM and the data rails
 // (blue) light as the prompt goes keyboard -> CPU <-> RAM -> screen, while the copper rails (amber) carry the power.
-import { useEffect, useMemo, useRef } from 'react'
+import { useContext, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { aspectFit, FitFog, WheelScrollsPage } from '../aspect'
-import { FpsCap } from '../aspect'
-import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@react-three/drei'
+import { aspectFit, FpsCap, WheelScrollsPage } from '../aspect'
+import { CameraControls, Environment, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { peaksOf, powerNow, useHW, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
+import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, SlowWatch, useStage, useStageKeys, Word } from '../stageKit'
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
@@ -44,13 +44,18 @@ export function LiveLine({ k }: { k: LiveKey }) {
   return <i className="lv"><span className="livedot" aria-hidden />{t}</i>
 }
 
+/** The same live readout without its own wrapper, for use inside a label chip. */
+function LiveBare({ k }: { k: LiveKey }) {
+  const t = useHW((s) => liveText(k, s.latest))
+  return t ? <><span className="livedot" aria-hidden />{t}</> : null
+}
+
 const AMBER = new THREE.Color('#ffa94d')
 const BLUE = new THREE.Color('#55a8ff')
 const WHITE = new THREE.Color('#fff4e0')
 const INK = new THREE.Color('#1a2342')
 const COPPER = new THREE.Color('#c77b3a')
 const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
-const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
 /** The sample to draw now: the test being recorded, the live sensors, or a replay. Computed once per store change. */
 let memoState: unknown = null
@@ -141,24 +146,32 @@ function Slab({ size, pos = [0, 0, 0], color = '#131b33', radius = 0.05, metal =
   )
 }
 
-function Tag({ pos, name, sub, show = true, live, group }: { pos: [number, number, number]; name: string; sub?: string; show?: boolean; live?: LiveKey; group?: string }) {
+/** Which test results belong to which part of the machine (first one with a score wins). */
+const CID: Record<string, string[]> = { cpu: ['cpun', 'cpu1'], cache: ['cache'], ram: ['ram'], ssd: ['storage'], nic: ['net'] }
+const open = (id: string) => useHW.getState().dive([id])
+
+/** A label chip: name + live value + the part's latest score; sub-line on hover or selection. Always mounted. Click selects. */
+function Tag({ pos, name, sub, show = true, live, group, cid, prio = 1 }: { pos: [number, number, number]; name: string; sub?: string; show?: boolean; live?: LiveKey; group?: string; cid?: string; prio?: number }) {
   const path = useHW((s) => s.path)
+  const hov = useHW((s) => s.hover === group)
+  const score = useHW((s) => {
+    const r = (s as any).results as Record<string, { score?: number | null }> | undefined
+    for (const id of CID[cid ?? group ?? ''] ?? []) { const v = r?.[id]?.score; if (typeof v === 'number') return `score ${Math.round(v)}` }
+    return undefined
+  })
   const vis = show && !(path.length > 0 && group && path[0] !== group)
-  // always mounted, only hidden: unmounting drei <Html> while the camera moves can throw in React 19
-  return (
-    <Html position={pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
-      <div className="mlabel" style={{ display: vis ? undefined : 'none' }}><b>{name}</b>{sub && <span>{sub}</span>}{live && <LiveLine k={live} />}</div>
-    </Html>
-  )
+  return <Chip pos={pos} name={name} sub={sub} live={live ? <LiveBare k={live} /> : undefined} score={score} hidden={!vis} selected={!!group && path[0] === group} hovered={hov} prio={prio}
+    onClick={group ? () => open(group) : undefined} onHover={group ? (h) => useHW.getState().setHover(h ? group : null) : undefined} />
 }
 
 /** Double-click a part to look inside it; the pointer shows which parts can be opened. */
 function Hot({ pos, id, children }: { pos: THREE.Vector3; id: string; children: any }) {
   return (
     <group position={pos.toArray()}
-      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }}
-      onPointerOut={() => { document.body.style.cursor = '' }}
-      onDoubleClick={(e) => { e.stopPropagation(); useHW.getState().dive([id]) }}>
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; useHW.getState().setHover(id) }}
+      onPointerOut={() => { document.body.style.cursor = ''; useHW.getState().setHover(null) }}
+      onClick={(e) => { e.stopPropagation(); open(id) }}
+      onDoubleClick={(e) => { e.stopPropagation(); open(id) }}>
       {children}
     </group>
   )
@@ -182,7 +195,8 @@ function Pcb() {
 }
 
 /** A copper rail with current flowing along it. `level` returns 0..1 for how much power it carries now. */
-function Rail({ c, level, color = AMBER, count = 26, width = 0.045, speed = 1 }: { c: THREE.CatmullRomCurve3; level: () => number; color?: THREE.Color; count?: number; width?: number; speed?: number }) {
+function Rail({ c, level, color = AMBER, count: count0 = 26, width = 0.045, speed = 1 }: { c: THREE.CatmullRomCurve3; level: () => number; color?: THREE.Color; count?: number; width?: number; speed?: number }) {
+  const lite = useContext(LiteCtx), count = lite ? Math.max(4, Math.ceil(count0 / 2)) : count0
   const tube = useMemo(() => new THREE.TubeGeometry(c, 64, width, 8, false), [c, width])
   const mat = useRef<THREE.MeshPhysicalMaterial>(null!)
   const glow = useRef<THREE.MeshBasicMaterial>(null!)
@@ -247,8 +261,8 @@ function Vrm() {
     }
   })
   return (
-    <group onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }} onPointerOut={() => { document.body.style.cursor = '' }}
-      onDoubleClick={(e) => { e.stopPropagation(); useHW.getState().dive(['vrm']) }}>
+    <group onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; useHW.getState().setHover('vrm') }} onPointerOut={() => { document.body.style.cursor = ''; useHW.getState().setHover(null) }}
+      onClick={(e) => { e.stopPropagation(); open('vrm') }} onDoubleClick={(e) => { e.stopPropagation(); open('vrm') }}>
       {Array.from({ length: PHASES }, (_, k) => {
         const p = phasePos(k)
         return (
@@ -268,7 +282,7 @@ function Vrm() {
 }
 
 /** The CPU: package, a power grid ring, and one tile per core whose colour, height and sparks follow its watts. */
-function Chip() {
+function CpuChip() {
   const n = useHW((s) => s.info?.cpu?.cores ?? 8)
   const logical = useHW((s) => !!s.info?.cpu?.logical_only)
   const nCores = logical ? Math.max(1, Math.round(n / 2)) : n
@@ -308,7 +322,7 @@ function Chip() {
         d.scale.setScalar(on && !reduceMotion ? 0.05 * (1 - life) + 0.01 : 0.0001); d.updateMatrix(); heatM.current.setMatrixAt(c.k * HEAT + i, d.matrix)
       }
       const el = labels.current[c.k]
-      if (el) el.textContent = `${w.toFixed(1)} W`
+      if (el) { el.textContent = `${w.toFixed(1)} W`; el.style.outline = c.k === deepCore ? '1px solid #ffa94d' : '' }
     }
     tiles.current.instanceMatrix.needsUpdate = true; tiles.current.instanceColor!.needsUpdate = true; heatM.current.instanceMatrix.needsUpdate = true
     // sparks: short jagged arcs from the power ring into each busy core, redrawn ~15 times a second
@@ -340,7 +354,8 @@ function Chip() {
   })
   return (
     <group position={CPU.toArray()}
-      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer' }} onPointerOut={() => { document.body.style.cursor = '' }}
+      onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; useHW.getState().setHover('cpu') }} onPointerOut={() => { document.body.style.cursor = ''; useHW.getState().setHover(null) }}
+      onClick={(e) => { e.stopPropagation(); useHW.getState().dive(e.object === tiles.current && e.instanceId != null ? ['cpu', `core${e.instanceId}`] : ['cpu']) }}
       onDoubleClick={(e) => { e.stopPropagation(); useHW.getState().dive(e.object === tiles.current && e.instanceId != null ? ['cpu', `core${e.instanceId}`] : ['cpu']) }}>
       <Slab size={[5.0, 0.22, 4.8]} color="#141c36" radius={0.14} />
       <Slab size={[4.4, 0.1, 4.2]} pos={[0, 0.15, 0]} color="#0c1330" radius={0.08} />
@@ -356,12 +371,10 @@ function Chip() {
         <meshPhysicalMaterial ref={soc} color="#15203f" emissive={BLUE} emissiveIntensity={0.1} metalness={0.5} roughness={0.35} />
       </RoundedBox>
       {cores.map((c) => (
-        <Html key={c.k} position={[c.x, 0.2, c.z + sp * 0.5]} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
-          <div className="wlabel mono" style={{ display: away ? 'none' : undefined, outline: c.k === deepCore ? '1px solid #ffa94d' : undefined }} ref={(el) => { labels.current[c.k] = el }}>—</div>
-        </Html>
+        <Word key={c.k} pos={[c.x, 0.2, c.z + sp * 0.5]} hidden={away} elRef={(el) => { labels.current[c.k] = el }}>—</Word>
       ))}
-      <Tag pos={[0, 1.9, -2.7]} name={deepCore >= 0 ? `Core ${deepCore}` : 'CPU'} sub={deepCore >= 0 ? undefined : `${nCores} cores${logical ? ' (2 threads each, assumed)' : ''}`} live={deepCore >= 0 ? `core${deepCore}` : 'cpu'} group="cpu" />
-      <Tag pos={[0, 0.8, 2.25]} name="Graphics · caches · memory controller" sub="package minus cores" group="cpu" show={deepCore < 0} />
+      <Tag pos={[0, 1.9, -2.7]} name={deepCore >= 0 ? `Core ${deepCore}` : 'CPU'} sub={deepCore >= 0 ? undefined : `${nCores} cores${logical ? ' (2 threads each, assumed)' : ''}`} live={deepCore >= 0 ? `core${deepCore}` : 'cpu'} group="cpu" prio={2} />
+      <Tag pos={[0, 0.8, 2.25]} name="Cache" sub="graphics, caches, memory controller: package minus cores" group="cpu" cid="cache" show={deepCore < 0} prio={0.5} />
     </group>
   )
 }
@@ -519,26 +532,59 @@ const STAGE_CAM: Record<string, Cam> = {
   pick: [[1.2, 8.5, 9.4], [1.4, 0.2, -0.4]], output: [[6.6, 9, 7.2], [6.2, 0.4, -2.4]], decode: [[3.6, 11.5, 13.4], [3.6, 0, 0.2]],
 }
 
+const MACHINE_BOX = new THREE.Box3(V(-10.3, 0, -6.3), V(10.3, 2.6, 6.7))
+const _p = new THREE.Vector3(), _t = new THREE.Vector3()
+/** The camera: the whole machine fitted from its bounding box (keeping the user's orbit angle on a resize), the dives and
+ *  follow-the-prompt views as before, applied on the next frame. */
 function Rig() {
   const ctl = useRef<CameraControls>(null!)
   const stage = useHW((s) => locate(s.tl, s.playhead).seg.id)
   const path = useHW((s) => s.path)
   // before a journey plays there is nothing to follow: show the whole machine
   const follow = useHW((s) => s.follow && !!s.journey && s.pMode === 'journey')
-  const aspect = useThree((s) => s.size.width / Math.max(1, s.size.height))
+  const size = useThree((s) => s.size)
+  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
+  const scene = useThree((s) => s.scene)
+  const last = useRef({ w: 0, h: 0, key: '' })
   useEffect(() => {
-    const c = ctl.current; if (!c) return
-    const isCore = path[0] === 'cpu' && path[1]?.startsWith('core')
-    const [q0, q] = isCore ? ([[1.2, 6.8, 9.2], [1.2, 0.3, 2.2]] as Cam) : path.length ? (DIVE[path[0]] ?? OVERVIEW) : follow ? (STAGE_CAM[stage] ?? OVERVIEW) : OVERVIEW
-    // the card column on the left and the cards at the bottom cover part of the view: aim to the left of and in front of
-    // the subject so it sits in the free part (not on a phone, where the cards stack above and below)
-    const wide = aspect > 1.2
-    const dx = !wide ? 0 : isCore ? 3.4 : path.length ? 2.4 : 2.0
-    const dz = path.length ? 0 : 2.0
-    const p0 = [q0[0] - dx, q0[1], q0[2] + dz], t = [q[0] - dx, q[1], q[2] + dz]
-    const p = aspectFit(p0, t, aspect)
-    c.setLookAt(p[0], p[1], p[2], t[0], t[1], t[2], !reduceMotion)
-  }, [path, follow, stage, aspect])
+    const c = ctl.current, L = last.current; if (!c) return
+    const key = `${path.join('/')}|${follow}|${stage}`
+    const resize = key === L.key
+    if (resize && Math.abs(size.width - L.w) < 1 && Math.abs(size.height - L.h) < 1) return
+    L.w = size.width; L.h = size.height; L.key = key
+    const id = requestAnimationFrame(() => {
+      const aspect = size.width / Math.max(1, size.height)
+      const isCore = path[0] === 'cpu' && path[1]?.startsWith('core')
+      const overview = !isCore && !path.length && !follow
+      const [q0, q] = isCore ? ([[1.2, 6.8, 9.2], [1.2, 0.3, 2.2]] as Cam) : path.length ? (DIVE[path[0]] ?? OVERVIEW) : follow ? (STAGE_CAM[stage] ?? OVERVIEW) : OVERVIEW
+      // the card column on the left and the cards at the bottom cover part of the view: aim to the left of and in front of
+      // the subject so it sits in the free part (not on a phone, where the cards stack above and below)
+      const wide = aspect > 1.2
+      const dx = !wide ? 0 : isCore ? 3.4 : path.length ? 2.4 : 2.0
+      const dz = path.length ? 0 : 2.0
+      let pos: number[], tgt: number[]
+      if (overview) {
+        const dir = new THREE.Vector3()
+        if (resize && c.distance > 1e-3) { c.getPosition(_p); c.getTarget(_t); dir.copy(_p).sub(_t) } else dir.set(OVERVIEW[0][0] - OVERVIEW[1][0], OVERVIEW[0][1] - OVERVIEW[1][1], OVERVIEW[0][2] - OVERVIEW[1][2])
+        if (dir.lengthSq() < 1e-6) dir.set(0, 0.65, 0.76)
+        const b = MACHINE_BOX.clone(); b.min.x -= 2 * dx; b.max.z += 2 * dz // widening the box shifts the view target left/forward, clear of the cards
+        const f = fitBox(b, dir, camera.fov, size.width, size.height, 56)
+        pos = f.pos.toArray(); tgt = f.target.toArray()
+      } else {
+        const p0 = [q0[0] - dx, q0[1], q0[2] + dz], t = [q[0] - dx, q[1], q[2] + dz]
+        pos = aspectFit(p0, t, aspect); tgt = t
+      }
+      const animate = !reduceMotion && !resize
+      if (animate) markTween(1200)
+      c.setLookAt(pos[0], pos[1], pos[2], tgt[0], tgt[1], tgt[2], animate)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [path, follow, stage, size.width, size.height, camera])
+  useFrame(() => {
+    const f = scene.fog as THREE.Fog | null; if (!f || !ctl.current) return
+    ctl.current.getTarget(_t); const d = camera.position.distanceTo(_t)
+    f.near = d * 0.97 + 8; f.far = d * 2.0 + 24
+  })
   return <CameraControls ref={ctl} makeDefault smoothTime={0.8} minDistance={1.5} maxDistance={102} maxPolarAngle={Math.PI * 0.49}
     onStart={() => { const h = useHW.getState(); if (h.follow && !h.path.length) h.setFollow(false) }} />
 }
@@ -549,30 +595,43 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   const recording = useHW((s) => s.benchRunning)
   // paused for the one-second idle baseline only, so the cost of drawing can be measured against it
   const baseline = useHW((s) => s.benchRunning && s.benchStage === 'idle' && s.source === 'companion')
+  const st = useStage(active)
+  const summary = useHW((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`)
+  useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true })
   return (
-    <Canvas frameloop={!active || baseline ? 'never' : recording ? 'demand' : 'always'} dpr={recording ? 1 : [1, 1.75]} camera={{ position: [0.2, 13.6, 15.8], fov: 38 }} gl={{ antialias: false, powerPreference: 'high-performance' }}
->
-      {active && recording && !baseline && <FpsCap fps={30} />}
-      <color attach="background" args={['#05080f']} />
-      <WheelScrollsPage />
-      <FitFog color="#05080f" near={26} far={54} />
-      <ambientLight intensity={0.3} />
-      <directionalLight position={[6, 12, 8]} intensity={1.3} />
-      <Environment resolution={64} environmentIntensity={0.6}>
-        <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
-        <Lightformer form="rect" intensity={1.5} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />
-      </Environment>
-      <Pcb />
-      <DcIn /><Vrm /><Chip /><Ram /><Keyboard /><Screen />
-      <Small pos={SSDP} id="ssd" name="SSD" sub="power not metered" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
-      <Small pos={NICP} id="nic" name="Network" sub="power not metered" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
-      <LanesHost />
-      <Rails />
-      <Rig />
-      <EffectComposer multisampling={recording ? 0 : 4}>
-        <Bloom mipmapBlur luminanceThreshold={0.8} luminanceSmoothing={0.2} intensity={1.15} radius={0.8} />
-        <Vignette eskil={false} offset={0.25} darkness={0.8} />
-      </EffectComposer>
-    </Canvas>
+    <div ref={st.wrap} data-stage style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
+      <Canvas frameloop={!st.run || baseline ? 'never' : recording ? 'demand' : 'always'} dpr={recording ? 1 : st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [0.2, 13.6, 15.8], fov: 38 }} gl={{ antialias: false, powerPreference: 'high-performance' }}
+        onPointerMissed={(e) => { if (e.type === 'click') { const h = useHW.getState(); let n = h.path.length; while (n-- > 0) useHW.getState().back() } }}>
+        <LiteCtx.Provider value={st.lite}>
+          <KitProvider>
+            {st.run && recording && !baseline && <FpsCap fps={30} />}
+            <SlowWatch onSlow={st.onSlow} />
+            <color attach="background" args={['#05080f']} />
+            <WheelScrollsPage />
+            <fog attach="fog" args={['#05080f', 26, 54]} />
+            <ambientLight intensity={0.3} />
+            <directionalLight position={[6, 12, 8]} intensity={1.3} />
+            <Environment resolution={64} environmentIntensity={0.6}>
+              <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
+              <Lightformer form="rect" intensity={1.5} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />
+            </Environment>
+            <Pcb />
+            <DcIn /><Vrm /><CpuChip /><Ram /><Keyboard /><Screen />
+            <Small pos={SSDP} id="ssd" name="SSD" sub="power not metered" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
+            <Small pos={NICP} id="nic" name="Network" sub="power not metered" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
+            <LanesHost />
+            <Rails />
+            <Rig />
+            {!st.lite && (
+              <EffectComposer multisampling={recording || st.dpr <= 1 ? 0 : 4}>
+                <Bloom mipmapBlur luminanceThreshold={0.8} luminanceSmoothing={0.2} intensity={1.15} radius={0.8} />
+                <Vignette eskil={false} offset={0.25} darkness={0.8} />
+              </EffectComposer>
+            )}
+          </KitProvider>
+        </LiteCtx.Provider>
+      </Canvas>
+      <div className="nssr" role="img" aria-label={summary} />
+    </div>
   )
 }
