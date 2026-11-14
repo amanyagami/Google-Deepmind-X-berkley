@@ -12,56 +12,75 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import queue
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
-from fastapi import FastAPI, Query, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+import requests
+from collections import OrderedDict
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, Query, WebSocket
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import hub
+from . import bench, hub, security, state
 from .adapters import build_graph
 
-app = FastAPI(title="Neural Studio", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Optional shared secret. Set NEURAL_STUDIO_TOKEN when the server listens beyond localhost; every /api and /ws
-# request must then carry ?token=... or an X-Studio-Token header. Unset (the default), localhost use is open.
-_TOKEN = os.environ.get("NEURAL_STUDIO_TOKEN") or None
+@asynccontextmanager
+async def lifespan(_app):
+    from . import hw
+    hw.sweep_temp()          # leftovers of a crashed storage test
+    security.announce()      # the one-time pairing code
+    yield
+    hw.sweep_temp()
+
+
+app = FastAPI(title="Neural Studio", version="0.3.0", lifespan=lifespan)
 
 
 @app.middleware("http")
 async def guard(request, call_next):
+    """Host + Origin allowlist, pairing, and CORS/Private-Network headers for allowed origins only. See security.py."""
+    path = request.url.path
+    protected = path.startswith("/api")
+    v = security.classify(request.headers, protected=protected)
+    if not v.ok:
+        return JSONResponse({"error": v.message}, status_code=403)
     if request.method == "OPTIONS":
-        resp = await call_next(request)
-        # lets a hosted copy of the web app (https) call this companion on 127.0.0.1 (Chrome Private Network Access)
-        resp.headers["Access-Control-Allow-Private-Network"] = "true"
-        return resp
-    if _TOKEN and request.url.path.startswith("/api") and _TOKEN not in (request.headers.get("x-studio-token"), request.query_params.get("token")):
-        return JSONResponse({"error": "token required"}, status_code=401)
+        if v.cors_origin is None:
+            return Response(status_code=204)
+        return Response(status_code=204, headers=security.cors_headers(v.cors_origin, preflight=True))
+    cors = security.cors_headers(v.cors_origin)
+    if protected and v.needs_pair and not security.pair_ok(request.headers.get("x-ns-pair"), request.headers.get("x-studio-token")):
+        return JSONResponse({"error": "pairing required", "pairing": True}, status_code=401, headers=cors)
     resp = await call_next(request)
-    resp.headers["Access-Control-Allow-Private-Network"] = "true"
+    resp.headers.update(cors)
     return resp
 
 
-async def _ws_ok(ws: WebSocket) -> bool:
-    if _TOKEN and ws.query_params.get("token") != _TOKEN:
-        await ws.close(code=4401)
-        return False
-    return True
+_PROBES: "OrderedDict[str, dict]" = OrderedDict()
+_PROBES_MAX = 16
+_PROBES_LOCK = threading.Lock()
 
-_PROBES: dict[str, dict] = {}
+
+@app.exception_handler(state.BusyError)
+async def busy_error(_req, exc):
+    return JSONResponse({"error": str(exc), "code": "busy"}, status_code=409)
 
 
 @app.exception_handler(hub.HubError)
 async def hub_error(_req, exc: hub.HubError):
     return JSONResponse({"error": exc.message}, status_code=exc.status)
+
+
+@app.exception_handler(requests.RequestException)
+async def net_error(_req, exc):
+    return JSONResponse({"error": "The Hub could not be reached."}, status_code=502)
 
 
 @app.exception_handler(ValueError)
@@ -78,8 +97,10 @@ def health():
 
 
 def do_probe(repo: str) -> dict:
-    if repo in _PROBES:
-        return _PROBES[repo]
+    with _PROBES_LOCK:
+        if repo in _PROBES:
+            _PROBES.move_to_end(repo)
+            return _PROBES[repo]
     t0 = time.perf_counter()
     stats = hub.ReadStats()
     files = hub.list_files(repo, stats)
@@ -98,8 +119,11 @@ def do_probe(repo: str) -> dict:
         "read": {"requests": stats.requests, "bytes": stats.bytes_read, "log": stats.log, "seconds": round(time.perf_counter() - t0, 2), "weights_downloaded": 0},
         "graph": graph,
     }
-    _PROBES[repo] = {"result": result, "header": header}
-    return _PROBES[repo]
+    with _PROBES_LOCK:
+        _PROBES[repo] = {"result": result, "header": header}
+        while len(_PROBES) > _PROBES_MAX:
+            _PROBES.popitem(last=False)
+    return {"result": result, "header": header}
 
 
 @app.get("/api/probe")
@@ -108,7 +132,7 @@ def probe(repo: str = Query(...)):
 
 
 @app.get("/api/tensor")
-def tensor(repo: str, name: str, rows: int = 256, size: int = 48):
+def tensor(repo: str, name: str, rows: int = 256, size: int = 48, i0: int | None = None):
     repo = hub.parse_repo(repo)
     header = do_probe(repo)["header"]
     if name not in header:
@@ -116,7 +140,7 @@ def tensor(repo: str, name: str, rows: int = 256, size: int = 48):
     e = header[name]
     stats = hub.ReadStats()
     t0 = time.perf_counter()
-    arr, rows_read = hub.read_tensor_rows(repo, e, max(1, min(rows, 1024)), stats)
+    arr, rows_read = hub.read_tensor_rows(repo, e, max(1, min(rows, 1024)), stats, i0)
     total = int(np.prod(e["shape"])) * hub.itemsize(e["dtype"]) if e["shape"] else hub.itemsize(e["dtype"])
     if len(e["shape"]) == 1:  # 1-D tensors are read as one row of elements
         rows_read = int(arr.shape[1])
@@ -152,7 +176,7 @@ class CalcReq(BaseModel):
     edits: list[dict] = Field(default_factory=list)
 
 
-@app.post("/api/load")
+@app.post("/api/load", dependencies=[Depends(state.require_idle)])
 def load(req: LoadReq):
     from . import runner
     repo = hub.parse_repo(req.repo)
@@ -163,7 +187,7 @@ def load(req: LoadReq):
     return {"repo": repo, "loaded": True, "load_seconds": h.load_seconds, "L": a.L, "H": a.H, "nh": a.nh, "nkv": a.nkv, "hd": a.hd}
 
 
-@app.post("/api/run")
+@app.post("/api/run", dependencies=[Depends(state.require_idle)])
 def run(req: RunReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -171,14 +195,14 @@ def run(req: RunReq):
     return {"frames": res["tracer"].frames}
 
 
-@app.post("/api/compare")
+@app.post("/api/compare", dependencies=[Depends(state.require_idle)])
 def compare(req: CompareReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
     return runner.compare(h, req.prompt, req.edits, req.topk, req.max_new)
 
 
-@app.post("/api/calc")
+@app.post("/api/calc", dependencies=[Depends(state.require_idle)])
 def calc(req: CalcReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -215,7 +239,7 @@ def hw_power():
     return power.sample(hw.info()["cpu"]["cores"])
 
 
-@app.post("/api/hw/journey")
+@app.post("/api/hw/journey", dependencies=[Depends(state.require_idle)])
 def hw_journey(req: JourneyReq):
     from . import hw, runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -225,7 +249,7 @@ def hw_journey(req: JourneyReq):
     return hw.journey(h, req.prompt, max(2, min(req.new_tokens, 64)), {"gflops": pg, "gbps": pb})
 
 
-@app.post("/api/hw/microscope")
+@app.post("/api/hw/microscope", dependencies=[Depends(state.require_idle)])
 def hw_microscope(req: MicroReq):
     from . import hw, runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -236,9 +260,9 @@ def hw_microscope(req: MicroReq):
 async def ws_telemetry(ws: WebSocket):
     """10 Hz live samples of the machine: per-core load, memory, disk and network rates."""
     from . import hw
-    if not await _ws_ok(ws):
+    ok, _ = await security.ws_gate(ws)
+    if not ok:
         return
-    await ws.accept()
     hw.telemetry()  # prime the counters
     try:
         while True:
@@ -248,48 +272,77 @@ async def ws_telemetry(ws: WebSocket):
         pass
 
 
+async def _ws_error(ws: WebSocket, code: str, message: str) -> None:
+    try:
+        await ws.send_json({"type": "error", "code": code, "message": message})
+        await ws.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.websocket("/ws/bench")
 async def ws_bench(ws: WebSocket):
-    """Run the microbenchmarks and stream each result as it completes."""
-    from . import hw
-    if not await _ws_ok(ws):
-        return
-    await ws.accept()
-    q: queue.SimpleQueue = queue.SimpleQueue()
-    replies: dict[str, object] = {}
-    got = threading.Event()
+    """Run the microbenchmarks and stream each result as it completes.
 
-    def client(name: str):
-        """Ask the browser to run `name` (e.g. the WebGPU test) and wait for its result."""
-        got.clear()
-        q.put({"type": "client_task", "name": name})
-        got.wait(timeout=90)
-        return replies.pop(name, None)
+    First message (optional): {type:'start', only?:[ids], params?:{...}, baseline?:bool}. None within 0.3 s = full run.
+    Later: {type:'cancel'} and {type:'client_result', id, name, data}. Errors carry a `code`: bad_request, busy."""
+    from . import hw
+    ok, first = await security.ws_gate(ws, first_timeout=0.3)
+    if not ok:
+        return
+    try:
+        if first is None:
+            plan = bench.default_plan(True)
+        elif first.get("type") == "start":
+            plan = bench.validate_start(first)
+        else:
+            raise bench.BadRequest("The first message must be {type:'start'}.")
+    except bench.BadRequest as e:
+        await _ws_error(ws, "bad_request", str(e))
+        return
+    if not state.try_acquire("bench"):
+        await _ws_error(ws, "busy", "A benchmark is already running.")
+        return
+    q: queue.SimpleQueue = queue.SimpleQueue()
+    cancel = threading.Event()
+    tasks = bench.ClientTasks(q.put)
 
     def work():
         try:
-            hw.bench_run(q.put, client)
+            hw.bench_run(q.put, lambda name, c=None: tasks.request(name, c), plan, cancel)
             q.put({"type": "done"})
+        except hw.Cancelled:
+            q.put({"type": "done", "cancelled": True})
         except Exception as e:  # noqa: BLE001
-            q.put({"type": "error", "message": str(e)})
+            q.put({"type": "error", "code": "failed", "message": str(e)})
+        finally:
+            state.release()
 
     async def listen():
         try:
             while True:
                 m = await ws.receive_json()
-                if m.get("type") == "client_result":
-                    replies[m["name"]] = m.get("data")
-                    got.set()
+                if not isinstance(m, dict):
+                    continue
+                if m.get("type") == "cancel":
+                    cancel.set()
+                    tasks.cancel_all()
+                elif m.get("type") == "client_result":
+                    tasks.deliver(m)
         except Exception:  # noqa: BLE001 - socket closed
-            got.set()
+            cancel.set()
+            tasks.cancel_all()
 
     listener = asyncio.create_task(listen())
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
     try:
-        threading.Thread(target=work, daemon=True).start()
         while True:
             try:
                 item = q.get_nowait()
             except queue.Empty:
+                if cancel.is_set() and not th.is_alive():
+                    break
                 await asyncio.sleep(0.02)
                 continue
             await ws.send_json(item)
@@ -298,7 +351,10 @@ async def ws_bench(ws: WebSocket):
     except Exception:  # noqa: BLE001
         pass
     finally:
+        cancel.set()                      # a disconnect stops the worker at its next safe point (<= ~50 ms)
+        tasks.cancel_all()
         listener.cancel()
+        await asyncio.to_thread(th.join, 1.0)
         try:
             await ws.close()
         except Exception:  # noqa: BLE001
@@ -311,7 +367,7 @@ class ScanReq(BaseModel):
     target_id: int | None = None
 
 
-@app.post("/api/scan")
+@app.post("/api/scan", dependencies=[Depends(state.require_idle)])
 def scan(req: ScanReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -321,11 +377,15 @@ def scan(req: ScanReq):
 @app.websocket("/ws/run")
 async def ws_run(ws: WebSocket):
     from . import runner
-    if not await _ws_ok(ws):
+    ok, msg = await security.ws_gate(ws, first_timeout=30.0)
+    if not ok:
         return
-    await ws.accept()
+    if state.busy():
+        await _ws_error(ws, "busy", "A benchmark is running.")
+        return
     try:
-        msg = await ws.receive_json()
+        if msg is None:
+            raise ValueError("No request received.")
         repo = hub.parse_repo(msg["repo"])
         await ws.send_json({"type": "status", "message": "Loading model" if repo not in runner._HOLDERS else "Running"})
         q: queue.SimpleQueue = queue.SimpleQueue()
