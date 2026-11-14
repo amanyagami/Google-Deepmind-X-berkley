@@ -703,7 +703,7 @@ function Result() {
       )}
       {lastStats && !running && (
         <>
-          <p className="s6line" data-score>Ran on <b>{lastStats.where === 'webgpu' ? 'the GPU, in your browser' : lastStats.where === 'wasm' ? 'the CPU, in your browser' : 'the companion'}</b>{fit?.reason ? `. ${fit.reason}` : '.'}<Hint>The page picks the GPU when it can. It falls back to the CPU if the GPU cannot hold the model.</Hint></p>
+          <p className="s6line" data-runscore>Ran on <b>{lastStats.where === 'webgpu' ? 'the GPU, in your browser' : lastStats.where === 'wasm' ? 'the CPU, in your browser' : 'the companion'}</b>{fit?.reason ? `. ${fit.reason}` : '.'}<Hint>The page picks the GPU when it can. It falls back to the CPU if the GPU cannot hold the model.</Hint></p>
           <RunScoreCard stats={lastStats} fit={fit} params={spec?.params ?? null} info={null} />
           <p className="s6line">Speed and energy here are <b>estimated</b>. The score uses speed, wait and memory.{lastStats.joules != null && <> Energy: about <b className="mono">{lastStats.joules.toFixed(1)} J</b> (estimated).</>}</p>
           {fit && <p className="s6fit">Fit: <b className={`s6v-${fit.verdict}`}>{VERDICT_WORD[fit.verdict]}</b>. Needs about {fmtBytes(fit.needBytes)}{fit.haveBytes ? `, this device has ${fmtBytes(fit.haveBytes)}` : ''}.</p>}
@@ -732,9 +732,8 @@ function Empty() {
   const { layers, running, mode, lastStats } = useStore(useShallow((s) => ({ layers: s.layers.length, running: s.running, mode: s.mode, lastStats: s.lastStats })))
   const blank = lastStats != null && !layers && !running && mode !== 'replay'
   // a run with no inside view leaves the model scene empty: show a small network instead, once per run, and say so
-  useEffect(() => { if (blank && net === 'llm') void useZoo.getState().setNet('mlp') }, [blank, lastStats]) // eslint-disable-line react-hooks/exhaustive-deps
-  if (!blank) return null
-  return <p className="s6line s6note">{net === 'llm' ? 'This model has no inside view in the browser.' : 'No inside view for the model you ran. Here is a small network.'}<Hint>The result is on the right. Pick the model's name above to come back.</Hint></p>
+  if (!blank || net !== 'llm') return null
+  return <p className="s6line s6note">This model has no inside view in the browser.<Hint>The result is on the right. The small networks above show how a network works inside.</Hint></p>
 }
 
 function Legend() {
@@ -778,6 +777,7 @@ export function ZooView() {
         <FirstVisit />
         {err && <div className="err">{err}</div>}
       </section>
+      <RunDock />
       <aside className="inspector" aria-label="Network input and output">
         {net === 'llm' ? <ModelTools inspecting={!!inspect} /> : <div className="pane">
           <div className="stack">
@@ -804,7 +804,6 @@ function ModelTools({ inspecting }: { inspecting: boolean }) {
   const act = tab === 'calc' || tab === 'edit' ? tab : null
   return (
     <>
-      <RunDock />
       <div className="pane" style={{ flex: 'none' }}><Inspector /></div>
       <div className="pane" role="region" aria-label="Run">
         {!inspecting && <Result />}
