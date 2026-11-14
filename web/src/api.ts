@@ -48,3 +48,60 @@ export function streamRun(repo: string, prompt: string, edits: unknown[], onFram
     ws.onclose = () => { if (!finished) reject(new Error('Connection closed before the run finished.')) }
   })
 }
+
+/* =====================================================================================================================
+ * Shared contract for "any model, on any computer". Implemented across workstreams:
+ *   resolveModel / checkFit / pickRuntime ........ this file (api.ts)
+ *   runInBrowser ................................. hw/browserBench.ts (Transformers.js, WebGPU or WebAssembly)
+ *   scoreRun ..................................... hw/score.ts
+ * Frames use the same shape as the companion's /ws/run stream, so every view can draw either source:
+ *   { type: 'start', tokens: string[] }  { type: 'embed', norm: number[] }  { type: 'layer', i, resid_norm, attn_norm,
+ *   mlp_norm, head_norm, attn }  { type: 'final', topk?: {token,p}[], labels?: {label,score}[], text?: string, seconds }
+ *   { type: 'done' }.  Browser runs send 'layer' frames only when the model exposes hidden states.
+ * ===================================================================================================================== */
+
+/** The kinds of model the app can run. Each has a default input and accepts the user's own. */
+export type Task = 'text-generation' | 'fill-mask' | 'text-classification' | 'image-classification' | 'automatic-speech-recognition'
+
+export type TaskInput =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; url: string }     // a URL or an object URL from an upload
+  | { kind: 'audio'; url: string }     // a URL, an upload, or a microphone recording
+
+/** Everything the app needs to know about a Hugging Face repo before running it. */
+export interface ModelSpec {
+  repo: string
+  task: Task | null                  // null: a task the app cannot run (structure only)
+  arch: string                       // config.model_type, e.g. 'llama', 'gpt2', 'bert', 'vit', 'whisper'
+  params: number | null              // parameter count
+  bytes: number | null               // weight bytes on disk
+  onnx: { repo: string; dtypes: string[] } | null   // a repo with ONNX weights Transformers.js can load (this one or a converted copy)
+  companion: boolean                 // the local PyTorch companion can run it with full traces
+  defaultInput: TaskInput
+  notes: string[]                    // plain-language caveats shown to the user
+}
+
+/** Will it fit on this computer, and where would it run? */
+export interface Fit {
+  verdict: 'fits' | 'tight' | 'too-big'
+  needBytes: number                  // estimated memory to run it
+  haveBytes: number | null           // what this device offers for that runtime (null: unknown)
+  where: 'companion' | 'webgpu' | 'wasm' | 'none'
+  reason: string                     // one sentence, shown to the user
+}
+
+/** What a finished run measured. */
+export interface RunStats {
+  where: Fit['where']
+  repo: string
+  task: Task
+  loadMs: number                     // download + initialise
+  firstMs: number                    // time to the first output (first token / the result)
+  totalMs: number
+  items: number                      // tokens written, or 1 for a single classification
+  unit: 'tokens' | 'items'
+  perSec: number
+  memBytes: number | null            // peak memory if known
+  joules: number | null              // measured (companion RAPL) or estimated energy, if known
+  estimatedEnergy: boolean
+}
