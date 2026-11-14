@@ -378,21 +378,24 @@ export function RunScoreCard({ stats, fit, params, info: infoIn }: { stats: RunS
           <div className="badges"><span className="badge on">{RUNTIME_NAME[stats.where]}</span><span className="badge">{stats.task}</span></div>
         </div>
       </div>
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
-        {r.parts.map((p) => (
-          <li key={p.id}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
-              <span>{p.label}<Hint label={`How ${p.label} is scored`}><span className="mono">{p.detail}</span></Hint></span>
-              <span className="mono dim">{p.id === 'efficiency' && stats.estimatedEnergy && p.score !== null ? '≈ ' : ''}{p.value}</span>
-              <b className="mono">{p.score === null ? '—' : p.score}</b>
-            </div>
-            <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden', marginTop: 3 }}>
-              <motion.div initial={{ width: 0 }} animate={{ width: `${p.score === null ? 0 : Math.min(100, p.score / 20)}%` }} transition={{ type: 'spring', stiffness: 60, damping: 16 }} style={{ height: '100%', background: 'var(--pos)' }} />
-            </div>
-          </li>
-        ))}
-      </ul>
-      <p className="hint">{r.summary}<Hint label="Reference">{r.reference}. 1000 is the reference. A full bar is 2000. Speed counts 40 %, the rest 20 % each.</Hint></p>
+      {[r.parts.filter((p) => p.id === 'speed' || p.id === 'response'), r.parts.filter((p) => p.id === 'efficiency' || p.id === 'headroom')].map((group, gi) => (
+        <ul key={gi} style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }} aria-label={gi ? 'Shown apart, not in the score' : 'In the score'}>
+          {group.map((p) => (
+            <li key={p.id}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
+                <span>{gi ? '○ ' : '▲ '}{p.label}<Hint label={`How ${p.label} is scored`}><span className="mono">{p.detail}</span></Hint></span>
+                <span className="mono dim">{p.id === 'efficiency' && stats.estimatedEnergy && p.score !== null ? '≈ ' : ''}{p.value}</span>
+                <b className="mono">{p.score === null ? '—' : p.score}</b>
+              </div>
+              <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden', marginTop: 3 }}>
+                <motion.div initial={{ width: 0 }} animate={{ width: `${p.score === null ? 0 : Math.min(100, p.score / 20)}%` }} transition={{ type: 'spring', stiffness: 60, damping: 16 }}
+                  style={{ height: '100%', background: gi ? 'repeating-linear-gradient(90deg, var(--neg) 0 6px, transparent 6px 9px)' : 'var(--pos)' }} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ))}
+      <p className="hint">{r.summary}<Hint label="Reference">{r.reference}. 1000 is the reference. A full bar is 2000. Speed counts 65 %, response 35 %. Memory fit and energy are shown apart.</Hint></p>
     </div>
   )
 }
