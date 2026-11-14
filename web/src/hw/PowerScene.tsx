@@ -13,7 +13,7 @@ import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { peaksOf, powerNow, useHW, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
-import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, SlowWatch, useStage, useStageKeys, Word } from '../stageKit'
+import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
@@ -370,9 +370,8 @@ function CpuChip() {
       <RoundedBox args={[3.6, 0.1, 0.7]} radius={0.04} smoothness={2} position={[0, 0.26, 1.65]}>
         <meshPhysicalMaterial ref={soc} color="#15203f" emissive={BLUE} emissiveIntensity={0.1} metalness={0.5} roughness={0.35} />
       </RoundedBox>
-      {cores.map((c) => (
-        <Word key={c.k} pos={[c.x, 0.2, c.z + sp * 0.5]} hidden={away} elRef={(el) => { labels.current[c.k] = el }}>—</Word>
-      ))}
+      {/* a fixed number of labels, so the core count changing never unmounts one (drei <Html> must stay mounted) */}
+      {Array.from({ length: 64 }, (_, k) => { const c = cores[k]; return <Word key={k} pos={c ? [c.x, 0.2, c.z + sp * 0.5] : [0, 0.2, 0]} hidden={away || !c} elRef={(el) => { labels.current[k] = el }}>—</Word> })}
       <Tag pos={[0, 1.9, -2.7]} name={deepCore >= 0 ? `Core ${deepCore}` : 'CPU'} sub={deepCore >= 0 ? undefined : `${nCores} cores${logical ? ' (2 threads each, assumed)' : ''}`} live={deepCore >= 0 ? `core${deepCore}` : 'cpu'} group="cpu" prio={2} />
       <Tag pos={[0, 0.8, 2.25]} name="Cache" sub="graphics, caches, memory controller: package minus cores" group="cpu" cid="cache" show={deepCore < 0} prio={0.5} />
     </group>
