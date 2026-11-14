@@ -319,13 +319,309 @@ export function checkFit(spec: ModelSpec, b: Budget): Fit {
   return { verdict: have && need / have > 0.85 ? 'too-big' : 'fits', needBytes: need, haveBytes: have ?? null, where: 'none', reason: why }
 }
 
-/* ------------------------------------------------------------------ any model, in the page */
-// Runs a model from its ONNX repo with Transformers.js and emits the same frames as the companion's /ws/run.
+/* ------------------------------------------------------------------ errors */
+export type BrowserRunCode = 'oom' | 'unsupported' | 'degenerate' | 'offline' | 'gated' | 'quota' | 'input' | 'aborted' | 'unknown'
+/** Every failure of the in-browser engine carries a code the UI can act on, and a plain-language message. */
+export class BrowserRunError extends Error {
+  code: BrowserRunCode
+  constructor(code: BrowserRunCode, message: string) { super(message); this.name = 'BrowserRunError'; this.code = code }
+}
+
+/** Failures of the tensor window and of the safetensors header parser. */
+export type TensorErrorCode = 'length' | 'truncated' | 'json' | 'entry' | 'field' | 'dtype' | 'dims' | 'offsets' | 'overlap' | 'size'
+  | 'gated' | 'notfound' | 'http' | 'offline' | 'timeout' | 'range' | 'needs-i0' | 'aborted'
+export class TensorError extends Error {
+  code: TensorErrorCode
+  constructor(code: TensorErrorCode, message: string) { super(message); this.name = 'TensorError'; this.code = code }
+}
+
+/* ------------------------------------------------------------------ small helpers */
+const MiB = 1024 ** 2
+type Nav = Navigator & { connection?: { downlink?: number; type?: string; effectiveType?: string; saveData?: boolean }; deviceMemory?: number }
+const nav = (): Nav | null => (typeof navigator !== 'undefined' ? (navigator as Nav) : null)
+const isAbort = (e: any) => e?.name === 'AbortError' || e?.code === 'aborted'
+
+/* ------------------------------------------------------------------ download manager */
+const CACHE_NAME = 'transformers-cache'   // Transformers.js reads and writes this Cache Storage entry (env.cacheKey); we fill it ahead of time
+const MARK = (repo: string, dtype: string) => `${HUB}/__ns_complete__/${repo}/${dtype}`
+async function openCache(): Promise<Cache | null> {
+  try { return typeof caches !== 'undefined' ? await caches.open(CACHE_NAME) : null } catch { return null }
+}
+const fileUrl = (repo: string, path: string) => `${HUB}/${repo}/resolve/main/${path}`
+let lastBytesPerSec: number | null = null   // measured by the last download of this session
+
+const RUN_DEVICE = (): 'webgpu' | 'wasm' => ((nav() as any)?.gpu ? 'webgpu' : 'wasm')
+
+/** The ONNX precision a model would be fetched in, and on which device (an explicit device or dtype wins). */
+export function planDtype(spec: ModelSpec, device: 'webgpu' | 'wasm' = RUN_DEVICE(), dtype?: string): string {
+  return dtype ?? pickDtype(spec.onnx?.dtypes ?? [], device)
+}
+
+const SMALL_EXT = /\.(json|txt|model|jinja)$/
+/** The files Transformers.js reads for one precision: small config files at the root and the matching .onnx files. */
+export function selectModelFiles(siblings: { rfilename: string; size?: number | null }[], dtype: string): { path: string; size: number }[] {
+  const names = siblings.map((f) => f.rfilename)
+  const hasMerged = names.some((n) => n.startsWith('onnx/decoder_model_merged'))
+  const suf = (DTYPE_SUFFIX[dtype] ?? '') + '.onnx'
+  const out: { path: string; size: number }[] = []
+  for (const f of siblings) {
+    const n = f.rfilename, size = f.size ?? 0
+    if (!n.includes('/')) {
+      if (SMALL_EXT.test(n) && size < 32 * MiB && !/safetensors|pytorch_model|\.index\./.test(n)) out.push({ path: n, size })
+    } else if (n.startsWith('onnx/')) {
+      const isGraph = n.endsWith('.onnx') && onnxDtype(n) === dtype && n.endsWith(suf)
+      const base = n.slice(5).replace(SUFFIX, '')
+      if (isGraph && !(hasMerged && (base === 'decoder_model' || base === 'decoder_with_past_model'))) out.push({ path: n, size })
+      else if (!n.endsWith('.onnx')) {
+        const g = n.replace(/_data(_\d+)?$/, '')
+        if (g !== n && names.includes(g) && g.endsWith(suf) && onnxDtype(g) === dtype && !(hasMerged && /decoder_(with_past_)?model(_data|\.onnx|_)/.test(g) && !g.includes('merged'))) out.push({ path: n, size })
+      }
+    }
+  }
+  return out
+}
+
+const fileLists = new Map<string, Promise<{ path: string; size: number }[]>>()
+async function modelFiles(repo: string, dtype: string): Promise<{ path: string; size: number }[]> {
+  const k = `${repo}|${dtype}`
+  let p = fileLists.get(k)
+  if (!p) {
+    p = (async () => {
+      const d = await hubModel(repo)
+      if (!d) throw new BrowserRunError('unsupported', `"${repo}" was not found on Hugging Face.`)
+      return selectModelFiles(d.siblings ?? [], dtype)
+    })()
+    fileLists.set(k, p)
+    p.catch(() => fileLists.delete(k))
+  }
+  return p
+}
+
+async function isMarked(repo: string, dtype: string): Promise<boolean> {
+  try { const c = await openCache(); return !!c && !!(await c.match(MARK(repo, dtype))) } catch { return false }
+}
+
+/** Pure rule: how loudly to ask before downloading. */
+export function consentFor(bytes: number | null, net?: { cellular?: boolean; saveData?: boolean }): DownloadPlan['consent'] {
+  if (net?.cellular || net?.saveData) return 'warn'
+  if (bytes == null) return 'size'
+  if (bytes > 150 * MiB) return 'warn'
+  if (bytes >= 25 * MiB) return 'size'
+  return 'none'
+}
+
+/** Size, time and consent level for fetching a model. Makes no request for model files (metadata at most). */
+export async function planDownload(spec: ModelSpec, opts: { device?: 'webgpu' | 'wasm'; dtype?: string } = {}): Promise<DownloadPlan> {
+  const repo = spec.onnx?.repo ?? spec.repo
+  const dev = opts.device ?? RUN_DEVICE()
+  const dtype = opts.dtype ?? pickDtype(spec.onnx?.dtypes ?? [], dev, dev === 'webgpu' && (await gpuF16Bad()) ? ['fp16', 'q4f16'] : [])
+  const cached = !!spec.onnx && (await isMarked(repo, dtype))
+  let bytes: number | null = spec.onnx?.sizes?.[dtype] ?? null
+  if (bytes == null && spec.onnx && !cached) {
+    try { bytes = (await modelFiles(repo, dtype)).reduce((a, f) => a + f.size, 0) || null } catch { bytes = null }
+  }
+  const conn = nav()?.connection
+  const cellular = conn?.type === 'cellular'
+  const rate = lastBytesPerSec ?? (conn?.downlink ? (conn.downlink * 1e6) / 8 : null)
+  const etaSeconds = cached ? 0 : bytes != null && rate ? Math.ceil(bytes / rate) : null
+  return { repo, bytes, cached, etaSeconds, consent: cached ? 'none' : consentFor(bytes, { cellular, saveData: !!conn?.saveData }) }
+}
+
+function quotaError(e: any): BrowserRunError | null {
+  if (e?.name === 'QuotaExceededError' || /quota/i.test(String(e?.message ?? ''))) {
+    return new BrowserRunError('quota', 'This browser has no room left to store the model. Free some space (use "Clear downloaded models") or pick a smaller model.')
+  }
+  return null
+}
+function netError(status: number | null, repo: string, e?: any): BrowserRunError {
+  if (status === 401 || status === 403) return new BrowserRunError('gated', `"${repo}" needs a Hugging Face login or a licence you have not accepted, so it cannot be downloaded here.`)
+  if (status === 404) return new BrowserRunError('unsupported', `A model file of "${repo}" is missing, so the browser cannot load it. Check that the repository has ONNX files.`)
+  if (status != null) return new BrowserRunError('offline', `Hugging Face answered HTTP ${status} while downloading "${repo}". Try again in a moment.`)
+  return new BrowserRunError('offline', e && nav()?.onLine === false ? 'You are offline, so the model cannot be downloaded.' : 'The model files could not be downloaded. Check the internet connection and try again.')
+}
+
+/**
+ * Fill the browser cache with everything Transformers.js needs for a model. Resolves {cached:true} when nothing had to be
+ * fetched. Progress counts bytes of all files; cancel() aborts the transfers (partial files are never stored).
+ */
+export function ensureModel(spec: ModelSpec, o: { onProgress: (done: number, total: number | null) => void; signal?: AbortSignal; device?: 'webgpu' | 'wasm'; dtype?: string }): DownloadHandle {
+  const ac = new AbortController()
+  const onAbort = () => ac.abort()
+  if (o.signal) { if (o.signal.aborted) ac.abort(); else o.signal.addEventListener('abort', onAbort, { once: true }) }
+  const done = (async () => {
+    if (!spec.onnx) throw new BrowserRunError('unsupported', 'This model has no ONNX weights, so the browser cannot load it.')
+    const repo = spec.onnx.repo
+    const dtype = planDtype(spec, o.device, o.dtype)
+    const cache = await openCache()
+    if (!cache) { o.onProgress(0, null); return { cached: false, bytes: 0 } }   // no Cache Storage: Transformers.js will fetch for itself
+    if (await isMarked(repo, dtype)) { const b = spec.onnx.sizes?.[dtype] ?? 0; o.onProgress(b, b || null); return { cached: true, bytes: b } }
+    let files: { path: string; size: number }[]
+    try { files = await modelFiles(repo, dtype) } catch (e: any) { throw e instanceof BrowserRunError ? e : netError(null, repo, e) }
+    let total: number | null = files.reduce((a, f) => a + f.size, 0) || null
+    let got = 0, fetched = 0
+    const t0 = performance.now()
+    o.onProgress(0, total)
+    const fetchOne = async (f: { path: string; size: number }) => {
+      const url = fileUrl(repo, f.path)
+      if (await cache.match(url)) { got += f.size; o.onProgress(got, total); return }
+      let r: Response
+      try { r = await fetch(url, { signal: ac.signal }) } catch (e: any) { if (isAbort(e) || ac.signal.aborted) throw new BrowserRunError('aborted', 'The download was cancelled.'); throw netError(null, repo, e) }
+      if (!r.ok || !r.body) throw netError(r.status, repo)
+      let mine = 0
+      const counter = new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, ctl) { mine += chunk.byteLength; got += chunk.byteLength; fetched += chunk.byteLength; o.onProgress(got, total); ctl.enqueue(chunk) },
+      })
+      const headers = new Headers(r.headers)
+      try { await cache.put(url, new Response(r.body.pipeThrough(counter), { status: 200, headers })) } catch (e: any) {
+        if (isAbort(e) || ac.signal.aborted) throw new BrowserRunError('aborted', 'The download was cancelled.')
+        throw quotaError(e) ?? netError(null, repo, e)
+      }
+      if (f.size && mine !== f.size) { got += f.size - mine; o.onProgress(got, total) }   // sizes from the file list can differ slightly: keep the bar honest
+    }
+    try {
+      const queue = [...files]
+      await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => { for (let f = queue.shift(); f; f = queue.shift()) await fetchOne(f) }))
+    } catch (e) { ac.abort(); throw e }
+    if (total == null || got > total) total = got
+    o.onProgress(got, total)
+    if (fetched > 0) {
+      const secs = (performance.now() - t0) / 1000
+      if (secs > 0.5 && fetched > MiB) lastBytesPerSec = fetched / secs
+    }
+    try { await cache.put(MARK(repo, dtype), new Response(JSON.stringify({ bytes: total, at: Date.now() }), { headers: { 'content-type': 'application/json' } })) } catch (e) { throw quotaError(e) ?? e }
+    return { cached: fetched === 0, bytes: total }
+  })().finally(() => o.signal?.removeEventListener('abort', onAbort))
+  return { cancel: () => ac.abort(), done }
+}
+
+/** Ask the browser to keep downloaded models. Call it from a click handler: browsers refuse it otherwise. */
+export async function requestPersist(): Promise<boolean> {
+  try { return (await nav()?.storage?.persist?.()) ?? false } catch { return false }
+}
+
+export interface ModelCacheInfo { usage: number | null; quota: number | null; persisted: boolean | null; models: { repo: string; dtype: string; bytes: number }[] }
+/** What is stored: browser usage and quota, whether it is persistent, and the downloaded models. */
+export async function modelCacheInfo(): Promise<ModelCacheInfo> {
+  const info: ModelCacheInfo = { usage: null, quota: null, persisted: null, models: [] }
+  try { const e = await nav()?.storage?.estimate?.(); info.usage = e?.usage ?? null; info.quota = e?.quota ?? null } catch { /* unavailable */ }
+  try { info.persisted = (await nav()?.storage?.persisted?.()) ?? null } catch { /* unavailable */ }
+  try {
+    const c = await openCache()
+    for (const k of c ? await c.keys() : []) {
+      const m = new RegExp(`^${HUB}/__ns_complete__/(.+)/([^/]+)$`).exec(k.url)
+      if (!m) continue
+      let bytes = 0
+      try { bytes = (await (await c!.match(k))!.json()).bytes ?? 0 } catch { /* unreadable marker */ }
+      info.models.push({ repo: m[1], dtype: m[2], bytes })
+    }
+  } catch { /* unavailable */ }
+  return info
+}
+
+/** Delete every downloaded model and release the one in memory. */
+export async function clearModels(): Promise<void> {
+  await disposeAll()
+  fileLists.clear()
+  try { if (typeof caches !== 'undefined') await caches.delete(CACHE_NAME) } catch { /* ignore */ }
+}
+
+/* ------------------------------------------------------------------ task inputs */
+export interface InputCaps { deviceMemoryGB?: number | null; maxTextTokens?: number; maxImageBytes?: number; maxAudioSeconds?: number; maxAudioBytes?: number; prepare?: boolean }
+export const INPUT_LIMITS = { textTokens: 512, textTokensLowMem: 128, imageBytes: 10 * MiB, audioSeconds: 30, audioBytes: 40 * MiB, imageSide: 1024, audioRate: 16000 }
+export type Prepared = { text?: string; image?: string; audio?: Float32Array; revoke?: () => void }
+export type InputCheck = { ok: true; prepared: Prepared } | { ok: false; code: 'input'; error: string }
+
+export function maxTextTokens(caps?: InputCaps): number {
+  const mem = caps?.deviceMemoryGB !== undefined ? caps.deviceMemoryGB : (nav()?.deviceMemory ?? null)
+  return caps?.maxTextTokens ?? (mem != null && mem < 4 ? INPUT_LIMITS.textTokensLowMem : INPUT_LIMITS.textTokens)
+}
+/** A cheap token count before a tokenizer is loaded (about four characters per token). */
+export const estimateTokens = (s: string) => Math.ceil(s.length / 4)
+export function checkAudioSeconds(seconds: number, caps?: InputCaps): string | null {
+  const cap = caps?.maxAudioSeconds ?? INPUT_LIMITS.audioSeconds
+  return seconds > cap ? `This clip is ${Math.round(seconds)} s long. The limit is ${cap} s: trim it and try again.` : null
+}
+const mb = (n: number) => `${(n / MiB).toFixed(n < 10 * MiB ? 1 : 0)} MB`
+const bad = (error: string): InputCheck => ({ ok: false, code: 'input', error })
+
+/** Check the user's input against the caps; for images and audio also fetch, downscale / resample and return what to feed the model. */
+export async function validateInput(task: Task, input: TaskInput, caps?: InputCaps): Promise<InputCheck> {
+  const wantText = task === 'text-generation' || task === 'fill-mask' || task === 'text-classification'
+  if (wantText) {
+    if (input.kind !== 'text') return bad('This model reads text. Type or paste some text.')
+    const text = input.text.trim()
+    if (!text) return bad('Type some text first.')
+    const cap = maxTextTokens(caps)
+    if (estimateTokens(text) > cap) return bad(`That text is about ${estimateTokens(text)} tokens. The limit is ${cap}${cap < INPUT_LIMITS.textTokens ? ' on this device (less than 4 GB of memory)' : ''}. Shorten it.`)
+    return { ok: true, prepared: { text: input.text } }
+  }
+  const kind = task === 'image-classification' ? 'image' : 'audio'
+  if (input.kind !== kind) return bad(kind === 'image' ? 'This model reads images. Choose a picture.' : 'This model reads audio. Choose a recording.')
+  if (!input.url) return bad(kind === 'image' ? 'Choose a picture first.' : 'Choose an audio clip first.')
+  let blob: Blob
+  try {
+    const r = await fetch(input.url)
+    if (!r.ok) return bad(`The ${kind} could not be read (HTTP ${r.status}).`)
+    blob = await r.blob()
+  } catch { return bad(`The ${kind} could not be read. Check the link, or upload the file instead.`) }
+  const cap = kind === 'image' ? (caps?.maxImageBytes ?? INPUT_LIMITS.imageBytes) : (caps?.maxAudioBytes ?? INPUT_LIMITS.audioBytes)
+  if (blob.size > cap) return bad(`That ${kind} file is ${mb(blob.size)}. The limit is ${mb(cap)}${kind === 'audio' ? ` (and ${caps?.maxAudioSeconds ?? INPUT_LIMITS.audioSeconds} s of sound)` : ''}.`)
+  if (caps?.prepare === false) return { ok: true, prepared: kind === 'image' ? { image: input.url } : {} }
+  try { return kind === 'image' ? await prepareImage(blob) : await prepareAudio(blob, caps) } catch (e: any) {
+    return bad(e instanceof BrowserRunError ? e.message : `That ${kind} could not be decoded. Try a common format (${kind === 'image' ? 'JPEG, PNG, WebP' : 'WAV, MP3, M4A'}).`)
+  }
+}
+
+/** Shrink an image so its longest side is at most 1024 px; the model resizes further, so quality is unaffected. */
+async function prepareImage(blob: Blob): Promise<InputCheck> {
+  const bmp = await createImageBitmap(blob)
+  const k = Math.min(1, INPUT_LIMITS.imageSide / Math.max(bmp.width, bmp.height))
+  const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k))
+  const cv = new OffscreenCanvas(w, h)
+  cv.getContext('2d')!.drawImage(bmp, 0, 0, w, h)
+  bmp.close?.()
+  const out = await cv.convertToBlob({ type: 'image/jpeg', quality: 0.92 })
+  const url = URL.createObjectURL(out)
+  return { ok: true, prepared: { image: url, revoke: () => URL.revokeObjectURL(url) } }
+}
+
+/** Decode audio to mono 16 kHz floats; longer than 30 s is refused. */
+async function prepareAudio(blob: Blob, caps?: InputCaps): Promise<InputCheck> {
+  const AC: typeof AudioContext = (globalThis as any).AudioContext ?? (globalThis as any).webkitAudioContext
+  const ctx = new AC()
+  let buf: AudioBuffer
+  try { buf = await ctx.decodeAudioData(await blob.arrayBuffer()) } finally { ctx.close?.() }
+  const tooLong = checkAudioSeconds(buf.duration, caps)
+  if (tooLong) return bad(tooLong)
+  const rate = INPUT_LIMITS.audioRate
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(buf.duration * rate)), rate)   // mixes down to mono and resamples
+  const src = off.createBufferSource()
+  src.buffer = buf; src.connect(off.destination); src.start()
+  return { ok: true, prepared: { audio: (await off.startRendering()).getChannelData(0) } }
+}
+
+const inputKey = (task: Task) => `ns.input.${task}`
+/** The user's own input for a task, remembered between visits (text, or an http(s) link). */
+export function saveInput(task: Task, input: TaskInput): void {
+  try {
+    if (input.kind !== 'text' && !/^https?:/i.test(input.url)) return   // an object URL dies with the page
+    localStorage.setItem(inputKey(task), JSON.stringify(input))
+  } catch { /* private mode */ }
+}
+export function loadSavedInput(task: Task): TaskInput | null {
+  try {
+    const j = JSON.parse(localStorage.getItem(inputKey(task)) ?? 'null')
+    if (j?.kind === 'text' && typeof j.text === 'string') return j
+    if ((j?.kind === 'image' || j?.kind === 'audio') && typeof j.url === 'string') return j
+  } catch { /* none saved */ }
+  return null
+}
+
+/* ------------------------------------------------------------------ running a model in the page */
 export type BrowserRunStats = RunStats & { device: 'webgpu' | 'wasm'; dtype: string; cached: boolean }
 
 const DTYPE_SUFFIX: Record<string, string> = { fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4', q4f16: '_q4f16', bnb4: '_bnb4' }
-interface Loaded { pipe: any; tf: any; bytes: number | null }
-const pipes = new Map<string, Promise<Loaded>>()
+interface Loaded { pipe: any; tf: any; repo: string }
 
 export function pickDtype(dtypes: string[], device: 'webgpu' | 'wasm', avoid: string[] = []): string {
   const order = device === 'webgpu' ? ['q4f16', 'fp16', 'q4', 'q8', 'quantized', 'fp32'] : ['q8', 'quantized', 'int8', 'uint8', 'q4', 'fp32']
@@ -333,104 +629,136 @@ export function pickDtype(dtypes: string[], device: 'webgpu' | 'wasm', avoid: st
   return hit === 'quantized' ? 'q8' : hit ?? 'fp32'
 }
 
-async function onnxBytes(repo: string, dtype: string): Promise<number | null> {
-  try {
-    const r = await fetch(`https://huggingface.co/api/models/${repo}/tree/main/onnx`)
-    if (!r.ok) return null
-    const files: { path: string; size: number }[] = await r.json()
-    const suf = DTYPE_SUFFIX[dtype] ?? ''
-    const other = /_(fp16|quantized|int8|uint8|q4|q4f16|bnb4)\.onnx/
-    const sum = files
-      .filter((f) => !(files.some((g) => g.path.includes('decoder_model_merged')) && /decoder_model(?!_merged)|decoder_with_past/.test(f.path)))
-      .filter((f) => f.path.includes(`${suf}.onnx`) && (suf !== '' || !other.test(f.path)))
-      .reduce((a, f) => a + f.size, 0)
-    return sum || null
-  } catch { return null }
-}
-
-function friendly(e: any, device: string): Error {
+/** Map any failure to a BrowserRunError with a friendly message. */
+export function classifyError(e: any, device = 'webgpu'): BrowserRunError {
+  if (e instanceof BrowserRunError) return e
   const m = String(e?.message ?? e)
-  if (/out of memory|allocation|memory access|bad_alloc|Array buffer allocation/i.test(m)) return new Error(`This model needs more memory than the browser can give it on the ${device === 'webgpu' ? 'GPU' : 'CPU'}. Try a smaller model.`)
-  if (/failed to fetch|networkerror|load failed|could not locate file|404|401|403/i.test(m)) return new Error('The model files could not be downloaded. Check the internet connection, and that the repository has ONNX files.')
-  return new Error(m)
+  const q = quotaError(e)
+  if (q) return q
+  if (isAbort(e)) return new BrowserRunError('aborted', 'The run was cancelled.')
+  if (/out of memory|allocation|memory access|bad_alloc|Array buffer allocation|RangeError: Invalid/i.test(m)) return new BrowserRunError('oom', `This model needs more memory than the browser can give it on the ${device === 'webgpu' ? 'GPU' : 'CPU'}. Try a smaller model.`)
+  if (/\b(401|403)\b|gated|unauthorized|forbidden/i.test(m)) return new BrowserRunError('gated', 'The model needs a Hugging Face login or an accepted licence, so it cannot be downloaded here.')
+  if (/could not locate file|\b404\b/i.test(m)) return new BrowserRunError('unsupported', 'A model file is missing, so the browser cannot load it. Check that the repository has ONNX files.')
+  if (/failed to fetch|networkerror|load failed|network request failed|offline/i.test(m)) return netError(null, 'the model', e)
+  if (/webgpu|not supported|unsupported|no available backend|failed to (create|initialize)|kernel|op_type|create a session|GPU/i.test(m)) return new BrowserRunError('unsupported', `This browser cannot run this model on the ${device === 'webgpu' ? 'GPU' : 'CPU'}.`)
+  return new BrowserRunError('unknown', m)
 }
-const retryOnWasm = (m: string) => !/out of memory/i.test(m) && /empty results|webgpu|not supported|unsupported|no available backend|failed to (create|initialize)|kernel|op_type|create a session|GPU/i.test(m)
 
-async function load(task: Task, repo: string, device: 'webgpu' | 'wasm', dtype: string): Promise<{ l: Loaded; cached: boolean }> {
+/* one pipeline at a time: loading another disposes the previous one first */
+let current: { key: string; p: Promise<Loaded> } | null = null
+export const livePipelineKey = () => current?.key ?? null
+export async function disposeAll(): Promise<void> {
+  const c = current
+  current = null
+  if (!c) return
+  try { await (await c.p).pipe?.dispose?.() } catch { /* the load failed, nothing to free */ }
+}
+/** Load (or reuse) the single live pipeline. `cached` is true when it was already in memory. */
+export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 'wasm', dtype: string): Promise<{ l: Loaded; cached: boolean }> {
   const key = `${task}|${repo}|${device}|${dtype}`
-  let p = pipes.get(key)
-  const cached = !!p
-  if (!p) {
-    p = (async () => {
-      const tf: any = await import('@huggingface/transformers')
-      try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
-      const [pipe, bytes] = await Promise.all([tf.pipeline(task, repo, { device, dtype }), onnxBytes(repo, dtype)])
-      return { pipe, tf, bytes }
-    })()
-    pipes.set(key, p)
-    p.catch(() => pipes.delete(key))
-  }
-  return { l: await p, cached }
+  if (current?.key === key) { try { return { l: await current.p, cached: true } } catch { /* fall through and retry */ } }
+  const prev = current
+  const p: Promise<Loaded> = (async () => {
+    if (prev) { try { await (await prev.p).pipe?.dispose?.() } catch { /* previous failed to load */ } }
+    const tf: any = await import('@huggingface/transformers')
+    try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
+    return { pipe: await tf.pipeline(task, repo, { device, dtype }), tf, repo }
+  })()
+  current = { key, p }
+  p.catch(() => { if (current?.p === p) current = null })
+  return { l: await p, cached: false }
+}
+
+/** Does this browser's GPU compute float16 wrongly? Asks the capability probe (stream S2); a stub or failure means "unknown". */
+let f16Verdict: Promise<boolean> | null = null
+function gpuF16Bad(): Promise<boolean> {
+  return (f16Verdict ??= (async () => {
+    try {
+      const c = await (await import('./hw/browserBench')).probe()
+      return !!c.gpu?.available && (c.gpu.f16 === false || c.gpu.canaryOk === false)
+    } catch { return false }
+  })())
 }
 
 // logits and hidden states may come back as float16 (a Uint16Array of raw bits)
 function toF32(d: any): Float32Array {
   if (d instanceof Float32Array) return d
-  if (d instanceof Uint16Array) {
-    return Float32Array.from(d, (x) => {
-      const s = x >> 15 ? -1 : 1, e = (x >> 10) & 31, f = x & 1023
-      return s * (e === 0 ? 2 ** -14 * (f / 1024) : e === 31 ? (f ? NaN : Infinity) : 2 ** (e - 15) * (1 + f / 1024))
-    })
-  }
+  if (d instanceof Uint16Array) return Float32Array.from(d, f16bits)
   return Float32Array.from(d)
 }
+function f16bits(x: number): number {
+  const s = x >> 15 ? -1 : 1, e = (x >> 10) & 31, f = x & 1023
+  return s * (e === 0 ? 2 ** -14 * (f / 1024) : e === 31 ? (f ? NaN : Infinity) : 2 ** (e - 15) * (1 + f / 1024))
+}
+
+/** True when a vector of scores carries no information: NaN, infinite, or one value repeated. */
+export function isDegenerate(v: ArrayLike<number>): boolean {
+  if (v.length < 2) return v.length === 0
+  let mn = Infinity, mx = -Infinity
+  for (let i = 0; i < v.length; i++) {
+    const x = v[i]
+    if (!Number.isFinite(x)) return true
+    if (x < mn) mn = x
+    if (x > mx) mx = x
+  }
+  return !(mx > mn)
+}
+const degenerateError = () => new BrowserRunError('degenerate', 'The model returned empty results on this device. Try the CPU, or another model.')
+
+const hiddenSeen = new Map<string, boolean>()   // repo -> did the last run expose hidden states?
 
 // Only fires when an ONNX export exposes hidden states (most do not). Attention and MLP parts cannot be split out of them.
-function layerFrames(out: any, emit: (f: any) => void) {
+function layerFrames(out: any, emit: (f: any) => void): boolean {
   const hs: any[] | undefined = out?.hidden_states
-  if (!Array.isArray(hs) || hs.length < 2) return
+  if (!Array.isArray(hs) || hs.length < 2) return false
   hs.slice(1).forEach((t: any, i: number) => {
     const [, seq, dim] = t.dims
     const d = toF32(t.data)
     const norm = Array.from({ length: seq }, (_, k) => { let a = 0; for (let j = 0; j < dim; j++) a += d[k * dim + j] ** 2; return Math.sqrt(a) })
     emit({ type: 'layer', i, resid_norm: norm, attn_norm: norm.map(() => 0), mlp_norm: norm.map(() => 0), head_norm: [], attn: [] })
   })
+  return true
 }
 
-async function runOnce(spec: ModelSpec, task: Task, input: TaskInput, emit: (f: any) => void, device: 'webgpu' | 'wasm', avoid: string[] = []): Promise<BrowserRunStats> {
+interface RunOpts { device: 'webgpu' | 'wasm'; dtype?: string; signal?: AbortSignal; onProgress?: (done: number, total: number | null) => void }
+
+async function runOnce(spec: ModelSpec, task: Task, prep: Prepared, emit: (f: any) => void, device: 'webgpu' | 'wasm', dtype: string, opts: RunOpts): Promise<BrowserRunStats> {
   const repo = spec.onnx?.repo ?? spec.repo
-  const dtype = pickDtype(spec.onnx?.dtypes ?? [], device, avoid)
   const t0 = performance.now()
-  const { l, cached } = await load(task, repo, device, dtype)
+  const dl = await ensureModel(spec, { onProgress: opts.onProgress ?? (() => {}), signal: opts.signal, device, dtype }).done
+  if (opts.signal?.aborted) throw new BrowserRunError('aborted', 'The run was cancelled.')
+  const { l, cached: warm } = await loadPipeline(task, repo, device, dtype)
+  const cached = dl.cached || warm
   const loadMs = performance.now() - t0
   const { pipe, tf } = l
-  const text = input.kind === 'text' ? input.text : ''
-  const url = input.kind !== 'text' ? input.url : ''
+  const text = prep.text ?? ''
   const start = performance.now()
   let firstMs = 0, items = 1, unit: 'tokens' | 'items' = 'items'
   const seconds = () => (performance.now() - start) / 1000
   const tokens = (s: string): string[] => pipe.tokenizer.tokenize?.(s) ?? s.split(/\s+/)
+  const lim = maxTextTokens()
 
   if (task === 'text-generation') {
     const tok = pipe.tokenizer
     const enc = await tok(text)
     const ids: number[] = Array.from(enc.input_ids.data as ArrayLike<any>, (x) => Number(x))
+    if (ids.length > lim) throw new BrowserRunError('input', `That text is ${ids.length} tokens. The limit is ${lim}. Shorten it.`)
     // the next-token distribution right after the prompt: one forward pass
     let out: any
     try { out = await pipe.model({ ...enc, output_hidden_states: true, output_attentions: true }) } catch { out = await pipe.model(enc) }
     const [, seq, vocab] = out.logits.dims
     const lg = toF32(out.logits.data).subarray((seq - 1) * vocab, seq * vocab)
-    let mx = -Infinity, mn = Infinity
-    for (const v of lg) { if (v > mx) mx = v; if (v < mn) mn = v }
     // some GPU drivers return all zeros for float16 models: treat that as a failure so another precision is tried
-    if (!(mx > mn)) throw new Error('EMPTY_OUTPUT')
+    if (isDegenerate(lg)) throw degenerateError()
+    let mx = -Infinity
+    for (const v of lg) if (v > mx) mx = v
     let z = 0
     const ex = new Float32Array(vocab)
     for (let i = 0; i < vocab; i++) { ex[i] = Math.exp(lg[i] - mx); z += ex[i] }
     const top = Array.from(ex.keys()).sort((a, b) => ex[b] - ex[a]).slice(0, 10)
     const topk = top.map((i) => ({ token: tok.decode([i]), p: ex[i] / z }))
     emit({ type: 'start', tokens: ids.map((id) => tok.decode([id])) })
-    layerFrames(out, emit)
+    hiddenSeen.set(spec.repo, layerFrames(out, emit))
     let gen = '', n = 0
     const streamer = new tf.TextStreamer(tok, {
       skip_prompt: true,
@@ -444,62 +772,407 @@ async function runOnce(spec: ModelSpec, task: Task, input: TaskInput, emit: (f: 
     emit({ type: 'start', tokens: tokens(text) })
     const r: any[] = await pipe(text, { top_k: 10 })
     firstMs = performance.now() - start
+    if (isDegenerate(r.map((x) => x.score))) throw degenerateError()
     emit({ type: 'final', topk: r.map((x) => ({ token: String(x.token_str).trim(), p: x.score })), text: r[0]?.sequence, seconds: seconds() })
   } else if (task === 'text-classification') {
     emit({ type: 'start', tokens: tokens(text) })
     const r: any[] = await pipe(text, { top_k: 5 })
     firstMs = performance.now() - start
+    if (isDegenerate(r.map((x) => x.score))) throw degenerateError()
     emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
   } else if (task === 'image-classification') {
-    const r: any[] = await pipe(url, { top_k: 5 })
+    const r: any[] = await pipe(prep.image, { top_k: 5 })
     firstMs = performance.now() - start
+    if (isDegenerate(r.map((x) => x.score))) throw degenerateError()
     emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
   } else {
-    const r: any = await pipe(url, { chunk_length_s: 30 })
+    const r: any = await pipe(prep.audio, { chunk_length_s: 30 })
     firstMs = performance.now() - start
-    emit({ type: 'final', text: String(r.text ?? '').trim(), seconds: seconds() })
+    const said = String(r?.text ?? '').trim()
+    let rms = 0
+    for (const v of prep.audio ?? []) rms += v * v
+    const loud = prep.audio ? Math.sqrt(rms / Math.max(1, prep.audio.length)) > 0.005 : true
+    if (!said && loud) throw degenerateError()   // real sound in, nothing out
+    emit({ type: 'final', text: said, seconds: seconds() })
   }
   const totalMs = performance.now() - start
   emit({ type: 'done' })
   return {
     where: device, repo, task, loadMs, firstMs, totalMs, items, unit,
     perSec: unit === 'tokens' && totalMs > firstMs && items > 1 ? ((items - 1) * 1000) / (totalMs - firstMs) : 1000 / Math.max(1, totalMs),
-    memBytes: l.bytes, joules: null, estimatedEnergy: false, device, dtype, cached,
+    memBytes: spec.onnx?.sizes?.[dtype] ?? null, joules: null, estimatedEnergy: false, device, dtype, cached,
   }
 }
 
-export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: { device: 'webgpu' | 'wasm' }): Promise<BrowserRunStats> {
+/**
+ * Run a model in the page. Tries the precision chosen from the capability probe, then another precision, then the CPU when the
+ * output is empty or the GPU fails. Failures arrive as BrowserRunError with a code. Starts downloading when the files are not cached:
+ * the caller must have asked the user first (see planDownload).
+ */
+export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: RunOpts): Promise<BrowserRunStats> {
   const task = spec.task
-  if (!task) throw new Error('This kind of model cannot be run in the browser.')
-  if (!spec.onnx) throw new Error('This model has no ONNX weights, so the browser cannot run it. Use the companion instead.')
+  if (!task) throw new BrowserRunError('unsupported', 'This kind of model cannot be run in the browser.')
+  if (!spec.onnx) throw new BrowserRunError('unsupported', 'This model has no ONNX weights, so the browser cannot run it. Use the companion instead.')
+  const check = await validateInput(task, input)
+  if (!check.ok) throw new BrowserRunError('input', check.error)
+  const prep = check.prepared
   let device = opts.device
   if (device === 'webgpu' && !(await (navigator as any).gpu?.requestAdapter?.().catch(() => null))) device = 'wasm'
-  try {
-    try {
-      return await runOnce(spec, task, input, onFrame, device)
-    } catch (e: any) {
-      if (device !== 'webgpu' || e?.message !== 'EMPTY_OUTPUT') throw e
-      return await runOnce(spec, task, input, onFrame, device, ['fp16', 'q4f16']) // this GPU cannot do float16 maths
-    }
-  } catch (e: any) {
-    if (e?.message === 'EMPTY_OUTPUT') e = new Error('The GPU returned empty results for this model.')
-    if (device === 'webgpu' && retryOnWasm(String(e?.message ?? e))) {
-      try { return await runOnce(spec, task, input, onFrame, 'wasm') } catch (e2) { throw friendly(e2, 'wasm') }
-    }
-    throw friendly(e, device)
+  const dts = spec.onnx.dtypes
+  const f16Bad = device === 'webgpu' && !opts.dtype && (await gpuF16Bad())
+  const tried = new Set<string>()
+  const next = (dev: 'webgpu' | 'wasm'): string | null => {
+    const d = dev === device && opts.dtype && !tried.has(`${dev}|${opts.dtype}`) ? opts.dtype : pickDtype(dts, dev, [...(f16Bad && dev === 'webgpu' ? ['fp16', 'q4f16'] : []), ...[...tried].filter((t) => t.startsWith(`${dev}|`)).map((t) => t.split('|')[1])])
+    return tried.has(`${dev}|${d}`) || !(dts.includes(d) || (d === 'fp32' && !dts.length)) ? null : d
   }
+  let dev = device
+  let lastErr: BrowserRunError | null = null
+  try {
+    for (;;) {
+      const dtype = next(dev)
+      if (!dtype) {
+        if (dev === 'webgpu') { dev = 'wasm'; continue }
+        throw lastErr ?? new BrowserRunError('unsupported', 'No usable precision was found for this model.')
+      }
+      tried.add(`${dev}|${dtype}`)
+      try {
+        return await runOnce(spec, task, prep, onFrame, dev, dtype, opts)
+      } catch (e: any) {
+        const err = classifyError(e, dev)
+        lastErr = err
+        if (err.code === 'degenerate' || (dev === 'webgpu' && err.code === 'unsupported')) continue   // another precision, then the CPU
+        throw err
+      }
+    }
+  } finally { prep.revoke?.() }
 }
 
 /* ================================================================== CONTRACT (frozen in Phase 0; owner: S4)
  * Downloads with consent, and real weights/activations for the inspector. */
 export interface DownloadPlan { repo: string; bytes: number | null; cached: boolean; etaSeconds: number | null; consent: 'none' | 'size' | 'warn' }
 export interface DownloadHandle { cancel(): void; done: Promise<{ cached: boolean; bytes: number }> }
-/** consent: 'none' < 25 MB, 'size' 25-150 MB (show size + time), 'warn' > 150 MB or cellular/saveData. */
-export async function planDownload(_spec: ModelSpec): Promise<DownloadPlan> { throw new Error('planDownload: not implemented (stream S4)') }
-export function ensureModel(_spec: ModelSpec, _o: { onProgress: (done: number, total: number | null) => void; signal?: AbortSignal }): DownloadHandle { throw new Error('ensureModel: not implemented (stream S4)') }
+/* planDownload(spec, opts?), ensureModel(spec, {onProgress, signal?, device?, dtype?}), requestPersist(), clearModels(), modelCacheInfo() are defined above.
+ * consent: 'none' < 25 MB, 'size' 25-150 MB (show size + time), 'warn' > 150 MB or cellular/saveData. */
 export interface TensorReq { repo: string; file: string; name: string; i0?: number; r0: number; c0: number; rows: number; cols: number; stride?: number }
-export interface TensorWin { name: string; dtype: string; shape: number[]; r0: number; c0: number; rows: number; cols: number; stride: number; data: Float32Array; fetchedBytes: number; requests: number; truncated: boolean; decoded: boolean }
-export async function tensorWindow(_q: TensorReq, _signal?: AbortSignal): Promise<TensorWin> { throw new Error('tensorWindow: not implemented (stream S4)') }
-export type Activation = { available: false; reason: string } | { available: true; dim: number; data: Float32Array; stats: { min: number; max: number; mean: number; std: number }; source: 'companion' | 'onnx' }
-export async function activation(_q: { repo: string; input: TaskInput; layer: number; pos: number; kind: 'resid' | 'attn' | 'mlp' }): Promise<Activation> { return { available: false, reason: 'not implemented (stream S4)' } }
+/** `rows` x `cols` is the size of `data` (row-major, F32). Source cell (i, j) is (r0 + i * stride, c0 + j * colStride). */
+export interface TensorWin { name: string; dtype: string; shape: number[]; r0: number; c0: number; rows: number; cols: number; stride: number; data: Float32Array; fetchedBytes: number; requests: number; truncated: boolean; decoded: boolean; colStride?: number; source?: 'hub' | 'companion' }
+
+/* ------------------------------------------------------------------ safetensors header */
+const ITEMSIZE: Record<string, number> = { F64: 8, F32: 4, F16: 2, BF16: 2, F8_E4M3: 1, F8_E5M2: 1, I64: 8, I32: 4, I16: 2, I8: 1, U64: 8, U32: 4, U16: 2, U8: 1, BOOL: 1 }
+const DECODABLE = new Set(['F64', 'F32', 'F16', 'BF16', 'F8_E4M3', 'F8_E5M2'])
+const MAX_HEADER = 16 * MiB
+export interface TensorEntry { dtype: string; shape: number[]; start: number; end: number }
+export interface SafetensorsHeader { headerLen: number; base: number; tensors: Record<string, TensorEntry>; metadata: Record<string, unknown> | null }
+
+/**
+ * Validate and parse a safetensors header. `bytes` starts at byte 0 of the file (the 8-byte length, then the JSON) and
+ * `fileSize` is the whole file's size. Offsets in the result are relative to `base` (= 8 + header length).
+ */
+export function parseHeader(bytes: ArrayBuffer | Uint8Array, fileSize: number): SafetensorsHeader {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  if (u8.byteLength < 8) throw new TensorError('truncated', 'The file is too short to be a safetensors file.')
+  const len = new DataView(u8.buffer, u8.byteOffset, u8.byteLength).getBigUint64(0, true)
+  if (len === 0n || len > BigInt(MAX_HEADER)) throw new TensorError('length', `The header length ${len} is outside 1 byte to 16 MiB, so this is not a valid safetensors file.`)
+  const n = Number(len), base = 8 + n
+  if (base > fileSize) throw new TensorError('truncated', 'The header is longer than the file.')
+  if (u8.byteLength < base) throw new TensorError('truncated', 'The header bytes were cut short.')
+  let obj: any
+  try {
+    obj = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(8, base)))
+  } catch { throw new TensorError('json', 'The header is not valid UTF-8 JSON.') }
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) throw new TensorError('json', 'The header is not a JSON object.')
+  const tensors: Record<string, TensorEntry> = {}
+  let metadata: Record<string, unknown> | null = null
+  const spans: { name: string; a: number; b: number }[] = []
+  const isInt = (x: any) => typeof x === 'number' && Number.isSafeInteger(x)
+  for (const [name, e] of Object.entries<any>(obj)) {
+    if (name === '__metadata__') { if (e !== null && typeof e === 'object' && !Array.isArray(e)) metadata = e; else throw new TensorError('entry', '"__metadata__" is not a dictionary.'); continue }
+    if (e === null || typeof e !== 'object' || Array.isArray(e)) throw new TensorError('entry', `Entry "${name}" is not a dictionary.`)
+    if (typeof e.dtype !== 'string' || e.shape === undefined || e.data_offsets === undefined) throw new TensorError('field', `Entry "${name}" is missing dtype, shape or data_offsets.`)
+    if (!(e.dtype in ITEMSIZE)) throw new TensorError('dtype', `Entry "${name}" has the unknown dtype "${String(e.dtype).slice(0, 20)}".`)
+    if (!Array.isArray(e.shape) || e.shape.length > 8) throw new TensorError('dims', `Entry "${name}" has a bad shape (at most 8 dimensions).`)
+    if (!e.shape.every((d: any) => isInt(d) && d >= 0)) throw new TensorError('dims', `Entry "${name}" has a negative, fractional or too large dimension.`)
+    const off = e.data_offsets
+    if (!Array.isArray(off) || off.length !== 2 || !isInt(off[0]) || !isInt(off[1]) || off[0] < 0 || off[0] > off[1]) throw new TensorError('offsets', `Entry "${name}" has bad data_offsets.`)
+    const want = (e.shape as number[]).reduce((p, d) => p * BigInt(d), 1n) * BigInt(ITEMSIZE[e.dtype])
+    if (BigInt(off[1]) - BigInt(off[0]) !== want) throw new TensorError('size', `Entry "${name}" says ${off[1] - off[0]} bytes but its shape needs ${want}.`)
+    if (base + off[1] > fileSize) throw new TensorError('offsets', `Entry "${name}" reaches past the end of the file.`)
+    tensors[name] = { dtype: e.dtype, shape: e.shape, start: off[0], end: off[1] }
+    if (off[1] > off[0]) spans.push({ name, a: off[0], b: off[1] })
+  }
+  spans.sort((x, y) => x.a - y.a || x.b - y.b)
+  for (let i = 1; i < spans.length; i++) if (spans[i].a < spans[i - 1].b) throw new TensorError('overlap', `Entries "${spans[i - 1].name}" and "${spans[i].name}" overlap.`)
+  return { headerLen: n, base, tensors, metadata }
+}
+
+/* ------------------------------------------------------------------ decoding */
+function f8(b: number, e4m3: boolean): number {
+  const s = b & 0x80 ? -1 : 1
+  if (e4m3) {
+    const e = (b >> 3) & 15, m = b & 7
+    if (e === 15 && m === 7) return NaN
+    return s * (e === 0 ? (m / 8) * 2 ** -6 : (1 + m / 8) * 2 ** (e - 7))
+  }
+  const e = (b >> 2) & 31, m = b & 3
+  if (e === 31) return m ? NaN : s * Infinity
+  return s * (e === 0 ? (m / 4) * 2 ** -14 : (1 + m / 4) * 2 ** (e - 15))
+}
+/** Decode raw little-endian bytes of a float dtype to Float32. */
+export function decodeBytes(buf: Uint8Array, dtype: string, count: number): Float32Array {
+  const out = new Float32Array(count)
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  switch (dtype) {
+    case 'F32': for (let i = 0; i < count; i++) out[i] = dv.getFloat32(i * 4, true); break
+    case 'F64': for (let i = 0; i < count; i++) out[i] = dv.getFloat64(i * 8, true); break
+    case 'F16': for (let i = 0; i < count; i++) out[i] = f16bits(dv.getUint16(i * 2, true)); break
+    case 'BF16': { const t = new DataView(new ArrayBuffer(4)); for (let i = 0; i < count; i++) { t.setUint32(0, dv.getUint16(i * 2, true) << 16); out[i] = t.getFloat32(0) } break }
+    case 'F8_E4M3': for (let i = 0; i < count; i++) out[i] = f8(buf[i], true); break
+    case 'F8_E5M2': for (let i = 0; i < count; i++) out[i] = f8(buf[i], false); break
+    default: throw new TensorError('dtype', `${dtype} cannot be decoded to numbers.`)
+  }
+  return out
+}
+
+/* ------------------------------------------------------------------ tensor window: Range reads from the Hub */
+export const WINDOW_CAPS = { readBytes: 16 * MiB, maxSide: 1024, ms: 15_000, inFlight: 8, lruBytes: 64 * MiB, overviewRows: 64 }
+
+let gate = 0
+const waiters: (() => void)[] = []
+async function slot<T>(fn: () => Promise<T>): Promise<T> {
+  if (gate >= WINDOW_CAPS.inFlight) await new Promise<void>((r) => waiters.push(r))
+  gate++
+  try { return await fn() } finally { gate--; waiters.shift()?.() }
+}
+
+const shas = new Map<string, Promise<string>>()
+/** Pin `main` to a commit SHA once, so every range of a window reads the same revision. */
+export function resolveSha(repo: string, signal?: AbortSignal): Promise<string> {
+  let p = shas.get(repo)
+  if (!p) {
+    p = (async () => {
+      let r: Response
+      try { r = await fetch(`${HUB}/api/models/${repo}`, { signal }) } catch (e: any) { throw netErr(e, repo) }
+      if (r.status === 401 || r.status === 403) throw new TensorError('gated', `"${repo}" is gated or private: it needs a Hugging Face login.`)
+      if (r.status === 404) throw new TensorError('notfound', `"${repo}" was not found on Hugging Face.`)
+      if (!r.ok) throw new TensorError('http', `Hugging Face answered HTTP ${r.status} for ${repo}.`)
+      const d = await r.json()
+      if (d.gated) throw new TensorError('gated', `"${repo}" is gated: accept its licence on Hugging Face first.`)
+      if (typeof d.sha !== 'string' || !/^[0-9a-f]{40}$/.test(d.sha)) throw new TensorError('http', 'Hugging Face did not give a commit for this repo.')
+      return d.sha as string
+    })()
+    shas.set(repo, p)
+    p.catch(() => shas.delete(repo))
+  }
+  return p
+}
+function netErr(e: any, repo: string): TensorError {
+  if (isAbort(e)) return new TensorError('aborted', 'The read was cancelled.')
+  return new TensorError('offline', nav()?.onLine === false ? 'You are offline.' : `Could not reach Hugging Face to read ${repo}.`)
+}
+
+interface Stats { requests: number; bytes: number }
+async function range(url: string, a: number, b: number, signal: AbortSignal, st: Stats, repo: string): Promise<{ data: Uint8Array; total: number | null }> {
+  return slot(async () => {
+    let r: Response
+    st.requests++
+    try { r = await fetch(url, { headers: { Range: `bytes=${a}-${b}` }, signal }) } catch (e: any) { throw netErr(e, repo) }
+    if (r.status === 401 || r.status === 403) throw new TensorError('gated', `"${repo}" is gated or private: it needs a Hugging Face login.`)
+    if (r.status === 404) throw new TensorError('notfound', 'That file was not found in the repository.')
+    if (r.status !== 206) { try { await r.body?.cancel() } catch { /* ignore */ } throw new TensorError('http', `The server did not honour a byte range (HTTP ${r.status}), so the file was not read.`) }
+    let data: Uint8Array
+    try { data = new Uint8Array(await r.arrayBuffer()) } catch (e: any) { throw netErr(e, repo) }
+    st.bytes += data.byteLength
+    const tm = /\/(\d+)\s*$/.exec(r.headers.get('content-range') ?? '')
+    return { data, total: tm ? Number(tm[1]) : null }
+  })
+}
+
+const headers = new Map<string, Promise<{ hdr: SafetensorsHeader; url: string; fileSize: number }>>()
+/** Read and validate one safetensors file's header (cached for the session). `file` comes from the repo's file list. */
+export function readHeader(repo: string, file: string, signal?: AbortSignal): Promise<{ hdr: SafetensorsHeader; url: string; fileSize: number }> {
+  const k = `${repo}|${file}`
+  let p = headers.get(k)
+  if (!p) {
+    p = (async () => {
+      const sha = await resolveSha(repo, signal)
+      const url = `${HUB}/${repo}/resolve/${sha}/${file.split('/').map(encodeURIComponent).join('/')}`
+      const st: Stats = { requests: 0, bytes: 0 }
+      const ac = signal ?? new AbortController().signal
+      const first = await range(url, 0, 65535, ac, st, repo)
+      if (first.total == null) throw new TensorError('http', 'The server did not report the file size.')
+      let buf = first.data
+      if (buf.byteLength >= 8) {
+        const need = 8 + Number(new DataView(buf.buffer, buf.byteOffset, 8).getBigUint64(0, true))
+        if (need > buf.byteLength && need <= 8 + MAX_HEADER && need <= first.total) buf = (await range(url, 0, need - 1, ac, st, repo)).data
+      }
+      return { hdr: parseHeader(buf, first.total), url, fileSize: first.total }
+    })()
+    headers.set(k, p)
+    p.catch(() => headers.delete(k))
+  }
+  return p
+}
+
+interface Plan2D { R: number; C: number; slab: number }   // the matrix view: R rows of C columns, `slab` bytes to skip for i0
+function view2d(shape: number[], i0: number | undefined, isz: number): Plan2D {
+  if (shape.length === 0) return { R: 1, C: 1, slab: 0 }
+  if (shape.length === 1) return { R: 1, C: shape[0], slab: 0 }
+  if (shape.length === 2) return { R: shape[0], C: shape[1], slab: 0 }
+  if (i0 === undefined) throw new TensorError('needs-i0', `This tensor has ${shape.length} dimensions: choose which slice (i0) to view.`)
+  if (!Number.isInteger(i0) || i0 < 0 || i0 >= shape[0]) throw new TensorError('range', `i0 ${i0} is outside 0..${shape[0] - 1}.`)
+  const C = shape.slice(2).reduce((a, b) => a * b, 1)
+  return { R: shape[1], C, slab: i0 * shape[1] * C * isz }
+}
+
+/* LRU of decoded windows, 64 MB */
+const lru = new Map<string, TensorWin>()
+let lruBytes = 0
+const lruGet = (k: string) => { const v = lru.get(k); if (v) { lru.delete(k); lru.set(k, v) } return v }
+function lruPut(k: string, w: TensorWin) {
+  const sz = w.data.byteLength
+  if (sz > WINDOW_CAPS.lruBytes) return
+  lru.set(k, w); lruBytes += sz
+  while (lruBytes > WINDOW_CAPS.lruBytes) { const [ok, ov] = lru.entries().next().value as [string, TensorWin]; lru.delete(ok); lruBytes -= ov.data.byteLength }
+}
+export const windowCacheBytes = () => lruBytes
+
+async function browserWindow(q: TensorReq, userSignal?: AbortSignal): Promise<TensorWin> {
+  const ac = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ac.abort() }, WINDOW_CAPS.ms)
+  const onAbort = () => ac.abort()
+  if (userSignal) { if (userSignal.aborted) ac.abort(); else userSignal.addEventListener('abort', onAbort, { once: true }) }
+  try {
+    const { hdr, url } = await readHeader(q.repo, q.file, ac.signal)
+    const e = hdr.tensors[q.name]
+    if (!e) throw new TensorError('notfound', `"${q.name}" is not in ${q.file}.`)
+    const isz = ITEMSIZE[e.dtype]
+    const { R, C, slab } = view2d(e.shape, q.i0, isz)
+    const rows = Math.max(1, Math.min(Math.floor(q.rows), WINDOW_CAPS.maxSide)), cols = Math.max(1, Math.min(Math.floor(q.cols), WINDOW_CAPS.maxSide))
+    if (![q.r0, q.c0, q.rows, q.cols].every(Number.isInteger) || q.r0 < 0 || q.c0 < 0 || q.rows < 1 || q.cols < 1) throw new TensorError('range', 'The window must be whole numbers, starting at 0 or more, at least 1 x 1.')
+    if (q.r0 >= R || q.c0 >= C) throw new TensorError('range', `The window starts outside the tensor (${R} x ${C}).`)
+    const base = { name: q.name, dtype: e.dtype, shape: e.shape, r0: q.r0, c0: q.c0 }
+    const key = `${url}|${q.name}|${q.i0 ?? ''}|${q.r0}|${q.c0}|${rows}|${cols}|${q.stride ?? 'auto'}`
+    const hit = lruGet(key)
+    if (hit) return { ...hit, fetchedBytes: 0, requests: 0 }
+    if (!DECODABLE.has(e.dtype)) {
+      // quantized / integer storage: say so, without reading anything
+      return { ...base, rows, cols, stride: q.stride ?? 1, data: new Float32Array(rows * cols), fetchedBytes: 0, requests: 0, truncated: false, decoded: false, source: 'hub' }
+    }
+    // output grid: source cell (i, j) = (r0 + i * sr, c0 + j * sc)
+    let sr: number, sc: number, truncated = false
+    if (q.stride !== undefined) {
+      if (!Number.isInteger(q.stride) || q.stride < 1) throw new TensorError('range', 'The stride must be a whole number of 1 or more.')
+      sr = sc = q.stride
+    } else {
+      sr = Math.max(1, Math.ceil((R - q.r0) / rows)); sc = Math.max(1, Math.ceil((C - q.c0) / cols))
+    }
+    let nr = Math.min(rows, Math.ceil((R - q.r0) / sr)), nc = Math.min(cols, Math.ceil((C - q.c0) / sc))
+    if (sr > 1 && nr > WINDOW_CAPS.overviewRows) {
+      // an overview samples at most 64 rows, evenly spaced over the requested span (never just the first rows)
+      if (q.stride === undefined) { sr = Math.max(1, Math.ceil((R - q.r0) / WINDOW_CAPS.overviewRows)); nr = Math.min(WINDOW_CAPS.overviewRows, Math.ceil((R - q.r0) / sr)) } else { nr = WINDOW_CAPS.overviewRows; truncated = true }
+    }
+    // byte plan
+    const rowBytes = C * isz
+    let span = (nc - 1) * sc + 1                                   // elements read per row
+    if (span * isz > WINDOW_CAPS.readBytes) { span = Math.floor(WINDOW_CAPS.readBytes / isz); nc = Math.floor((span - 1) / sc) + 1; span = (nc - 1) * sc + 1; truncated = true }
+    const contiguousLen = (nr: number) => (nr - 1) * rowBytes + span * isz
+    const contiguous = sr === 1 && (contiguousLen(nr) <= MiB || contiguousLen(nr) <= 4 * nr * span * isz)
+    let rowsRead = nr
+    if (contiguous) { while (rowsRead > 1 && contiguousLen(rowsRead) > WINDOW_CAPS.readBytes) rowsRead-- }
+    else rowsRead = Math.max(1, Math.min(nr, Math.floor(WINDOW_CAPS.readBytes / (span * isz))))
+    if (rowsRead < nr) { nr = rowsRead; truncated = true }
+    const st: Stats = { requests: 0, bytes: 0 }
+    const origin = hdr.base + e.start + slab + q.c0 * isz
+    const out = new Float32Array(nr * nc)
+    const pick = (row: Uint8Array) => {   // one row's bytes (starting at column c0) -> nc decoded cells
+      const all = decodeBytes(row, e.dtype, span)
+      return sc === 1 ? all : Float32Array.from({ length: nc }, (_, j) => all[j * sc])
+    }
+    if (contiguous) {
+      const a = origin + q.r0 * rowBytes
+      const { data } = await range(url, a, a + contiguousLen(nr) - 1, ac.signal, st, q.repo)
+      for (let i = 0; i < nr; i++) out.set(pick(data.subarray(i * rowBytes, i * rowBytes + span * isz)), i * nc)
+    } else {
+      const idx = Array.from({ length: nr }, (_, i) => i)
+      await Promise.all(idx.map(async (i) => {
+        const a = origin + (q.r0 + i * sr) * rowBytes
+        const { data } = await range(url, a, a + span * isz - 1, ac.signal, st, q.repo)
+        out.set(pick(data), i * nc)
+      }))
+    }
+    const win: TensorWin = { ...base, rows: nr, cols: nc, stride: sr, colStride: sc, data: out, fetchedBytes: st.bytes, requests: st.requests, truncated, decoded: true, source: 'hub' }
+    lruPut(key, win)
+    return win
+  } catch (e: any) {
+    if (timedOut) throw new TensorError('timeout', `Reading the tensor took longer than ${WINDOW_CAPS.ms / 1000} s and was stopped.`)
+    if (e instanceof TensorError) throw e
+    if (isAbort(e)) throw new TensorError('aborted', 'The read was cancelled.')
+    throw e
+  } finally { clearTimeout(timer); userSignal?.removeEventListener('abort', onAbort) }
+}
+
+/** A window of one tensor, read straight from the Hub by byte range (browser-first); the companion is the fallback when one is running. */
+export async function tensorWindow(q: TensorReq, signal?: AbortSignal): Promise<TensorWin> {
+  try {
+    return await browserWindow(q, signal)
+  } catch (e: any) {
+    const inputBug = e instanceof TensorError && ['range', 'needs-i0', 'aborted'].includes(e.code)
+    if (inputBug || signal?.aborted || backendKind() === 'none') throw e
+    try {
+      const t = await api.tensor(q.repo, q.name, Math.min(256, Math.max(1, q.rows)), Math.min(96, Math.max(8, q.cols)))
+      const heat: number[][] = t.heat
+      const rows = heat.length, cols = heat[0]?.length ?? 0
+      return {
+        name: q.name, dtype: t.dtype, shape: t.shape, r0: 0, c0: 0, rows, cols, stride: Math.max(1, Math.ceil((t.rows_read ?? rows) / Math.max(1, rows))),
+        data: Float32Array.from(heat.flat()), fetchedBytes: t.fetched_bytes ?? 0, requests: 1, truncated: true, decoded: true, source: 'companion',
+      }
+    } catch { throw e }   // the companion failed too: report the browser's reason
+  }
+}
+
+/* ------------------------------------------------------------------ activations */
+export type Activation = { available: false; reason: string } | { available: true; dim: number; data: Float32Array; stats: { min: number; max: number; mean: number; std: number }; source: 'companion' | 'onnx'; what?: 'vector' | 'norm-per-position' }
+function statsOf(d: Float32Array) {
+  let mn = Infinity, mx = -Infinity, s = 0
+  for (const v of d) { if (v < mn) mn = v; if (v > mx) mx = v; s += v }
+  const mean = d.length ? s / d.length : 0
+  let q = 0
+  for (const v of d) q += (v - mean) ** 2
+  return { min: d.length ? mn : 0, max: d.length ? mx : 0, mean, std: d.length ? Math.sqrt(q / d.length) : 0 }
+}
+/**
+ * One layer's activation on demand. The companion streams per-position norms, so with it `data` holds one norm per token
+ * (what: 'norm-per-position'). In the browser only an ONNX export that exposes hidden states can answer, and only for the residual stream.
+ */
+export async function activation(q: { repo: string; input: TaskInput; layer: number; pos: number; kind: 'resid' | 'attn' | 'mlp' }): Promise<Activation> {
+  if (q.input.kind !== 'text') return { available: false, reason: 'Activations are shown for text models only.' }
+  if (backendKind() !== 'none') {
+    try {
+      let hit: any = null
+      await streamRun(q.repo, q.input.text, [], (f) => { if (f.type === 'layer' && f.i === q.layer) hit = f })
+      const arr: number[] | undefined = hit?.[`${q.kind}_norm`]
+      if (!arr) return { available: false, reason: `The companion did not report layer ${q.layer}.` }
+      const data = Float32Array.from(arr)
+      return { available: true, dim: data.length, data, stats: statsOf(data), source: 'companion', what: 'norm-per-position' }
+    } catch (e: any) { return { available: false, reason: `The companion could not run this model: ${e?.message ?? e}` } }
+  }
+  const live = current
+  if (!live) return { available: false, reason: 'Run the model in the browser first, then ask again.' }
+  if (hiddenSeen.get(q.repo) !== true) return { available: false, reason: 'This ONNX export does not expose hidden states, so only the weights can be shown in the browser. The local companion can show activations.' }
+  if (q.kind !== 'resid') return { available: false, reason: 'ONNX exports do not separate attention from the MLP: only the residual stream can be read in the browser.' }
+  try {
+    const l = await live.p
+    const enc = await l.pipe.tokenizer(q.input.text)
+    const out = await l.pipe.model({ ...enc, output_hidden_states: true })
+    const hs = out?.hidden_states?.[q.layer + 1]
+    if (!hs) return { available: false, reason: `This export has no hidden state for layer ${q.layer}.` }
+    const [, seq, dim] = hs.dims
+    const p = q.pos < 0 ? seq + q.pos : q.pos
+    if (p < 0 || p >= seq) return { available: false, reason: `Position ${q.pos} is outside the ${seq} tokens.` }
+    const data = toF32(hs.data).slice(p * dim, (p + 1) * dim)
+    if (isDegenerate(data)) return { available: false, reason: 'The model returned empty values for this layer on this device.' }
+    return { available: true, dim, data, stats: statsOf(data), source: 'onnx', what: 'vector' }
+  } catch (e: any) { return { available: false, reason: `The browser could not read this layer: ${e?.message ?? e}` } }
+}
 /* ================================================================== */
