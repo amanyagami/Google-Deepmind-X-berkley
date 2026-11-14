@@ -25,7 +25,7 @@ h4 small, h3 small { font: 400 12px var(--body); color: var(--muted); margin-lef
 p { margin: 0; } b { font-weight: 600; }
 .mono { font-family: var(--mono); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-:focus-visible { outline: 2px solid var(--pos); outline-offset: 2px; border-radius: 6px; }
+:focus-visible { outline: 2px solid var(--pos) !important; outline-offset: 2px; }
 button { font: inherit; color: inherit; }
 sub { font-size: 0.75em; }
 
@@ -38,7 +38,7 @@ sub { font-size: 0.75em; }
 .sect > .main { flex: 1; }
 
 /* top bar */
-.topbar { position: sticky; top: 0; z-index: 40; height: var(--bar); display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4); border-bottom: 1px solid var(--line); background: var(--bg); }
+.topbar { overflow-x: clip; position: sticky; top: 0; z-index: 40; height: var(--bar); display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4); border-bottom: 1px solid var(--line); background: var(--bg); }
 .topbar > * { flex: none; }
 .topbar .grow { flex: 1 1 0; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 9px; font: 700 16px var(--display); letter-spacing: -0.01em; white-space: nowrap; }
@@ -58,7 +58,7 @@ sub { font-size: 0.75em; }
 .dock { position: sticky; bottom: 0; z-index: 40; height: var(--dock); display: flex; align-items: center; padding: 0 var(--s4); border-top: 1px solid var(--line); background: var(--bg); }
 #dock-slot { display: flex; align-items: center; gap: var(--s3); width: 100%; min-width: 0; }
 .dockform { display: flex; align-items: center; gap: var(--s3); flex: 1; min-width: 0; max-width: 760px; }
-.dockprompt { flex: 1; min-width: 0; min-height: var(--hit); background: var(--surface); border: 1px solid var(--line); color: var(--fg); border-radius: var(--r-md); padding: 0 var(--s3); font: 13px var(--mono); outline: none; }
+.dockprompt { flex: 1; min-width: 0; min-height: var(--hit); background: var(--surface); border: 1px solid var(--line); color: var(--fg); border-radius: var(--r-md); padding: 0 var(--s3); font: 13px var(--mono); }
 .dockprompt:focus { border-color: var(--pos); }
 .dockstat { color: var(--muted); font-size: var(--t-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .btn.primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; min-width: 92px; padding: 0 var(--s4); border-radius: var(--r-md); font-size: var(--t0); }
@@ -76,7 +76,7 @@ sub { font-size: 0.75em; }
 .urlform { display: flex; align-items: center; flex: 1 1 340px; max-width: 560px; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 3px 3px 3px 12px; }
 .urlform:focus-within { border-color: var(--pos); }
 .host { font: 13px var(--mono); color: var(--faint); white-space: nowrap; }
-.urlform input { flex: 1; min-width: 0; background: none; border: 0; color: var(--fg); font: 13px var(--mono); padding: 7px 6px; outline: none; }
+.urlform input { flex: 1; min-width: 0; background: none; border: 0; color: var(--fg); font: 13px var(--mono); padding: 7px 6px; }
 .btn { min-height: var(--hit); font-weight: 600; font-size: 13px; background: var(--pos); color: #0a0e19; border: 0; border-radius: 9px; padding: 8px 14px; cursor: pointer; white-space: nowrap; }
 .btn:hover:not(:disabled) { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.45; cursor: default; }
@@ -132,7 +132,7 @@ sub { font-size: 0.75em; }
 .chk { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); }
 .lbl { font: 500 11px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
 textarea, select, input[type='number'] { background: var(--surface); border: 1px solid var(--line); color: var(--fg); border-radius: 10px; padding: 8px 10px; font: 13px var(--mono); width: 100%; resize: vertical; }
-textarea:focus, select:focus, input[type='number']:focus { border-color: var(--pos); outline: none; }
+textarea:focus, select:focus, input[type='number']:focus { border-color: var(--pos); }
 textarea:disabled { opacity: 0.7; }
 
 .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
@@ -212,6 +212,7 @@ textarea:disabled { opacity: 0.7; }
 @media (max-width: 900px) {
   canvas { touch-action: pan-y !important; }
 }
+@media (max-width: 900px) { .brandname { display: none; } }
 @media (max-width: 1100px) { .privtxt { display: none; } .privchip { padding: 3px 4px 3px 8px; } }
 @media (max-width: 640px) {
   .topbar { gap: var(--s2); padding: 0 var(--s3); }
@@ -452,3 +453,12 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
   .caption { padding: 8px 12px; } .caption .cnums { gap: 2px 14px; } .caption .cnums b { font-size: 12.5px; }
   .mtl { padding: 6px 10px; }
 }
+
+/* touch size on phones for every control the shell can reach (hint bubbles keep their small round look) */
+@media (max-width: 640px) {
+  button:not(.hintbtn):not(.nshint-btn), select, summary { min-height: var(--hit); min-width: var(--hit); }
+  .dock .btn, .dock button { min-height: 44px; }
+}
+/* amber buttons: the ring goes inside, in ink, so it stays visible on the amber fill */
+.btn:focus-visible, .pri:focus-visible, .primary:focus-visible, .s6go:focus-visible, [data-primary]:focus-visible { outline: 2px solid #0a0e19 !important; outline-offset: -4px; box-shadow: 0 0 0 2px var(--fg); }
+#dock-slot input, #dock-slot button, #dock-slot select { min-height: 44px; }

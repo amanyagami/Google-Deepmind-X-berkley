@@ -9,7 +9,7 @@ import { Hint } from '../ui/charts'
 import { inputLimits, peaksOf, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
 import { probe } from './browserBench'
 import { activityAt, captionFor, layerOps } from './timeline'
-import { exportResults, finalScore, componentScore, REF, REF_BROWSER, tierOf, useScores } from './score'
+import { computeScores, exportResults, finalScore, componentScore, isUnavailable, tierOf, useScores } from './score'
 import { currentSample, PowerScene } from './PowerScene'
 import { EnergyTab, MachineTimeline, PowerHUD, STAGE_NAME } from './PowerUI'
 
@@ -144,6 +144,7 @@ const relPct = (f: Final) => (f.score && f.lo != null && f.hi != null ? Math.max
 function Badge({ kind }: { kind: 'measured' | 'estimated' | 'na' }) {
   return kind === 'measured' ? <span className="t5-badge m">● measured</span> : kind === 'estimated' ? <span className="t5-badge e">≈ estimated</span> : <span className="t5-badge n">— not available</span>
 }
+const NA_MSG: Record<string, string> = { gpu: 'No WebGPU on this device. Try a browser that has it.', storage: 'Browser storage is off here. Leave private mode, then try again.' }
 const FLAG_WORD: Record<string, string> = { noisy: 'noisy', 'hidden-tab': 'tab hidden', 'on-battery': 'on battery', 'not-isolated': 'shared', 'coarse-timer': 'coarse timer', 'software-gpu': 'software GPU', 'size-halved': 'size halved', cancelled: 'cancelled', custom: 'custom' }
 
 function validate(id: ComponentId, raw: string, caps: any): string | null {
@@ -178,7 +179,8 @@ function TestCard({ id }: { id: ComponentId }) {
   const std = r?.input.kind === 'custom' ? undefined : r
   const running = useRunning(), batch = useUI((s) => !!s.batch)
   const rawErr = useErr(id)
-  const err = rawErr && /is not a function|not implemented|undefined|null/i.test(rawErr) ? 'This test is not ready. Reload the page, then try again.' : rawErr
+  const na = !!std && isUnavailable(std)
+  const err = na ? NA_MSG[id] ?? 'This device cannot run this test.' : rawErr && /is not a function|not implemented|undefined|null/i.test(rawErr) ? 'This test is not ready. Reload the page, then try again.' : rawErr
   const caps = useHW((s) => s.caps)
   const sel = useUI((s) => s.sel)
   const prog = useProg(id)
@@ -206,7 +208,7 @@ function TestCard({ id }: { id: ComponentId }) {
   const energy = id === 'energy' ? Object.values(res).reduce((a, x) => a + (x.energy?.joules ?? 0), 0) : 0
   const line = state === 'running' ? `Running. ${tick} % done.` : state === 'error' ? err : state === 'result' ? (std ? 'Done.' : 'Done. Custom run.') : id === 'energy' && energy > 0 ? `≈ ${num(energy, 1)} J across your tests.` : defLine
   const memErr = !!err && /memory|too big|size/i.test(err)
-  const naErr = !!err && /not available|no webgpu|not supported|unsupported|no opfs/i.test(err)
+  const naErr = na || (!!err && /not available|no webgpu|not supported|unsupported|no opfs/i.test(err))
   const half = inp?.type === 'number' && lim ? Math.max(lim.min, Math.round(Number(defVal) / 2)) : null
   const onTest = () => { setShown(true); if (bad) return; runOne(id, own && inp && raw !== '' ? (inp.type === 'number' ? Number(raw) : raw) : undefined) }
   const smaller = () => { if (half != null) { setOwn(true); setRaw(String(half)); runOne(id, half) } }
@@ -225,7 +227,7 @@ function TestCard({ id }: { id: ComponentId }) {
         : <p id={`t5-${id}-line`} className="t5-line" aria-live="polite" {...(id === 'energy' && energy > 0 ? { 'data-est': '' } : {})}>{line}</p>}
       {mine && <div className="t5-prog"><div className="t5-bar" role="progressbar" aria-label={`${info.label} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ width: `${pct}%` }} /></div>
         <span className="mono t5-live">{prog?.value != null ? `${num(prog.value, 1)} ${prog.unit ?? ''}` : `${pct} %`}</span></div>}
-      {!mine && std && <ResultRow r={std} />}
+      {!mine && std && !na && <ResultRow r={std} />}
       {!mine && rc && <ResultRow r={rc} custom />}
       {inp && id !== 'energy' && !mine && (
         <div className="t5-own">
@@ -323,6 +325,12 @@ function SharePanel({ f, onClose }: { f: Final; onClose: () => void }) {
   )
 }
 
+/** The score of the recorded journey: the test PC's own numbers, shown until this device has a score. */
+function useRecordedScore(): number | null {
+  const pack = useHW((s) => (s.recorded ? s.recordedPack : null))
+  return useMemo(() => { try { return pack ? computeScores(pack.bench ?? {}, null, pack.info).overall : null } catch { return null } }, [pack])
+}
+
 function ScoreHero() {
   const f = useFinal()
   const history = useHW((s) => s.history)
@@ -343,11 +351,13 @@ function ScoreHero() {
   const prev = useMemo(() => { for (let i = history.length - 1; i >= 0; i--) { try { const x = Math.round(finalScore(history[i].results).score); if (f.score != null && x > 0 && x !== f.score) return x } catch { /* mixed scales */ } } return null }, [history, f.score])
   const delta = f.score != null && prev != null ? f.score - prev : null
   const r = relPct(f)
+  const rec = useRecordedScore()
+  const shown = f.score ?? rec
   return (
     <div className="hero-card t5-hero" aria-label="Device score">
       <div className="t5-big" aria-live="polite">
-        <b className="t5-score" {...(f.score != null ? { 'data-score': f.score } : {})}>{f.score != null ? `▲ ${f.score.toLocaleString('en-US')}` : '—'}</b>
-        <span> · {f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span>
+        <b className="t5-score" {...(shown != null ? { 'data-score': shown } : {})}>▲ {shown != null ? shown.toLocaleString('en-US') : '—'}</b>
+        <span> · {f.score == null && rec != null ? 'recorded on the test PC' : `${f.tested} of ${f.total} tested${r != null ? ` · ±${r} %` : ''}`}</span>
       </div>
       <div className="t5-row">
         {f.score != null && <span className="t5-chip solid">{f.tier}</span>}
@@ -413,6 +423,9 @@ const T5_CSS = `
 .t5-hero,.t5-card{border:1px solid var(--line);background:var(--surface,#141c32);border-radius:var(--r-md,12px);padding:12px;display:grid;gap:8px;scroll-margin:8px;min-width:0}
 .t5-hero{background:var(--surface2,#1b2542)}
 .t5-card.sel{border-color:var(--pos);box-shadow:0 0 0 2px color-mix(in srgb,var(--pos) 30%,transparent)}
+.t5-dock{}
+#dock-slot>.t5-dock{display:flex!important;flex:none}
+@media (pointer:coarse),(max-width:600px){.main.machine .detbtn,.main.machine .mtl button,.main.machine .mtl select,.main.machine .tabs button,.main.machine .crumbs button,.main.machine .startj,.main.machine .ib,.main.machine .btn,.main.machine .btn2{min-height:44px;min-width:44px}}
 .t5-err{display:grid;gap:6px;justify-items:start}
 .t5-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .t5-head h4{margin:0;flex:1;font-size:14px;display:flex;align-items:center;gap:4px}
@@ -712,52 +725,6 @@ function Crumbs() {
 }
 
 /* ------------------------------------------------------------------ sidebar tabs */
-function ScoreTab() {
-  const s = useScores()
-  const running = useHW((s) => s.benchRunning)
-  const stage = useHW((s) => s.benchStage)
-  const live = useHW((s) => s.benchLive)
-  const dive = useHW((s) => s.dive)
-  const run = useHW((s) => s.runBench)
-  const browser = useHW((s) => s.info?.source === 'browser')
-  const R = browser ? REF_BROWSER : REF
-  return (
-    <div className="stack">
-      {browser && <p className="hint small">browser-only measurements<Hint>Measured from inside this page (WebAssembly, Web Workers, browser storage, WebGPU). Run the companion for native numbers and real power readings.</Hint></p>}
-      <div className="hero-score">
-        <Gauge score={s.overall} size={180} label={s.tier} />
-        <div>
-          <h3>Device score<Hint>1000 points is a recent mainstream laptop. Scores update live as each test runs, and each one is a plain ratio against its reference.</Hint></h3>
-          <button className="btn" disabled={running} onClick={() => run()}>{running ? 'Measuring…' : s.count ? 'Measure again' : 'Measure this machine'}</button>
-        </div>
-      </div>
-      {s.comps.map((c) => {
-        const active = running && c.subs.some((x) => x.id === stage || (stage === 'matmul_1' && c.id === 'cpu') || (stage === 'matmul_n' && c.id === 'cpu'))
-        return (
-          <div key={c.id} className={`ccard ${active ? 'live' : ''}`}>
-            <div className="chead">
-              <div><h4>{c.name}<Hint>{c.role}</Hint></h4></div>
-              <Gauge score={c.score} size={74} small max={2000} />
-            </div>
-            {c.subs.map((x) => {
-              const lv = running && live && (live.name === x.id || (x.id === 'cpu1' && live.name === 'matmul_1') || (x.id === 'cpun' && live.name === 'matmul_n') || (x.id === 'disk' && live.name === 'disk'))
-              return (
-                <div key={x.id} className="sub">
-                  <div className="srow"><span>{x.label}</span><b className="mono">{lv && live ? `${live.value.toLocaleString()} ${live.unit}` : x.value}</b><em className="mono">{x.score ?? '—'}</em></div>
-                  <div className="sbar"><i style={{ width: `${Math.min(100, ((x.score ?? 0) / 20))}%` }} /></div>
-                  {x.peak && <p className="hint small mono">on paper {x.peak}{x.pct ? ` · ${x.pct}%` : ''}<Hint>{x.detail}</Hint></p>}
-                </div>
-              )
-            })}
-            {c.id !== 'system' && c.id !== 'cache' && c.id !== 'gpu' && c.id !== 'power' && <button className="btn2 sm" onClick={() => dive([c.id])}>Look inside ›</button>}
-          </div>
-        )
-      })}
-      <p className="hint small">reference values<Hint>1000 points = one core {R.cpu1} GFLOP/s · all cores {R.cpun} GFLOP/s · cache {R.cache} GB/s · RAM {R.ram} GB/s · SSD {R.disk} GB/s · network {R.net} Mbit/s · GPU {R.gpu} GFLOP/s · writing {R.ai} tokens/s. Overall is a weighted geometric mean of what has been measured. {tierOf(s.overall) !== '—' && `Tiers: Entry < 400 < Everyday < 800 < Strong < 1200 < Excellent.`}</Hint></p>
-    </div>
-  )
-}
-
 function FlowTab() {
   const { journey: j, act } = usePlay()
   const expanded = useHW((s) => s.expanded)
@@ -884,8 +851,8 @@ function SpeedTab() {
   )
 }
 
-type Tab = 'tests' | 'score' | 'energy' | 'flow' | 'live' | 'speed' | 'specs'
-const TABS: [Tab, string][] = [['tests', 'Tests'], ['score', 'Classic'], ['energy', 'Energy'], ['flow', 'Flow'], ['live', 'Live'], ['speed', 'Speed'], ['specs', 'Specs']]
+type Tab = 'tests' | 'energy' | 'flow' | 'live' | 'speed' | 'specs'
+const TABS: [Tab, string][] = [['tests', 'Score'], ['energy', 'Energy'], ['flow', 'Flow'], ['live', 'Live'], ['speed', 'Speed'], ['specs', 'Specs']]
 function Sidebar() {
   const tab = useUI((u) => u.tab) as Tab
   const setTab = (t: Tab) => useUI.setState({ tab: t })
@@ -893,7 +860,7 @@ function Sidebar() {
     <aside className="inspector" aria-label="Machine details">
       <div className="tabs" role="tablist">{TABS.map(([id, l]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{l}</button>)}</div>
       <div className="pane" role="tabpanel">
-        {tab === 'tests' && <TestsTab />}{tab === 'score' && <ScoreTab />}{tab === 'energy' && <EnergyTab />}{tab === 'flow' && <FlowTab />}{tab === 'live' && <LiveTab />}{tab === 'speed' && <SpeedTab />}{tab === 'specs' && <SpecsTab />}
+        {tab === 'tests' && <TestsTab />}{tab === 'energy' && <EnergyTab />}{tab === 'flow' && <FlowTab />}{tab === 'live' && <LiveTab />}{tab === 'speed' && <SpeedTab />}{tab === 'specs' && <SpecsTab />}
       </div>
     </aside>
   )

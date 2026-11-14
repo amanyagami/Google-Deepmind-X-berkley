@@ -135,10 +135,12 @@ export function summarize(samples: number[]): { value: number; ci95: [number, nu
 }
 const cvFlags = (cv: number): Flag[] => (isNoisy(cv) ? ['noisy'] : [])
 
-export const isUnavailable = (r: TestResult) => r.flags.includes('fallback:unavailable') || r.flags.includes('software-gpu')
+const UNAVAILABLE: Flag[] = ['fallback:unavailable', 'fallback:no-webgpu', 'fallback:no-opfs', 'software-gpu']
+const GATE_FAILED: Flag[] = ['fallback:gate', 'fallback:gpu-incorrect', 'fallback:gpu-error', 'fallback:device-lost']
+export const isUnavailable = (r: TestResult) => UNAVAILABLE.some((f) => r.flags.includes(f))
 /** S = 1000 x median / REF[scale][workload v]. No cap. null: custom, cancelled, failed gate, unavailable, or no reference. */
 export function componentScore(r: TestResult): number | null {
-  if (r.input.kind === 'custom' || r.flags.includes('custom') || r.flags.includes('cancelled') || r.flags.includes('fallback:gate') || isUnavailable(r)) return null
+  if (r.input.kind === 'custom' || r.flags.includes('custom') || r.flags.includes('cancelled') || GATE_FAILED.some((f) => r.flags.includes(f)) || isUnavailable(r)) return null
   if (r.component.startsWith('model:')) return r.score !== null && isFinite(r.score) ? r.score : null
   const ref = rowFor(r.component)?.ref[r.scale]?.[r.workload.v]
   if (ref === undefined) return r.score
@@ -293,7 +295,7 @@ export function fromBench(name: string, data: any, ctx: FromBenchCtx = {}): Test
       const g: number[] = Array.isArray(data) ? data.map((c: any) => c.gbps).filter((x: number) => isFinite(x)) : []
       return g.length ? withScore(mk(Math.max(...g), 'GB/s', g, { cv: 0, ci: [Math.max(...g), Math.max(...g)] })) : null
     }
-    case 'disk': return withScore(spread(data, data.gbps, 'GB/s', { flags: data.cached ? ['fallback:cached-read'] : [] }))
+    case 'disk': return withScore(spread({ ...data, spread: undefined }, data.gbps * 1000, 'MB/s', { flags: data.cached ? ['fallback:cached-read'] : [] }))
     case 'net': return mk(data.mbps, 'Mbit/s', [data.mbps])
     case 'gpu':
       if (data.unavailable) return mk(0, 'GFLOP/s', [], { flags: ['fallback:unavailable'], env: { where: 'webgpu' } })
@@ -462,4 +464,23 @@ export function scoreRun(stats: RunStats, fit: Fit | null, ctx: RunCtx): RunScor
   const summary = gate === 'fail' ? `${stats.repo.split('/').pop()} gave a wrong answer on the check, so it has no score.` : `${stats.repo.split('/').pop()} ran on ${RUNTIME_NAME[where]}${dev ? ` (${dev})` : ''}${pace}.`
   const reference = `1000 = ${refTps} tok/s on a 135M model (${RUNTIME_NAME[where]}) · ${REF_RUN.firstMs} ms to first output`
   return { overall, tier: tierOf(sw && gate !== 'fail' ? overall : null), parts, summary, reference, score, gate, reliable, fit: headroom, ...(prefill ? { prefill } : {}), ...(gen ? { decode: { tps: decodeTps ?? (perSec0 > 0 ? perSec0 : null) } } : {}) }
+}
+
+/* ------------------------------------------------------------------ test hook
+ * window.__score: read by the Playwright check A24 (omitting a component never raises the final score).
+ * final() takes component scores (1000 = reference) and returns the final score. Tiny and side-effect free. */
+if (typeof window !== 'undefined') {
+  const components: string[] = ['cpu1', 'cpun', 'cache', 'ram', 'storage', 'gpu', 'model:text-generation']
+  ;(window as any).__score = {
+    components, finalOf: finalScore, componentScore,
+    final(scores: Record<string, number>) {
+      const rs: Record<string, TestResult> = {}
+      for (const [id, s] of Object.entries(scores)) {
+        const r = id.startsWith('model:') ? undefined : rowFor(id)?.ref.native?.[1]
+        rs[id] = { v: 1, component: id as ComponentId, scale: 'native', workload: { id: 'hook', v: 1 }, input: { kind: 'default', summary: 'hook' }, samples: [], value: r ? (s * r) / 1000 : s, unit: '', ci95: [0, 0], cv: 0, score: s, flags: [], env: { where: 'companion' }, at: '' }
+      }
+      const f = finalScore(rs)
+      return { score: f.score, ci95: f.ci95, provisional: f.provisional }
+    },
+  }
 }

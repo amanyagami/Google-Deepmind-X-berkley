@@ -67,7 +67,7 @@ export function PowerHUD() {
       ) : <div className="psub">{info?.source === 'browser' ? 'Run the test for watts' : 'Waiting for sensors…'}</div>}
       <div className="row">
         {!running && <button className="btn sm" onClick={() => run()}>{power && !power.reference ? 'Test again' : 'Test energy'}</button>}
-        {!running && info?.source === 'browser' && !power?.reference && <button className="btn2 sm" onClick={() => loadRef()}>Play a recorded run</button>}
+        {!running && info?.source === 'browser' && !power?.reference && <button className="btn2 sm" data-replay onClick={() => loadRef()}>Play a recorded run</button>}
       </div>
     </div>
   )
@@ -186,7 +186,7 @@ export function MachineTimeline() {
         )}
         {m === 'live' && <><span className="livetag"><span className="livedot" />live</span><span className="mono tm">last 15 s</span></>}
         {m !== 'rec' && !journey && (
-          <button className="btn sm startj" disabled={!!h.busy || (h.source !== 'browser' && !repo)} onClick={startJourney}>{h.busy ? 'Working…' : h.source === 'browser' ? 'Play a recorded journey' : 'Start the journey'}</button>
+          <button className="btn sm startj" data-recorded disabled={!!h.busy || (h.source !== 'browser' && !repo)} onClick={startJourney}>{h.busy ? 'Working…' : h.source === 'browser' ? 'Play a recorded journey' : 'Start the journey'}</button>
         )}
         {h.busy && h.source === 'companion' && <span className="busy mono"><span className="pulse" /> {h.busy}</span>}
         <Hint label="About the timeline">

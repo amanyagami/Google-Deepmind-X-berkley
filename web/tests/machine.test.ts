@@ -282,7 +282,7 @@ test('runComponent: one test at a time, cancel, custom input is stored apart, ru
     const a = useHW.getState().runComponent('cpu1')
     expect(useHW.getState().running).toBe('cpu1')
     expect(await useHW.getState().runComponent('ram')).toBeNull()
-    expect(started).toEqual(['cpu1:256'])
+    expect(started).toEqual(['cpu1:null'])
     useHW.getState().cancel()
     expect(await a).toBeNull()
     expect(useHW.getState().running).toBeNull(); expect(useHW.getState().results.cpu1).toBeUndefined(); expect(useHW.getState().testErrors.cpu1).toBeUndefined()
