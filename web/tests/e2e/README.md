@@ -19,7 +19,8 @@ In tier 2 the page's own `/api` and `/ws` paths and port 8000 are blocked, so a 
 | 3 | Real Hub, real model (Xenova/distilgpt2), real companion on 8000, read only, no long power test; never gates | `--tier 3` |
 
 Device profiles for `env.open({profile})` in `lib.mjs`: `nogpu mem saveData cellular battery quota mic oom phone`.
-A25 starts a second local origin (blank page on a random port) and tries `fetch` and `WebSocket` to the companion; it needs the real companion running.
+A25 starts the hardened server from master's `server/` on port 8011 (never 8000, killed afterwards) and a second local origin on a random port, then tries `fetch` and `WebSocket` from that origin: it expects 403/refused and a WebSocket closed with 4403 and no data.
+The Hub stub answers every repo with a 1 MB stand-in per `.onnx` file plus tiny config and tokenizer files, so downloads, progress and the cache marker run through the real `ensureModel` (the model itself then fails to load, which is expected). Model flows load the `distilgpt2` example through `__studio.getState().loadExample`. A15 and A18 use the app's own `?mockTensor` mode (tensor `w`, same value function as the fixture).
 Playwright cannot stream a stubbed response, so the update rate of A9 is only gated against the real Hub (A9b, tier 3).
 
 ## Checks: what they measure, who makes them pass
@@ -64,8 +65,8 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 - S1: `[data-topbar]`, `[data-dock]` (all dock controls inside it), `[data-primary]` on the main action, `[data-panel]` on side-by-side panels, `[data-testall]` on Test all.
 - S3: `window.__score = { components: string[], final(results: Record<componentId, number>) => number | {score:number} }`.
 - S4/S6: `[data-start]` (text carries the size, e.g. "Start · 82 MB · about 20 s"), `[role=progressbar]` with `aria-valuenow/min/max`, `[data-cached]` once cached, `[data-picker]` on the model picker, `window.__zoo.getState().select({kind:'block',layer:0,index:0,name:'w'})` opening the tensor inspector.
-- S5: `[data-test]` on every Test button (`data-test=gpu`, `data-test=mic`, ...), `[data-score]` on the score once a first score exists, `.card` or `[data-card]` on cards, `[data-est]` on estimated W/J values, `[data-share]` (starts a PNG download), `[data-error]` (message plus a button) for failures, `[data-detail]` for text exempt from the diet.
-- S7: `[data-inspector]` card, `window.__inspector.zoomMax() => {name, r, c, value}`, keep `.hintbtn` / `.hintpop`.
+- S5: `[data-test]` on every Test button (`data-test=gpu`, `data-test=mic`, ...), `b[data-score]` on the device score once a first score exists (ZooUI also sets `data-score` on a `<p>`: pick another name there), `.card` or `[data-card]` on cards, `[data-est]` on estimated W/J values, `[data-share]` (starts a PNG download), `[data-error]` (message plus a button) for failures, `[data-detail]` for text exempt from the diet.
+- S7: `[data-inspector]` card, `window.__inspector.zoomMax() => {name, r, c, value}`, `.nshint-btn` / `.nshint-pop` (or `.hintbtn` / `.hintpop`) for hints.
 - S8: `[data-label]` on label chips inside `[data-stage]`, `window.__scene = { dprCap, camera: { tweening: boolean } }`, `[data-block]` on keyboard-reachable blocks.
 - S9: refuse a foreign `Origin` for `POST /api/*` and `/ws/*` (A25).
 

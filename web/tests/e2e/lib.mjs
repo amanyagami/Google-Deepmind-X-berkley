@@ -97,7 +97,8 @@ export function makeEnv(browser, base, widths, query) {
         const u = new URL(route.request().url()); P.hub.hits.push(u.pathname)
         if (P.hub.delay) await new Promise((r) => setTimeout(r, P.hub.delay))
         const h = { 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'accept-ranges': 'bytes', 'content-type': 'application/octet-stream' }
-        if (u.pathname.startsWith('/api/')) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify({ id: 'mock/tiny', sha: '0'.repeat(40), siblings: Object.entries(FILES).map(([f, b]) => ({ rfilename: f, size: b.length, lfs: { size: b.length } })), safetensors: { total: 4096 }, pipeline_tag: 'text-generation', library_name: 'transformers.js' }) })
+        if (/\/tree\//.test(u.pathname)) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify(Object.entries(FILES).filter(([f]) => f.startsWith('onnx/')).map(([f, b]) => ({ type: 'file', path: f, size: b.length }))) })
+        if (u.pathname.startsWith('/api/')) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify({ id: 'mock/tiny', sha: '0'.repeat(40), siblings: Object.entries(FILES).map(([f, b]) => ({ rfilename: f, size: b.length, lfs: { size: b.length } })), safetensors: { total: 4096 }, pipeline_tag: 'text-generation', config: { model_type: 'gpt2' }, library_name: 'transformers.js' }) })
         const f = FILES[decodeURIComponent(u.pathname.replace(/^.*\/resolve\/[^/]+\//, ''))]; if (!f) return route.fulfill({ status: 404, body: 'nope' })
         const m = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
         if (m) { const a = +m[1], b = m[2] ? +m[2] : f.length - 1; return route.fulfill({ status: 206, body: f.subarray(a, b + 1), headers: { ...h, 'content-range': `bytes ${a}-${b}/${f.length}` } }) }
