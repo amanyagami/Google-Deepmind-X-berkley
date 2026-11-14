@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { activityAt, buildTimeline, locate, type Timeline, type Peaks } from './timeline'
-import { gpuBench } from './gpuBench'
 import { apiUrl, detectBackend, wsUrl } from '../base'
 
 let raf = 0
@@ -154,6 +153,7 @@ export const useHW = create<HW>((set, get) => ({
         const m = JSON.parse(ev.data)
         // the companion pauses at the GPU stage (still recording power) while the page runs the WebGPU test
         if (m.type === 'client_task' && m.name === 'gpu') {
+          const { gpuBench } = await import('./browserBench')
           const r = await gpuBench((value, best) => { if (performance.now() - lastProg > 250) { lastProg = performance.now(); set({ benchLive: { name: 'gpu', value: Math.round(value), best: Math.round(best), unit: 'GFLOP/s' } }) } })
           ws.send(JSON.stringify({ type: 'client_result', name: 'gpu', data: r }))
           return

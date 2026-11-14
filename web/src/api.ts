@@ -318,3 +318,174 @@ export function checkFit(spec: ModelSpec, b: Budget): Fit {
       : 'This computer has no runtime that can run it (WebGPU is missing and the companion is not running).'
   return { verdict: have && need / have > 0.85 ? 'too-big' : 'fits', needBytes: need, haveBytes: have ?? null, where: 'none', reason: why }
 }
+
+/* ------------------------------------------------------------------ any model, in the page */
+// Runs a model from its ONNX repo with Transformers.js and emits the same frames as the companion's /ws/run.
+export type BrowserRunStats = RunStats & { device: 'webgpu' | 'wasm'; dtype: string; cached: boolean }
+
+const DTYPE_SUFFIX: Record<string, string> = { fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4', q4f16: '_q4f16', bnb4: '_bnb4' }
+interface Loaded { pipe: any; tf: any; bytes: number | null }
+const pipes = new Map<string, Promise<Loaded>>()
+
+export function pickDtype(dtypes: string[], device: 'webgpu' | 'wasm', avoid: string[] = []): string {
+  const order = device === 'webgpu' ? ['q4f16', 'fp16', 'q4', 'q8', 'quantized', 'fp32'] : ['q8', 'quantized', 'int8', 'uint8', 'q4', 'fp32']
+  const hit = order.find((d) => dtypes.includes(d) && !avoid.includes(d))
+  return hit === 'quantized' ? 'q8' : hit ?? 'fp32'
+}
+
+async function onnxBytes(repo: string, dtype: string): Promise<number | null> {
+  try {
+    const r = await fetch(`https://huggingface.co/api/models/${repo}/tree/main/onnx`)
+    if (!r.ok) return null
+    const files: { path: string; size: number }[] = await r.json()
+    const suf = DTYPE_SUFFIX[dtype] ?? ''
+    const other = /_(fp16|quantized|int8|uint8|q4|q4f16|bnb4)\.onnx/
+    const sum = files
+      .filter((f) => !(files.some((g) => g.path.includes('decoder_model_merged')) && /decoder_model(?!_merged)|decoder_with_past/.test(f.path)))
+      .filter((f) => f.path.includes(`${suf}.onnx`) && (suf !== '' || !other.test(f.path)))
+      .reduce((a, f) => a + f.size, 0)
+    return sum || null
+  } catch { return null }
+}
+
+function friendly(e: any, device: string): Error {
+  const m = String(e?.message ?? e)
+  if (/out of memory|allocation|memory access|bad_alloc|Array buffer allocation/i.test(m)) return new Error(`This model needs more memory than the browser can give it on the ${device === 'webgpu' ? 'GPU' : 'CPU'}. Try a smaller model.`)
+  if (/failed to fetch|networkerror|load failed|could not locate file|404|401|403/i.test(m)) return new Error('The model files could not be downloaded. Check the internet connection, and that the repository has ONNX files.')
+  return new Error(m)
+}
+const retryOnWasm = (m: string) => !/out of memory/i.test(m) && /empty results|webgpu|not supported|unsupported|no available backend|failed to (create|initialize)|kernel|op_type|create a session|GPU/i.test(m)
+
+async function load(task: Task, repo: string, device: 'webgpu' | 'wasm', dtype: string): Promise<{ l: Loaded; cached: boolean }> {
+  const key = `${task}|${repo}|${device}|${dtype}`
+  let p = pipes.get(key)
+  const cached = !!p
+  if (!p) {
+    p = (async () => {
+      const tf: any = await import('@huggingface/transformers')
+      try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
+      const [pipe, bytes] = await Promise.all([tf.pipeline(task, repo, { device, dtype }), onnxBytes(repo, dtype)])
+      return { pipe, tf, bytes }
+    })()
+    pipes.set(key, p)
+    p.catch(() => pipes.delete(key))
+  }
+  return { l: await p, cached }
+}
+
+// logits and hidden states may come back as float16 (a Uint16Array of raw bits)
+function toF32(d: any): Float32Array {
+  if (d instanceof Float32Array) return d
+  if (d instanceof Uint16Array) {
+    return Float32Array.from(d, (x) => {
+      const s = x >> 15 ? -1 : 1, e = (x >> 10) & 31, f = x & 1023
+      return s * (e === 0 ? 2 ** -14 * (f / 1024) : e === 31 ? (f ? NaN : Infinity) : 2 ** (e - 15) * (1 + f / 1024))
+    })
+  }
+  return Float32Array.from(d)
+}
+
+// Only fires when an ONNX export exposes hidden states (most do not). Attention and MLP parts cannot be split out of them.
+function layerFrames(out: any, emit: (f: any) => void) {
+  const hs: any[] | undefined = out?.hidden_states
+  if (!Array.isArray(hs) || hs.length < 2) return
+  hs.slice(1).forEach((t: any, i: number) => {
+    const [, seq, dim] = t.dims
+    const d = toF32(t.data)
+    const norm = Array.from({ length: seq }, (_, k) => { let a = 0; for (let j = 0; j < dim; j++) a += d[k * dim + j] ** 2; return Math.sqrt(a) })
+    emit({ type: 'layer', i, resid_norm: norm, attn_norm: norm.map(() => 0), mlp_norm: norm.map(() => 0), head_norm: [], attn: [] })
+  })
+}
+
+async function runOnce(spec: ModelSpec, task: Task, input: TaskInput, emit: (f: any) => void, device: 'webgpu' | 'wasm', avoid: string[] = []): Promise<BrowserRunStats> {
+  const repo = spec.onnx?.repo ?? spec.repo
+  const dtype = pickDtype(spec.onnx?.dtypes ?? [], device, avoid)
+  const t0 = performance.now()
+  const { l, cached } = await load(task, repo, device, dtype)
+  const loadMs = performance.now() - t0
+  const { pipe, tf } = l
+  const text = input.kind === 'text' ? input.text : ''
+  const url = input.kind !== 'text' ? input.url : ''
+  const start = performance.now()
+  let firstMs = 0, items = 1, unit: 'tokens' | 'items' = 'items'
+  const seconds = () => (performance.now() - start) / 1000
+  const tokens = (s: string): string[] => pipe.tokenizer.tokenize?.(s) ?? s.split(/\s+/)
+
+  if (task === 'text-generation') {
+    const tok = pipe.tokenizer
+    const enc = await tok(text)
+    const ids: number[] = Array.from(enc.input_ids.data as ArrayLike<any>, (x) => Number(x))
+    // the next-token distribution right after the prompt: one forward pass
+    let out: any
+    try { out = await pipe.model({ ...enc, output_hidden_states: true, output_attentions: true }) } catch { out = await pipe.model(enc) }
+    const [, seq, vocab] = out.logits.dims
+    const lg = toF32(out.logits.data).subarray((seq - 1) * vocab, seq * vocab)
+    let mx = -Infinity, mn = Infinity
+    for (const v of lg) { if (v > mx) mx = v; if (v < mn) mn = v }
+    // some GPU drivers return all zeros for float16 models: treat that as a failure so another precision is tried
+    if (!(mx > mn)) throw new Error('EMPTY_OUTPUT')
+    let z = 0
+    const ex = new Float32Array(vocab)
+    for (let i = 0; i < vocab; i++) { ex[i] = Math.exp(lg[i] - mx); z += ex[i] }
+    const top = Array.from(ex.keys()).sort((a, b) => ex[b] - ex[a]).slice(0, 10)
+    const topk = top.map((i) => ({ token: tok.decode([i]), p: ex[i] / z }))
+    emit({ type: 'start', tokens: ids.map((id) => tok.decode([id])) })
+    layerFrames(out, emit)
+    let gen = '', n = 0
+    const streamer = new tf.TextStreamer(tok, {
+      skip_prompt: true,
+      callback_function: (s: string) => { if (s) { gen += s; emit({ type: 'token', text: s }) } },
+      token_callback_function: () => { if (!n++) firstMs = performance.now() - start },
+    })
+    await pipe(text, { max_new_tokens: 24, do_sample: false, streamer })
+    items = Math.max(1, n); unit = 'tokens'
+    emit({ type: 'final', topk, text: gen, seconds: seconds() })
+  } else if (task === 'fill-mask') {
+    emit({ type: 'start', tokens: tokens(text) })
+    const r: any[] = await pipe(text, { top_k: 10 })
+    firstMs = performance.now() - start
+    emit({ type: 'final', topk: r.map((x) => ({ token: String(x.token_str).trim(), p: x.score })), text: r[0]?.sequence, seconds: seconds() })
+  } else if (task === 'text-classification') {
+    emit({ type: 'start', tokens: tokens(text) })
+    const r: any[] = await pipe(text, { top_k: 5 })
+    firstMs = performance.now() - start
+    emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
+  } else if (task === 'image-classification') {
+    const r: any[] = await pipe(url, { top_k: 5 })
+    firstMs = performance.now() - start
+    emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
+  } else {
+    const r: any = await pipe(url, { chunk_length_s: 30 })
+    firstMs = performance.now() - start
+    emit({ type: 'final', text: String(r.text ?? '').trim(), seconds: seconds() })
+  }
+  const totalMs = performance.now() - start
+  emit({ type: 'done' })
+  return {
+    where: device, repo, task, loadMs, firstMs, totalMs, items, unit,
+    perSec: unit === 'tokens' && totalMs > firstMs && items > 1 ? ((items - 1) * 1000) / (totalMs - firstMs) : 1000 / Math.max(1, totalMs),
+    memBytes: l.bytes, joules: null, estimatedEnergy: false, device, dtype, cached,
+  }
+}
+
+export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: { device: 'webgpu' | 'wasm' }): Promise<BrowserRunStats> {
+  const task = spec.task
+  if (!task) throw new Error('This kind of model cannot be run in the browser.')
+  if (!spec.onnx) throw new Error('This model has no ONNX weights, so the browser cannot run it. Use the companion instead.')
+  let device = opts.device
+  if (device === 'webgpu' && !(await (navigator as any).gpu?.requestAdapter?.().catch(() => null))) device = 'wasm'
+  try {
+    try {
+      return await runOnce(spec, task, input, onFrame, device)
+    } catch (e: any) {
+      if (device !== 'webgpu' || e?.message !== 'EMPTY_OUTPUT') throw e
+      return await runOnce(spec, task, input, onFrame, device, ['fp16', 'q4f16']) // this GPU cannot do float16 maths
+    }
+  } catch (e: any) {
+    if (e?.message === 'EMPTY_OUTPUT') e = new Error('The GPU returned empty results for this model.')
+    if (device === 'webgpu' && retryOnWasm(String(e?.message ?? e))) {
+      try { return await runOnce(spec, task, input, onFrame, 'wasm') } catch (e2) { throw friendly(e2, 'wasm') }
+    }
+    throw friendly(e, device)
+  }
+}

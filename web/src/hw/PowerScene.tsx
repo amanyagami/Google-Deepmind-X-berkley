@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { aspectFit, FitFog, WheelScrollsPage } from '../aspect'
-import { FpsCap } from '../fps'
+import { FpsCap } from '../aspect'
 import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'

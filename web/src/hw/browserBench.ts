@@ -6,7 +6,6 @@
 //  - Logical processors, a capped RAM size, the GPU adapter name and the network type are readable.
 //  - The CPU model, cache sizes, RAM speed and every power sensor are hidden from web pages.
 //    Power here is therefore an ESTIMATE from a small model (see estimatePower), and is labelled so.
-import { gpuBench } from './gpuBench'
 import type { ModelSpec, RunStats, Task, TaskInput } from '../api'
 
 export type Emit = (m: any) => void
@@ -248,173 +247,152 @@ export async function browserLM(lm: any, p: (v: number) => void, n = 32) {
   return tps ? { tps: +tps.toFixed(1), model: BROWSER_LM, tokens: times.length + 1, device: lm.device, dtype: lm.dtype, spread: spread(steady.map((x) => 1000 / x)), text } : null
 }
 
-/* ------------------------------------------------------------------ any model, in the page */
-// Runs a model from its ONNX repo with Transformers.js and emits the same frames as the companion's /ws/run.
-export type BrowserRunStats = RunStats & { device: 'webgpu' | 'wasm'; dtype: string; cached: boolean }
+/* ------------------------------------------------------------------ WebGPU matrix multiply */
+// Real GPU benchmark through WebGPU: a tiled 1024 x 1024 fp32 matrix multiply (2.1 GFLOP per run).
+// PyTorch on this install is a CPU build, so this is how the integrated GPU gets measured at all.
 
-const DTYPE_SUFFIX: Record<string, string> = { fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4', q4f16: '_q4f16', bnb4: '_bnb4' }
-interface Loaded { pipe: any; tf: any; bytes: number | null }
-const pipes = new Map<string, Promise<Loaded>>()
+const GN = 1024
+const WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> A: array<f32>;
+@group(0) @binding(1) var<storage, read> B: array<f32>;
+@group(0) @binding(2) var<storage, read_write> C: array<f32>;
+const N: u32 = ${GN}u;
+const TS: u32 = 16u;
+var<workgroup> As: array<f32, 256>;
+var<workgroup> Bs: array<f32, 256>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) g: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  var acc = 0.0;
+  for (var t = 0u; t < GN / TS; t = t + 1u) {
+    As[l.y * TS + l.x] = A[g.y * GN + t * TS + l.x];
+    Bs[l.y * TS + l.x] = B[(t * TS + l.y) * GN + g.x];
+    workgroupBarrier();
+    for (var k = 0u; k < TS; k = k + 1u) { acc = acc + As[l.y * TS + k] * Bs[k * TS + l.x]; }
+    workgroupBarrier();
+  }
+  C[g.y * GN + g.x] = acc;
+}`
 
-export function pickDtype(dtypes: string[], device: 'webgpu' | 'wasm', avoid: string[] = []): string {
-  const order = device === 'webgpu' ? ['q4f16', 'fp16', 'q4', 'q8', 'quantized', 'fp32'] : ['q8', 'quantized', 'int8', 'uint8', 'q4', 'fp32']
-  const hit = order.find((d) => dtypes.includes(d) && !avoid.includes(d))
-  return hit === 'quantized' ? 'q8' : hit ?? 'fp32'
-}
+export interface GpuResult { gflops: number; adapter: string; n: number; unavailable?: false }
 
-async function onnxBytes(repo: string, dtype: string): Promise<number | null> {
+export async function gpuBench(onProgress: (v: number, best: number) => void): Promise<GpuResult | { unavailable: true; reason: string }> {
+  const gpu = (navigator as any).gpu
+  if (!gpu) return { unavailable: true, reason: 'This browser has no WebGPU.' }
   try {
-    const r = await fetch(`https://huggingface.co/api/models/${repo}/tree/main/onnx`)
-    if (!r.ok) return null
-    const files: { path: string; size: number }[] = await r.json()
-    const suf = DTYPE_SUFFIX[dtype] ?? ''
-    const other = /_(fp16|quantized|int8|uint8|q4|q4f16|bnb4)\.onnx/
-    const sum = files
-      .filter((f) => !(files.some((g) => g.path.includes('decoder_model_merged')) && /decoder_model(?!_merged)|decoder_with_past/.test(f.path)))
-      .filter((f) => f.path.includes(`${suf}.onnx`) && (suf !== '' || !other.test(f.path)))
-      .reduce((a, f) => a + f.size, 0)
-    return sum || null
-  } catch { return null }
-}
-
-function friendly(e: any, device: string): Error {
-  const m = String(e?.message ?? e)
-  if (/out of memory|allocation|memory access|bad_alloc|Array buffer allocation/i.test(m)) return new Error(`This model needs more memory than the browser can give it on the ${device === 'webgpu' ? 'GPU' : 'CPU'}. Try a smaller model.`)
-  if (/failed to fetch|networkerror|load failed|could not locate file|404|401|403/i.test(m)) return new Error('The model files could not be downloaded. Check the internet connection, and that the repository has ONNX files.')
-  return new Error(m)
-}
-const retryOnWasm = (m: string) => !/out of memory/i.test(m) && /empty results|webgpu|not supported|unsupported|no available backend|failed to (create|initialize)|kernel|op_type|create a session|GPU/i.test(m)
-
-async function load(task: Task, repo: string, device: 'webgpu' | 'wasm', dtype: string): Promise<{ l: Loaded; cached: boolean }> {
-  const key = `${task}|${repo}|${device}|${dtype}`
-  let p = pipes.get(key)
-  const cached = !!p
-  if (!p) {
-    p = (async () => {
-      const tf: any = await import('@huggingface/transformers')
-      try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
-      const [pipe, bytes] = await Promise.all([tf.pipeline(task, repo, { device, dtype }), onnxBytes(repo, dtype)])
-      return { pipe, tf, bytes }
-    })()
-    pipes.set(key, p)
-    p.catch(() => pipes.delete(key))
-  }
-  return { l: await p, cached }
-}
-
-// logits and hidden states may come back as float16 (a Uint16Array of raw bits)
-function toF32(d: any): Float32Array {
-  if (d instanceof Float32Array) return d
-  if (d instanceof Uint16Array) {
-    return Float32Array.from(d, (x) => {
-      const s = x >> 15 ? -1 : 1, e = (x >> 10) & 31, f = x & 1023
-      return s * (e === 0 ? 2 ** -14 * (f / 1024) : e === 31 ? (f ? NaN : Infinity) : 2 ** (e - 15) * (1 + f / 1024))
-    })
-  }
-  return Float32Array.from(d)
-}
-
-// Only fires when an ONNX export exposes hidden states (most do not). Attention and MLP parts cannot be split out of them.
-function layerFrames(out: any, emit: (f: any) => void) {
-  const hs: any[] | undefined = out?.hidden_states
-  if (!Array.isArray(hs) || hs.length < 2) return
-  hs.slice(1).forEach((t: any, i: number) => {
-    const [, seq, dim] = t.dims
-    const d = toF32(t.data)
-    const norm = Array.from({ length: seq }, (_, k) => { let a = 0; for (let j = 0; j < dim; j++) a += d[k * dim + j] ** 2; return Math.sqrt(a) })
-    emit({ type: 'layer', i, resid_norm: norm, attn_norm: norm.map(() => 0), mlp_norm: norm.map(() => 0), head_norm: [], attn: [] })
-  })
-}
-
-async function runOnce(spec: ModelSpec, task: Task, input: TaskInput, emit: (f: any) => void, device: 'webgpu' | 'wasm', avoid: string[] = []): Promise<BrowserRunStats> {
-  const repo = spec.onnx?.repo ?? spec.repo
-  const dtype = pickDtype(spec.onnx?.dtypes ?? [], device, avoid)
-  const t0 = performance.now()
-  const { l, cached } = await load(task, repo, device, dtype)
-  const loadMs = performance.now() - t0
-  const { pipe, tf } = l
-  const text = input.kind === 'text' ? input.text : ''
-  const url = input.kind !== 'text' ? input.url : ''
-  const start = performance.now()
-  let firstMs = 0, items = 1, unit: 'tokens' | 'items' = 'items'
-  const seconds = () => (performance.now() - start) / 1000
-  const tokens = (s: string): string[] => pipe.tokenizer.tokenize?.(s) ?? s.split(/\s+/)
-
-  if (task === 'text-generation') {
-    const tok = pipe.tokenizer
-    const enc = await tok(text)
-    const ids: number[] = Array.from(enc.input_ids.data as ArrayLike<any>, (x) => Number(x))
-    // the next-token distribution right after the prompt: one forward pass
-    let out: any
-    try { out = await pipe.model({ ...enc, output_hidden_states: true, output_attentions: true }) } catch { out = await pipe.model(enc) }
-    const [, seq, vocab] = out.logits.dims
-    const lg = toF32(out.logits.data).subarray((seq - 1) * vocab, seq * vocab)
-    let mx = -Infinity, mn = Infinity
-    for (const v of lg) { if (v > mx) mx = v; if (v < mn) mn = v }
-    // some GPU drivers return all zeros for float16 models: treat that as a failure so another precision is tried
-    if (!(mx > mn)) throw new Error('EMPTY_OUTPUT')
-    let z = 0
-    const ex = new Float32Array(vocab)
-    for (let i = 0; i < vocab; i++) { ex[i] = Math.exp(lg[i] - mx); z += ex[i] }
-    const top = Array.from(ex.keys()).sort((a, b) => ex[b] - ex[a]).slice(0, 10)
-    const topk = top.map((i) => ({ token: tok.decode([i]), p: ex[i] / z }))
-    emit({ type: 'start', tokens: ids.map((id) => tok.decode([id])) })
-    layerFrames(out, emit)
-    let gen = '', n = 0
-    const streamer = new tf.TextStreamer(tok, {
-      skip_prompt: true,
-      callback_function: (s: string) => { if (s) { gen += s; emit({ type: 'token', text: s }) } },
-      token_callback_function: () => { if (!n++) firstMs = performance.now() - start },
-    })
-    await pipe(text, { max_new_tokens: 24, do_sample: false, streamer })
-    items = Math.max(1, n); unit = 'tokens'
-    emit({ type: 'final', topk, text: gen, seconds: seconds() })
-  } else if (task === 'fill-mask') {
-    emit({ type: 'start', tokens: tokens(text) })
-    const r: any[] = await pipe(text, { top_k: 10 })
-    firstMs = performance.now() - start
-    emit({ type: 'final', topk: r.map((x) => ({ token: String(x.token_str).trim(), p: x.score })), text: r[0]?.sequence, seconds: seconds() })
-  } else if (task === 'text-classification') {
-    emit({ type: 'start', tokens: tokens(text) })
-    const r: any[] = await pipe(text, { top_k: 5 })
-    firstMs = performance.now() - start
-    emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
-  } else if (task === 'image-classification') {
-    const r: any[] = await pipe(url, { top_k: 5 })
-    firstMs = performance.now() - start
-    emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
-  } else {
-    const r: any = await pipe(url, { chunk_length_s: 30 })
-    firstMs = performance.now() - start
-    emit({ type: 'final', text: String(r.text ?? '').trim(), seconds: seconds() })
-  }
-  const totalMs = performance.now() - start
-  emit({ type: 'done' })
-  return {
-    where: device, repo, task, loadMs, firstMs, totalMs, items, unit,
-    perSec: unit === 'tokens' && totalMs > firstMs && items > 1 ? ((items - 1) * 1000) / (totalMs - firstMs) : 1000 / Math.max(1, totalMs),
-    memBytes: l.bytes, joules: null, estimatedEnergy: false, device, dtype, cached,
-  }
-}
-
-export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: { device: 'webgpu' | 'wasm' }): Promise<BrowserRunStats> {
-  const task = spec.task
-  if (!task) throw new Error('This kind of model cannot be run in the browser.')
-  if (!spec.onnx) throw new Error('This model has no ONNX weights, so the browser cannot run it. Use the companion instead.')
-  let device = opts.device
-  if (device === 'webgpu' && !(await (navigator as any).gpu?.requestAdapter?.().catch(() => null))) device = 'wasm'
-  try {
-    try {
-      return await runOnce(spec, task, input, onFrame, device)
-    } catch (e: any) {
-      if (device !== 'webgpu' || e?.message !== 'EMPTY_OUTPUT') throw e
-      return await runOnce(spec, task, input, onFrame, device, ['fp16', 'q4f16']) // this GPU cannot do float16 maths
+    const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' })
+    if (!adapter) return { unavailable: true, reason: 'No WebGPU adapter found.' }
+    const ai = adapter.info ?? (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {})
+    const name = [ai.vendor, ai.architecture, ai.description].filter(Boolean).join(' ') || 'GPU'
+    const device = await adapter.requestDevice()
+    const U = (globalThis as any).GPUBufferUsage
+    const bytes = GN * GN * 4
+    const mk = (fill: boolean) => {
+      const b = device.createBuffer({ size: bytes, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC, mappedAtCreation: fill })
+      if (fill) { const a = new Float32Array(b.getMappedRange()); for (let i = 0; i < a.length; i++) a[i] = Math.random() - 0.5; b.unmap() }
+      return b
     }
+    const A = mk(true), B = mk(true), C = mk(false)
+    const module = device.createShaderModule({ code: WGSL })
+    const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } })
+    const bind = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [A, B, C].map((buffer, i) => ({ binding: i, resource: { buffer } })) })
+    const run = async () => {
+      const enc = device.createCommandEncoder()
+      const pass = enc.beginComputePass()
+      pass.setPipeline(pipeline); pass.setBindGroup(0, bind); pass.dispatchWorkgroups(GN / 16, GN / 16); pass.end()
+      const t = performance.now()
+      device.queue.submit([enc.finish()])
+      await device.queue.onSubmittedWorkDone()
+      return (2 * GN ** 3) / ((performance.now() - t) / 1000) / 1e9
+    }
+    await run() // warm-up: shader compile
+    let best = 0
+    for (let i = 0; i < 12; i++) { const v = await run(); best = Math.max(best, v); onProgress(v, best) }
+    device.destroy?.()
+    return { gflops: Math.round(best * 10) / 10, adapter: name, n: GN }
   } catch (e: any) {
-    if (e?.message === 'EMPTY_OUTPUT') e = new Error('The GPU returned empty results for this model.')
-    if (device === 'webgpu' && retryOnWasm(String(e?.message ?? e))) {
-      try { return await runOnce(spec, task, input, onFrame, 'wasm') } catch (e2) { throw friendly(e2, 'wasm') }
-    }
-    throw friendly(e, device)
+    return { unavailable: true, reason: e?.message ?? String(e) }
   }
+}
+
+/* ------------------------------------------------------------------ WebAssembly SIMD kernel */
+// A hand-assembled WebAssembly SIMD kernel: C += A x B for n x n float32 matrices (n a multiple of 16).
+// Layout in the module's own memory: A at 0, B at n*n*4, C at 2*n*n*4. Loop order i-k-j, and the j loop
+// handles 16 floats per turn as four 128-bit vectors: c[i, j..j+15] += splat(a[i,k]) * b[k, j..j+15].
+// Written by hand so the browser benchmark needs no toolchain and every instruction is visible here.
+
+const uleb = (n: number) => { const o: number[] = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b) } while (n); return o }
+const sleb = (n: number) => { const o: number[] = []; for (;;) { const b = n & 0x7f; n >>= 7; if ((n === 0 && !(b & 0x40)) || (n === -1 && b & 0x40)) { o.push(b); return o } o.push(b | 0x80) } }
+const str = (s: string) => [...uleb(s.length), ...[...s].map((c) => c.charCodeAt(0))]
+const section = (id: number, body: number[]) => [id, ...uleb(body.length), ...body]
+const vec = (items: number[][]) => [...uleb(items.length), ...items.flat()]
+
+// opcodes
+const get = (i: number) => [0x20, i], set = (i: number) => [0x21, i]
+const i32c = (v: number) => [0x41, ...sleb(v)]
+const ADD = 0x6a, MUL = 0x6c, SHL = 0x74, GEU = 0x4f
+const BLOCK = [0x02, 0x40], LOOP = [0x03, 0x40], END = 0x0b
+const brIf = (d: number) => [0x0d, d], br = (d: number) => [0x0c, d]
+const f32load = [0x2a, 2, 0]
+const simd = (op: number) => [0xfd, ...uleb(op)]
+const vload = (off: number) => [...simd(0x00), 4, ...uleb(off)]
+const vstore = (off: number) => [...simd(0x0b), 4, ...uleb(off)]
+const SPLAT = simd(0x13), FADD = simd(0xe4), FMUL = simd(0xe6)
+
+// locals: 0 n (param) | 1 i, 2 k, 3 rowBytes, 4 Bbase, 5 Cbase, 6 bRow, 7 cRow, 8 jEnd (i32) | 9 av (v128)
+const [N, I, K, RB, BB, CB, BR, CR, JE, AV] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+function body(): number[] {
+  const madd = (off: number) => [...get(CR), ...get(CR), ...vload(off), ...get(AV), ...get(BR), ...vload(off), ...FMUL, ...FADD, ...vstore(off)]
+  const code = [
+    ...get(N), ...i32c(2), SHL, ...set(RB),
+    ...get(N), ...get(RB), MUL, ...set(BB),
+    ...get(BB), ...i32c(1), SHL, ...set(CB),
+    ...i32c(0), ...set(I),
+    ...BLOCK, ...LOOP,
+    ...get(I), ...get(N), GEU, ...brIf(1),
+    ...i32c(0), ...set(K),
+    ...BLOCK, ...LOOP,
+    ...get(K), ...get(N), GEU, ...brIf(1),
+    // av = splat(A[i][k])
+    ...get(I), ...get(RB), MUL, ...get(K), ...i32c(2), SHL, ADD, ...f32load, ...SPLAT, ...set(AV),
+    ...get(BB), ...get(K), ...get(RB), MUL, ADD, ...set(BR),
+    ...get(CB), ...get(I), ...get(RB), MUL, ADD, ...set(CR),
+    ...get(CR), ...get(RB), ADD, ...set(JE),
+    ...BLOCK, ...LOOP,
+    ...get(CR), ...get(JE), GEU, ...brIf(1),
+    ...madd(0), ...madd(16), ...madd(32), ...madd(48),
+    ...get(CR), ...i32c(64), ADD, ...set(CR),
+    ...get(BR), ...i32c(64), ADD, ...set(BR),
+    ...br(0), END, END,
+    ...get(K), ...i32c(1), ADD, ...set(K),
+    ...br(0), END, END,
+    ...get(I), ...i32c(1), ADD, ...set(I),
+    ...br(0), END, END,
+    END,
+  ]
+  const locals = vec([[...uleb(8), 0x7f], [...uleb(1), 0x7b]])
+  const fn = [...locals, ...code]
+  return [...uleb(fn.length), ...fn]
+}
+
+export const MAX_N = 512
+export function kernelBytes(): Uint8Array {
+  const pages = Math.ceil((3 * MAX_N * MAX_N * 4) / 65536)
+  const bytes = [
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...section(1, vec([[0x60, 1, 0x7f, 0]])),            // type: (i32) -> ()
+    ...section(3, vec([[0]])),                           // one function of type 0
+    ...section(5, vec([[0x00, ...uleb(pages)]])),        // memory
+    ...section(7, vec([[...str('mm'), 0x00, 0], [...str('mem'), 0x02, 0]])),
+    ...section(10, vec([body()])),
+  ]
+  return new Uint8Array(bytes)
+}
+
+export interface Kernel { mm: (n: number) => void; f32: Float32Array }
+export async function loadKernel(): Promise<Kernel> {
+  const mod = await WebAssembly.compile(kernelBytes() as BufferSource)
+  const instance = await WebAssembly.instantiate(mod)
+  const ex = instance.exports as any
+  return { mm: ex.mm, f32: new Float32Array(ex.mem.buffer) }
 }

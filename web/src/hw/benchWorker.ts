@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 // One benchmark worker = one busy thread. The page starts several at once for the multi-core tests.
-import { loadKernel, type Kernel } from './wasmKernel'
+import { loadKernel, type Kernel } from './browserBench'
 
 let kernel: Kernel | null = null
 const post = (m: any) => (self as any).postMessage(m)

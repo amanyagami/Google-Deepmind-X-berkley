@@ -259,7 +259,7 @@ export const useStore = create<S>((set, get) => {
         if (replay) {
           for (const f of s.pack.run.frames) onFrame(f)
         } else if (viaBrowser) {
-          const eng: any = await import('./hw/browserBench')
+          const eng: any = await import('./api')
           if (typeof eng.runInBrowser !== 'function') throw new Error('The in-browser engine is not available in this build.')
           const stats: RunStats = await eng.runInBrowser(s.spec, s.input, onFrame, { device: where })
           set({ lastStats: stats })

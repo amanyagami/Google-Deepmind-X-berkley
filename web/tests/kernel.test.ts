@@ -1,6 +1,6 @@
 // The hand-assembled WebAssembly SIMD matrix multiply must agree with a plain JavaScript reference.
 import { expect, test } from 'vitest'
-import { loadKernel, MAX_N } from '../src/hw/wasmKernel'
+import { loadKernel, MAX_N } from '../src/hw/browserBench'
 
 test('wasm kernel computes C += A x B exactly enough, for every supported size', async () => {
   const k = await loadKernel()
