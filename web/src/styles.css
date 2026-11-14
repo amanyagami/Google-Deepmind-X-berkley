@@ -203,12 +203,15 @@ textarea:disabled { opacity: 0.7; }
 /* narrow: stage on top, rail as a bottom sheet (peek 25 dvh) that sticks above the dock */
 @container sect (max-width: 959px) {
   .main { display: block; }
-  .stage { height: min(72dvh, 640px); min-height: 320px; }
+  .stage { height: calc(100dvh - var(--bar) - var(--dock) - 25dvh); min-height: 340px; }
   .rail, .inspector { --sheet: 25dvh; position: sticky; bottom: var(--dock); z-index: 20; height: var(--sheet); border-left: 0; border-top: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: 0 -10px 24px #0008; view-transition-name: none; }
   .rail::before, .inspector::before { content: ''; display: block; flex: none; width: 44px; height: 5px; margin: 10px auto 6px; border-radius: 3px; background: var(--faint); box-sizing: content-box; border-block: 12px solid transparent; background-clip: content-box; touch-action: none; cursor: grab; }
   .abcols { grid-template-columns: 1fr; }
+  /* the Machine stage is tall and full of labels: its rail is a plain card below it, not a sheet over it */
+  .main.machine:not(.zoo) .stage { height: 86vh; min-height: 640px; }
+  .main.machine:not(.zoo) > .rail, .main.machine:not(.zoo) > .inspector { position: static; height: auto; border-radius: 0; box-shadow: none; }
+  .main.machine:not(.zoo) > .rail::before, .main.machine:not(.zoo) > .inspector::before { content: none; }
 }
-@container sect (max-width: 599px) { .stage { height: 45dvh; min-height: 280px; } }
 @media (max-width: 900px) {
   canvas { touch-action: pan-y !important; }
 }
@@ -217,12 +220,14 @@ textarea:disabled { opacity: 0.7; }
 @media (max-width: 640px) {
   .topbar { gap: var(--s2); padding: 0 var(--s3); }
   .brandname, .privtxt, .devchip { display: none; }
-  .pickbtn { max-width: 130px; }
+  .pickbtn { max-width: 104px; padding: 6px 8px; }
+  .topbar .livedot { display: none; }
+  .privchip { border: 0; padding: 0; } .privchip .ico { display: none; }
   .dock { padding: 0 var(--s3); }
   .dockstat { display: none; }
-  .topbar .seg button { padding: 6px 10px; }
+  .topbar .seg button { padding: 6px 8px; min-width: 0; }
 }
-@media (max-width: 440px) { .privchip { padding: 3px 4px 3px 8px; } .tag .hintwrap { margin-left: 0; } }
+@media (max-width: 440px) { .brand { display: none; } .privchip { padding: 3px 4px 3px 8px; } .tag .hintwrap { margin-left: 0; } }
 @media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; } }
 
 /* ===================================================================== machine view */
@@ -283,7 +288,7 @@ textarea:disabled { opacity: 0.7; }
 .cores { display: flex; gap: 5px; height: 70px; align-items: flex-end; } .cores div { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px; background: var(--surface); border-radius: 6px; overflow: hidden; } .cores i { width: 100%; background: var(--pos); } .cores span { font: 10px var(--mono); color: var(--faint); }
 .spark2 { width: 100%; height: 38px; display: block; } .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .chart { width: 100%; background: var(--surface); border-radius: 10px; } .chart text { fill: var(--muted); font: 8.5px var(--mono); } .chart .axl { fill: var(--faint); }
-@media (max-width: 900px) { .machine .stage { height: 78vh; min-height: 520px; } .caption { max-width: none; } }
+@media (max-width: 900px) { .caption { max-width: none; } }
 
 /* ---- electricity view ---------------------------------------------------------------------- */
 .vswitch { position: absolute; right: 14px; top: 12px; z-index: 5; background: color-mix(in srgb, var(--bg) 78%, transparent); backdrop-filter: blur(8px); }
@@ -449,7 +454,6 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
   .mcol .phud .prow { grid-template-columns: repeat(4, auto); gap: 4px 14px; margin: 0; justify-content: start; }
   .mcol .phud .row { position: absolute; right: 12px; top: 34px; }
   .iostrip { padding: 6px 10px; gap: 3px; } .iostrip b { -webkit-line-clamp: 2; line-clamp: 2; }
-  .machine .stage { height: 86vh; min-height: 640px; }
   .caption { padding: 8px 12px; } .caption .cnums { gap: 2px 14px; } .caption .cnums b { font-size: 12.5px; }
   .mtl { padding: 6px 10px; }
 }
@@ -462,3 +466,5 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 /* amber buttons: the ring goes inside, in ink, so it stays visible on the amber fill */
 .btn:focus-visible, .pri:focus-visible, .primary:focus-visible, .s6go:focus-visible, [data-primary]:focus-visible { outline: 2px solid #0a0e19 !important; outline-offset: -4px; box-shadow: 0 0 0 2px var(--fg); }
 #dock-slot input, #dock-slot button, #dock-slot select { min-height: 44px; }
+/* a disabled amber button keeps readable text */
+.btn:disabled { opacity: 1; background: var(--surface2); color: var(--muted); }
