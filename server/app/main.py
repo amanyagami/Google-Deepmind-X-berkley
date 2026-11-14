@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import bench, hub, security, state
+from . import bench, hub, security
 from .adapters import build_graph
 
 
@@ -68,7 +68,7 @@ _PROBES_MAX = 16
 _PROBES_LOCK = threading.Lock()
 
 
-@app.exception_handler(state.BusyError)
+@app.exception_handler(security.BusyError)
 async def busy_error(_req, exc):
     return JSONResponse({"error": str(exc), "code": "busy"}, status_code=409)
 
@@ -176,7 +176,7 @@ class CalcReq(BaseModel):
     edits: list[dict] = Field(default_factory=list)
 
 
-@app.post("/api/load", dependencies=[Depends(state.require_idle)])
+@app.post("/api/load", dependencies=[Depends(security.require_idle)])
 def load(req: LoadReq):
     from . import runner
     repo = hub.parse_repo(req.repo)
@@ -187,7 +187,7 @@ def load(req: LoadReq):
     return {"repo": repo, "loaded": True, "load_seconds": h.load_seconds, "L": a.L, "H": a.H, "nh": a.nh, "nkv": a.nkv, "hd": a.hd}
 
 
-@app.post("/api/run", dependencies=[Depends(state.require_idle)])
+@app.post("/api/run", dependencies=[Depends(security.require_idle)])
 def run(req: RunReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -195,14 +195,14 @@ def run(req: RunReq):
     return {"frames": res["tracer"].frames}
 
 
-@app.post("/api/compare", dependencies=[Depends(state.require_idle)])
+@app.post("/api/compare", dependencies=[Depends(security.require_idle)])
 def compare(req: CompareReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
     return runner.compare(h, req.prompt, req.edits, req.topk, req.max_new)
 
 
-@app.post("/api/calc", dependencies=[Depends(state.require_idle)])
+@app.post("/api/calc", dependencies=[Depends(security.require_idle)])
 def calc(req: CalcReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -239,7 +239,7 @@ def hw_power():
     return power.sample(hw.info()["cpu"]["cores"])
 
 
-@app.post("/api/hw/journey", dependencies=[Depends(state.require_idle)])
+@app.post("/api/hw/journey", dependencies=[Depends(security.require_idle)])
 def hw_journey(req: JourneyReq):
     from . import hw, runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -249,7 +249,7 @@ def hw_journey(req: JourneyReq):
     return hw.journey(h, req.prompt, max(2, min(req.new_tokens, 64)), {"gflops": pg, "gbps": pb})
 
 
-@app.post("/api/hw/microscope", dependencies=[Depends(state.require_idle)])
+@app.post("/api/hw/microscope", dependencies=[Depends(security.require_idle)])
 def hw_microscope(req: MicroReq):
     from . import hw, runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -300,7 +300,7 @@ async def ws_bench(ws: WebSocket):
     except bench.BadRequest as e:
         await _ws_error(ws, "bad_request", str(e))
         return
-    if not state.try_acquire("bench"):
+    if not security.try_acquire("bench"):
         await _ws_error(ws, "busy", "A benchmark is already running.")
         return
     q: queue.SimpleQueue = queue.SimpleQueue()
@@ -316,7 +316,7 @@ async def ws_bench(ws: WebSocket):
         except Exception as e:  # noqa: BLE001
             q.put({"type": "error", "code": "failed", "message": str(e)})
         finally:
-            state.release()
+            security.release()
 
     async def listen():
         try:
@@ -367,7 +367,7 @@ class ScanReq(BaseModel):
     target_id: int | None = None
 
 
-@app.post("/api/scan", dependencies=[Depends(state.require_idle)])
+@app.post("/api/scan", dependencies=[Depends(security.require_idle)])
 def scan(req: ScanReq):
     from . import runner
     h = runner.get_holder(hub.parse_repo(req.repo))
@@ -380,7 +380,7 @@ async def ws_run(ws: WebSocket):
     ok, msg = await security.ws_gate(ws, first_timeout=30.0)
     if not ok:
         return
-    if state.busy():
+    if security.busy():
         await _ws_error(ws, "busy", "A benchmark is running.")
         return
     try:
