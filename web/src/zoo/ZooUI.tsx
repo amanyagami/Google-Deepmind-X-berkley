@@ -334,7 +334,7 @@ const CSS = `
 .s6card p{margin:0}
 .s6line{font-size:13px;color:var(--muted)} .s6line b{color:var(--fg);font-weight:600}
 .s6go{font-size:15px;font-weight:600;padding:11px 16px;min-height:44px;border-radius:12px;border:0;cursor:pointer;background:var(--pos);color:#06101c}
-.s6go:disabled{opacity:.5;cursor:default}
+.s6go:disabled{background:var(--surface2);color:var(--fg);cursor:default;border:1px solid var(--line)}
 .s6link{background:none;border:0;color:var(--pos-ink);cursor:pointer;font-size:13px;padding:6px 0;text-align:left;text-decoration:underline}
 .s6bar{height:8px;border-radius:5px;background:var(--line);overflow:hidden} .s6bar i{display:block;height:100%;background:var(--pos);transition:width .3s}
 .s6bar.ind i{width:35%;animation:s6slide 1.2s ease-in-out infinite alternate} @keyframes s6slide{from{margin-left:0}to{margin-left:65%}}
@@ -375,7 +375,7 @@ const CSS = `
 @media (max-width:900px){.tlctl .ib,.tlctl select{min-height:40px!important;min-width:40px!important}}
 .s6inrow{flex-wrap:nowrap}
 @media (max-width:600px){.s6inrow{flex-wrap:wrap}.s6in{flex:1 1 100%!important}.s6dock.compact .s6go{white-space:normal;max-width:122px;line-height:1.15;padding:6px 10px;font-size:14px}}
-.s6link{min-height:44px;display:inline-flex;align-items:center}
+.s6link{min-height:44px;display:inline-flex;align-items:center;margin:6px 0 10px}
 .s6dock button,.s6dock input,.s6dock select{min-height:44px}
 .s6dock .btn2.sm,.s6err .btn2{min-height:44px}
 .s6err{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
