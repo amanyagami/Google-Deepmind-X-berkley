@@ -7,7 +7,8 @@ export interface Seg { id: StageId; label: string; short: string; v0: number; v1
 export interface Timeline { segs: Seg[]; total: number }
 
 const DUR: Record<string, number> = { input: 2.6, send: 1.6, tokenize: 2.4, embed: 2.4, logits: 2.8, pick: 1.8, output: 2.4, decode: 4.2 }
-const LABEL: Record<StageId, [string, string]> = {
+/** Long and short name of each journey stage. */
+export const LABEL: Record<StageId, [string, string]> = {
   input: ['You type', 'Type'], send: ['Hand to the program', 'Send'], tokenize: ['Cut into tokens', 'Tokenize'], embed: ['Look up meanings', 'Embed'],
   blocks: ['Think, block by block', 'Blocks'], logits: ['Score every word', 'Score'], pick: ['Pick the next word', 'Pick'], output: ['Back to your screen', 'Show'],
   decode: ['Repeat for more words', 'Repeat'],
@@ -156,17 +157,17 @@ export function captionFor(j: any, a: Activity, peaks: Peaks, info: any): Captio
   const dec = j.decode, pre = j.prefill
   switch (a.stage) {
     case 'input':
-      return { title: 'You type a sentence', text: 'Every key press is a tiny electrical signal. The keyboard sends it to the computer, and the operating system turns it into letters.',
+      return { title: 'You type', text: 'Every key press is a tiny electrical signal. The keyboard sends it to the computer, and the operating system turns it into letters.',
         nums: [{ k: 'characters', v: String(j.input.chars) }, { k: 'bytes (UTF-8)', v: String(j.input.utf8_bytes) }] }
     case 'send':
-      return { title: 'The text is handed to the model program', text: 'The browser passes your text to the program running the model on this same PC. It never leaves the machine; it is just memory handed from one program to another.',
+      return { title: 'Text handed to the model program', text: 'The browser passes your text to the program running the model on this same PC. It never leaves the machine; it is just memory handed from one program to another.',
         nums: [{ k: 'bytes sent', v: String(j.input.utf8_bytes) }, { k: 'network used', v: 'none (localhost)' }] }
     case 'tokenize':
-      return { title: 'The CPU cuts the text into tokens', text: 'A model cannot read letters. A tokenizer cuts the text into pieces it knows, called tokens, and swaps each for an ID number. One CPU core does this in microseconds.',
+      return { title: 'CPU cuts the text into tokens', text: 'A model cannot read letters. A tokenizer cuts the text into pieces it knows, called tokens, and swaps each for an ID number. One CPU core does this in microseconds.',
         nums: [{ k: 'tokens', v: String(tokens) }, { k: 'vocabulary', v: j.tokenize.vocab.toLocaleString() }, { k: 'time (measured)', v: `${j.tokenize.us} µs` }], dive: { path: ['cpu'], label: 'Look inside the CPU' } }
     case 'embed': {
       const e = pre.ops.find((o: any) => o.name === 'embed')
-      return { title: 'Each token ID picks a row of numbers from a huge table', text: `The table has ${d.V.toLocaleString()} rows and ${d.H} columns and lives in RAM. The chosen row is the token's meaning as ${d.H} numbers.`,
+      return { title: 'Each token picks a row from a table', text: `The table has ${d.V.toLocaleString()} rows and ${d.H} columns and lives in RAM. The chosen row is the token's meaning as ${d.H} numbers.`,
         nums: [{ k: 'rows read', v: String(tokens) }, { k: 'bytes read', v: fmtB(tokens * d.H * 4) }, { k: 'time (measured)', v: e ? `${e.ms.toFixed(3)} ms` : 'n/a' }], dive: { path: ['ram'], label: 'Look inside the RAM' } }
     }
     case 'blocks': {
@@ -177,18 +178,18 @@ export function captionFor(j: any, a: Activity, peaks: Peaks, info: any): Captio
     }
     case 'logits': {
       const op = a.op
-      return { title: 'Score every word in the vocabulary', text: `The final vector is compared with all ${d.V.toLocaleString()} words at once. It is the biggest single matrix in the model, so it is the biggest single read from RAM.`,
+      return { title: 'Score every word', text: `The final vector is compared with all ${d.V.toLocaleString()} words at once. It is the biggest single matrix in the model, so it is the biggest single read from RAM.`,
         nums: [{ k: 'matrix', v: `${d.V.toLocaleString()} × ${d.H}` }, { k: 'read from RAM', v: op ? fmtB(op.wbytes) : 'n/a' }, { k: 'time (measured)', v: op ? `${op.ms.toFixed(2)} ms` : 'n/a' }], dive: { path: ['ram'], label: 'Look inside the RAM' } }
     }
     case 'pick':
-      return { title: 'Turn scores into probabilities and pick a word', text: 'Softmax turns the scores into probabilities that add up to 100%. The model takes the most likely word.',
+      return { title: 'Pick the likeliest word', text: 'Softmax turns the scores into probabilities that add up to 100%. The model takes the most likely word.',
         nums: [...j.sample.top.slice(0, 3).map((t: any) => ({ k: t.token.trim() || '·', v: `${(t.p * 100).toFixed(1)}%` })), { k: 'time (measured)', v: `${j.sample.us} µs` }] }
     case 'output':
-      return { title: 'The word travels back to your screen', text: 'The token ID becomes text again, goes back to the browser, and the graphics hardware draws it as pixels.',
+      return { title: 'The word goes back to your screen', text: 'The token ID becomes text again, goes back to the browser, and the graphics hardware draws it as pixels.',
         nums: [{ k: 'text', v: j.sample.chosen.trim() }, { k: 'time (measured)', v: `${j.detok.us} µs` }] }
     case 'decode': {
       const pctPeak = peaks.gbps ? Math.round((100 * dec.effective_gbps) / peaks.gbps) : null
-      return { title: 'To keep writing, repeat for every new word', text: 'The model reuses what it already computed (the KV cache), but each new word still needs every weight again. That makes writing speed a question of how fast RAM can deliver data.',
+      return { title: 'Repeat for every new word', text: 'The model reuses what it already computed (the KV cache), but each new word still needs every weight again. That makes writing speed a question of how fast RAM can deliver data.',
         nums: [{ k: 'speed', v: `${dec.tps} tokens/s` }, { k: 'weights per token', v: fmtB(dec.weight_bytes) }, { k: 'RAM throughput', v: `${dec.effective_gbps} GB/s${pctPeak !== null ? ` (${pctPeak}% of measured peak)` : ''}` }],
         dive: { path: ['ram'], label: 'Why RAM is the limit' } }
     }

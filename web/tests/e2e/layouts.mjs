@@ -21,7 +21,7 @@ await page.evaluate(() => {
 })
 await page.waitForTimeout(2000)
 await page.screenshot({ path: path.join(OUT, 'l-16core-machine.png') }); console.log('shot 16-core machine')
-await page.click('header .seg button:has-text("Electricity")'); await page.waitForTimeout(2000)
+await page.click('header .seg button:has-text("Machine")'); await page.waitForTimeout(2000)
 await page.screenshot({ path: path.join(OUT, 'l-16core-power.png') }); console.log('shot 16-core power')
 await page.close()
 
