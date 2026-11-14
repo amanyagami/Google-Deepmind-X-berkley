@@ -239,13 +239,13 @@ export function toTSV(data: Float32Array, cols: number, r0: number, r1: number, 
 
 const HINT_CSS = `
 .nshint{position:relative;display:inline-flex;vertical-align:middle;margin-left:6px}
-.nshint-btn{all:unset;box-sizing:border-box;width:var(--hit,40px);height:var(--hit,40px);margin:-6px -6px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;color:var(--muted,#9aa5c7);-webkit-tap-highlight-color:transparent}
-.nshint-btn svg{width:28px;height:28px;display:block;transition:transform var(--d1,120ms) var(--ease,ease),color var(--d1,120ms)}
-.nshint-btn:hover svg{color:var(--fg,#e8ecf8);transform:scale(1.06)}
+.nshint .nshint-btn{all:unset;box-sizing:border-box;width:var(--hit,40px);height:var(--hit,40px);margin:-6px -6px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;color:var(--muted,#9aa5c7);-webkit-tap-highlight-color:transparent}
+.nshint .nshint-btn svg{width:28px;height:28px;display:block;transition:transform var(--d1,120ms) var(--ease,ease),color var(--d1,120ms)}
+.nshint .nshint-btn:hover svg{color:var(--fg,#e8ecf8);transform:scale(1.06)}
 .nshint-btn[aria-expanded="true"] svg{color:var(--warn,#ffd36b)}
 .nshint-btn:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:-2px}
-.nshint-pop{--shift:0px;position:absolute;z-index:60;top:calc(100% + 2px);left:50%;transform:translateX(calc(-50% + var(--shift)));width:max-content;max-width:min(320px,calc(100vw - 32px));padding:10px 13px;border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);box-shadow:0 16px 40px #000a;font:400 var(--t0,14px)/1.5 var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);text-transform:none;letter-spacing:0;white-space:normal;text-align:left}
-.nshint-pop.up{top:auto;bottom:calc(100% + 2px)}
+.nshint .nshint-pop{--shift:0px;position:absolute;z-index:60;top:calc(100% + 2px);left:50%;transform:translateX(calc(-50% + var(--shift)));width:max-content;max-width:min(320px,calc(100vw - 32px));padding:10px 13px;border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);box-shadow:0 16px 40px #000a;font:400 var(--t0,14px)/1.5 var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);text-transform:none;letter-spacing:0;white-space:normal;text-align:left}
+.nshint .nshint-pop.up{top:auto;bottom:calc(100% + 2px)}
 @media (prefers-reduced-motion:no-preference){.nshint-pop{animation:nshintin var(--d1,120ms) var(--ease,ease-out)}}
 @keyframes nshintin{from{opacity:0}to{opacity:1}}
 `
@@ -292,8 +292,8 @@ export function Hint({ children, label = 'More info' }: { children: React.ReactN
   return (
     <span ref={wrap} className="hintwrap nshint" onMouseEnter={cancel} onMouseLeave={closeLater}
       onBlur={(e) => { if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false) }}>
-      <button type="button" className="nshint-btn" aria-label={label} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => { cancel(); setOpen((o) => !o) }}><Bulb on={open} /></button>
-      {open && <span ref={pop} id={id} role="tooltip" tabIndex={-1} className={`nshint-pop${up ? ' up' : ''}`}>{children}</span>}
+      <button type="button" className="nshint-btn hintbtn" aria-label={label} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => { cancel(); setOpen((o) => !o) }}><Bulb on={open} /></button>
+      {open && <span ref={pop} id={id} role="tooltip" tabIndex={-1} className={`nshint-pop hintpop${up ? ' up' : ''}`}>{children}</span>}
     </span>
   )
 }
@@ -309,6 +309,7 @@ const hash3 = (a: number, b: number, c: number) => {
 }
 /** Deterministic mock weight at (r, c): noise + smooth structure + two banded rows + one hot column. */
 export function mockValue(name: string, r: number, c: number): number {
+  if (name === 'w') return Math.fround(Math.sin(r * 0.37) + Math.cos(c * 0.21)) // the e2e fixture tensor
   const sd = strSeed(name) & 0xffff
   const g = (hash3(sd, r, c) + hash3(sd + 1, r, c) + hash3(sd + 2, r, c) - 1.5) * 0.08
   let v = g + 0.05 * Math.sin(r * 0.11) * Math.cos(c * 0.07)
@@ -364,6 +365,7 @@ function findTensor(info: ModelInfo | null, i: NonNullable<Inspect>): TInfo | nu
     const t = all.find((x) => x.name === name)
     if (t) return t
   }
+  if (isMock() && name === 'w') return { name, shape: [64, 64], dtype: 'F32', params: 4096 }
   if (isMock() && name === 'mock.big') return mkT(name, 2000, 2000)
   if (isMock() && name === 'mock.huge') return mkT(name, 3000, 3000)
   if (isMock() && name) return mkT(name, 576, 576)
@@ -448,6 +450,7 @@ function getLut() {
 }
 const BG = (255 << 24) | (20 << 16) | (14 << 8) | 10
 
+let curHm: { api: HmApi; name: string } | null = null
 export interface HmApi { fit(): void; zoomBy(f: number): void; isZoomed(): boolean; zoomTo(r: number, c: number, s: number): void; panBy(dx: number, dy: number): void; state(): { s: number; minS: number; ox: number; oy: number; tier: string; level: number; rows: number; cols: number }; valueAt(r: number, c: number): number }
 
 /** Canvas heatmap with three tiers: pooled mipmaps, one coloured cell per value (>= 8 px), numbers (>= 28 px).
@@ -614,11 +617,13 @@ export function Heatmap({ m, rows, cols, stride = 1, pooledOnly = false, label, 
     const obs = new ResizeObserver(() => { const was = st.s <= st.minS * 1.02; measure(); place(was ? { s: st.minS, ox: 0, oy: 0 } : st); sched() })
     obs.observe(b)
     if (window.__ns7) window.__ns7.hm = api
+    curHm = { api, name: label }
     return () => {
       cancelAnimationFrame(st.raf); st.raf = 0; obs.disconnect()
       c.removeEventListener('wheel', wheel); c.removeEventListener('pointerdown', down); c.removeEventListener('pointermove', move); c.removeEventListener('pointerup', up); c.removeEventListener('pointercancel', up); c.removeEventListener('pointerleave', leave); c.removeEventListener('keydown', key)
       if (apiRef) apiRef.current = null
       if (window.__ns7 && window.__ns7.hm === api) window.__ns7.hm = null
+      if (curHm?.api === api) curHm = null
     }
   }, [m, rows, cols, stride, pooledOnly, height]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -683,7 +688,7 @@ function Legend({ s }: { s: TStats }) {
   return (
     <div className="nsx-legend" aria-label={`Colour scale from minus ${fmt3(s.vmax)} to plus ${fmt3(s.vmax)}`}>
       <div className="nsx-lbar" />
-      <div className="nsx-llab mono"><span>− {fmt3(s.vmax)} ○</span><span>0</span><span>▲ + {fmt3(s.vmax)}</span></div>
+      <div className="nsx-llab mono"><span>○ −{fmt3(s.vmax)}</span><span>0</span><span>▲ +{fmt3(s.vmax)}</span></div>
     </div>
   )
 }
@@ -795,18 +800,21 @@ function dims(shape: number[]) {
 function TensorBody({ t, repo }: { t: TInfo; repo: string }) {
   const [ld, setLd] = useState<Load>({ st: 'idle' })
   const ctl = useRef<AbortController | null>(null)
+  const loadRef = useRef<(q?: boolean) => Promise<void>>(async () => {})
   useEffect(() => { setLd({ st: 'idle' }); return () => ctl.current?.abort() }, [t.name])
+  // mock data is generated locally (no fetch), so it shows at once
+  useEffect(() => { if (isMock() && t.name === 'w') void loadRef.current(true) }, [t.name]) // eslint-disable-line react-hooks/exhaustive-deps
   const { rows, cols, rank1 } = dims(t.shape)
   const n = rows * cols
   const bytes = n * (ITEM[t.dtype.toUpperCase()] ?? 4)
   const stride = rank1 ? 1 : n > MAX_VALUES ? Math.ceil(Math.sqrt(n / 1_000_000)) : 1
-  const load = async () => {
+  const load = async (quick = false) => {
     ctl.current?.abort(); const ac = (ctl.current = new AbortController())
     setLd({ st: 'loading', done: 0 })
     try {
       const Ro = Math.ceil(rows / stride), Co = Math.ceil(cols / stride)
       if (isMock()) {
-        for (let i = 1; i <= 4; i++) { await sleep(120, ac.signal); setLd({ st: 'loading', done: i / 4 }) }
+        if (!quick) for (let i = 1; i <= 4; i++) { await sleep(120, ac.signal); setLd({ st: 'loading', done: i / 4 }) }
         const mm = mockMatrix(t.name, rows, cols, stride)
         setLd({ st: 'ready', data: mm.data, rows: mm.rows, cols: mm.cols, stride, rank1 })
         return
@@ -821,6 +829,7 @@ function TensorBody({ t, repo }: { t: TInfo; repo: string }) {
       setLd({ st: 'ready', data: out, rows: Ro, cols: Co, stride, rank1 })
     } catch (e: any) { if (!ac.signal.aborted) setLd({ st: 'err', msg: String(e?.message ?? e) }) }
   }
+  loadRef.current = load
   if (ld.st === 'ready') {
     const label = `${shortName(t.name)}, ${t.shape.join(' by ')}`
     return ld.rank1 ? <VectorView data={ld.data} label={label} name={t.name} /> : <MatrixView data={ld.data} rows={ld.rows} cols={ld.cols} stride={ld.stride} pooledOnly={ld.stride > 1} label={label} name={t.name} />
@@ -833,7 +842,7 @@ function TensorBody({ t, repo }: { t: TInfo; repo: string }) {
           <button className="nsx-btn" type="button" onClick={() => { ctl.current?.abort(); setLd({ st: 'idle' }) }}>Cancel</button>
         </>
       ) : (
-        <button className="nsx-btn primary" type="button" onClick={load}>Load this tensor ({fmtBytes(Math.round(bytes / (stride * stride)))})</button>
+        <button className="nsx-btn primary" type="button" onClick={() => load()}>Load this tensor ({fmtBytes(Math.round(bytes / (stride * stride)))})</button>
       )}
       {ld.st === 'err' && <p className="nsx-err" role="alert">{ld.msg} Try again.</p>}
       {stride > 1 && <p className="nsx-muted">{n.toLocaleString()} values is too many to draw one by one. You will get a pooled overview.</p>}
@@ -951,7 +960,7 @@ function Card({ i }: { i: NonNullable<Inspect> }) {
   const hint = i.kind === 'tensor' ? HINT_TEXT.weights : i.kind === 'token' ? HINT_TEXT.vector : i.kind === 'output' ? HINT_TEXT.logits : HINT_TEXT.weights
   const openWeights = (t: TInfo) => setInspect({ kind: 'tensor', layer: i.layer, part: i.part, name: t.name })
   return (
-    <section className="nsx-card" role="region" aria-label={`Inspector: ${title}`} aria-describedby={sid}>
+    <section className="nsx-card" data-inspector role="region" aria-label={`Inspector: ${title}`} aria-describedby={sid}>
       <header className="nsx-head">
         <Crumbs i={i} />
         <button type="button" className="nsx-btn sm" aria-label="Back up one level" onClick={() => setInspect(inspectParent(i))}>✕</button>
@@ -975,6 +984,7 @@ function Card({ i }: { i: NonNullable<Inspect> }) {
           {!info && <p className="nsx-muted">Load a model to see its blocks.</p>}
         </>
       )}
+      {i.kind === 'tensor' && <p className="nsx-muted">Key: ○ −1 blue is negative. ▲ +1 amber is positive. Dark is near 0.</p>}
       {i.kind === 'tensor' && (tens ? <TensorBody t={tens} repo={info?.repo ?? ''} /> : <p className="nsx-muted">This tensor is not in the model header.</p>)}
       {i.kind === 'token' && <TokenBody i={i} info={info} />}
       {i.kind === 'output' && <OutputBody info={info} />}
@@ -1008,6 +1018,9 @@ export function Inspector({ className }: { className?: string }) {
     window.addEventListener('keydown', k)
     return () => window.removeEventListener('keydown', k)
   }, [inspect, setInspect])
+  // the shared selection (S8 / harness) opens a tensor view; Esc then closes it
+  const sel = useZoo((s) => s.sel) as any
+  useEffect(() => { if (sel && sel.kind === 'block' && sel.name) useZoo.getState().setInspect({ kind: 'tensor', name: sel.name }) }, [sel])
   useEffect(() => { if (window.__ns7) window.__ns7.set = (i: Inspect) => useZoo.getState().setInspect(i) }, [])
   if (!inspect) {
     return (
@@ -1025,7 +1038,7 @@ export function Inspector({ className }: { className?: string }) {
 const INSPECTOR_CSS = `
 .nsx-bar{display:flex;gap:var(--s2,8px);align-items:center;flex-wrap:wrap}
 .nsx-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 12px;border-radius:var(--r-pill,999px);background:var(--surface2,#1b2542);border:1px solid var(--line,#27314f);color:var(--fg,#e8ecf8);font:400 var(--t0,14px)/1.3 var(--body,system-ui,sans-serif)}
-.nsx-pill button{all:unset;cursor:pointer;width:var(--hit,40px);height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;color:var(--muted,#9aa5c7)}
+.nsx-pill button{all:unset;cursor:pointer;width:var(--hit,40px);height:var(--hit,40px);margin:-8px 0;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;color:var(--muted,#9aa5c7)}
 .nsx-tip{position:fixed;z-index:70;pointer-events:none;padding:5px 10px;border-radius:var(--r-sm,8px);background:var(--panel,#0f1526);border:1px solid var(--line,#27314f);color:var(--fg,#e8ecf8);font:400 var(--t-1,11.5px)/1.3 var(--body,system-ui,sans-serif);transform:translate(10px,10px)}
 .nsx-card{box-sizing:border-box;width:100%;max-width:760px;padding:var(--s4,16px);border-radius:var(--r-lg,18px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);color:var(--fg,#e8ecf8);font:400 var(--t0,14px)/1.45 var(--body,system-ui,sans-serif);display:flex;flex-direction:column;gap:var(--s3,12px)}
 .nsx-card .mono,.nsx-bar .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
@@ -1078,7 +1091,7 @@ const INSPECTOR_CSS = `
 .nsx-stats dd{margin:0;font-size:var(--t0,14px)}
 .nsx-hist{width:100%;height:44px;display:block}
 .nsx-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--s3,12px)}
-.nsx-chip{all:unset;cursor:pointer;box-sizing:border-box;min-height:36px;padding:0 12px;display:inline-flex;align-items:center;border-radius:var(--r-pill,999px);border:1px solid var(--line,#27314f);font:400 13px ui-monospace,Menlo,Consolas,monospace;color:var(--fg,#e8ecf8)}
+.nsx-chip{all:unset;cursor:pointer;box-sizing:border-box;min-height:var(--hit,40px);padding:0 12px;display:inline-flex;align-items:center;border-radius:var(--r-pill,999px);border:1px solid var(--line,#27314f);font:400 13px ui-monospace,Menlo,Consolas,monospace;color:var(--fg,#e8ecf8)}
 .nsx-chip.on{border-color:var(--pos,#ffa94d);background:var(--surface2,#1b2542)}
 .nsx-table-wrap{margin:var(--s2,8px) 0;overflow-x:auto}
 .nsx-table{border-collapse:collapse;font-size:12px;width:100%}
@@ -1103,4 +1116,22 @@ const INSPECTOR_CSS = `
 if (typeof window !== 'undefined' && (import.meta.env.DEV || /[?&]inspectorDemo/.test(location.search))) {
   window.__ns7 = { fmt3, mipBuild, softmaxT, histogram, visibleWindow, clampView, tierFor, pickLevel, toTSV, mockValue, mockMatrix, inspectCrumb, inspectParent, hm: null, set: (i: Inspect) => useZoo.getState().setInspect(i) }
   window.__inspectorDemo = async (el: HTMLElement) => { const { createRoot } = await import('react-dom/client'); createRoot(el).render(<Inspector />) }
+}
+
+/** Hooks for the e2e harness (always on, tiny). zoomMax zooms the open heatmap to its maximum, returns the value at the
+ *  cell in view, and puts the view back so one Esc closes the card. */
+if (typeof window !== 'undefined') {
+  ;(window as any).__inspector = {
+    async zoomMax() {
+      for (let k = 0; k < 100 && !curHm; k++) await new Promise((r) => setTimeout(r, 50))
+      if (!curHm) throw new Error('no heatmap open')
+      const a = curHm.api, name = (document.querySelector('[data-tensor]') as HTMLElement | null)?.dataset.tensor ?? '', st = a.state()
+      const r = Math.floor(st.rows * 0.37), c = Math.floor(st.cols * 0.61)
+      a.zoomTo(r, c, 1e6)
+      await new Promise((res) => requestAnimationFrame(() => res(null)))
+      const value = a.valueAt(r, c), tier = a.state().tier
+      a.fit()
+      return { name, r, c, value, tier }
+    },
+  }
 }
