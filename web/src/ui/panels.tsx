@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { animate, motion } from 'framer-motion'
 import { useStore, type Edit } from '../store'
-import { DimBars, Heat, Spark, TopBars, showTok } from './charts'
+import { DimBars, Heat, Hint, Spark, TopBars, showTok } from './charts'
+import { RUNTIME_NAME, scoreRun } from '../hw/score'
+import type { Fit, RunStats } from '../api'
 
 const fmt = (n: number) => n.toLocaleString('en-US')
 const bytes = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${(b / 1e3).toFixed(1)} KB`)
@@ -10,7 +13,7 @@ const sci = (x: number | null | undefined) => (x === null || x === undefined ? '
 /* ------------------------------------------------------------------ Model */
 export function ModelPanel() {
   const { probe, probing, probeErr, mode } = useStore()
-  if (probing) return <p className="hint">Reading config.json and the safetensors header…</p>
+  if (probing) return <p className="hint">Reading the model header…<Hint>Only config.json and the safetensors header are fetched, not the weights.</Hint></p>
   if (probeErr) return <div className="err">{probeErr}</div>
   if (!probe) return <p className="hint">Paste a Hugging Face link above, or pick an example.</p>
   const g = probe.graph, d = g.dims, r = probe.read
@@ -46,7 +49,7 @@ export function ModelPanel() {
           {r.log.map((l: any, i: number) => <li key={i}><span>{l.what}</span><em>{bytes(l.bytes)}</em></li>)}
         </ul>
       </div>
-      {g.notes.map((n: string, i: number) => <p key={i} className="note">{n}</p>)}
+      {g.notes.length > 0 && <p className="note">{g.notes[0]}{g.notes.length > 1 && <Hint label="More notes">{g.notes.slice(1).map((n: string, i: number) => <span key={i}>{n} </span>)}</Hint>}</p>}
     </div>
   )
 }
@@ -61,18 +64,18 @@ export function RunPanel() {
       <label className="lbl" htmlFor="prompt">Prompt</label>
       <textarea id="prompt" rows={2} value={s.prompt} disabled={mode === 'replay'} onChange={(e) => s.setPrompt(e.target.value)}
         onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') s.run() }} />
-      {mode === 'replay' && <p className="hint">Recorded run. Start the backend to type your own prompt.</p>}
+      {mode === 'replay' && <p className="hint">Recorded run.<Hint>Start the backend to type your own prompt.</Hint></p>}
       <div className="row">
         <button className="btn" onClick={() => s.run()} disabled={running || !s.probe || !s.probe.graph.runnable}>{running ? 'Running…' : 'Run'}</button>
         {edits.length > 0 && (
           <label className="chk"><input type="checkbox" checked={useEdits} onChange={(e) => s.setUseEdits(e.target.checked)} /> apply {edits.length} edit{edits.length > 1 ? 's' : ''}</label>
         )}
       </div>
-      {s.runStatus && <p className="hint">{s.runStatus}{s.runStatus === 'Loading model' ? ' (the first run downloads weights)' : ''}…</p>}
+      {s.runStatus && <p className="hint">{s.runStatus}…{s.runStatus === 'Loading model' && <Hint>The first run downloads the weights.</Hint>}</p>}
       {runErr && <div className="err">{runErr}</div>}
       {tokens.length > 0 && (
         <div>
-          <h4>Tokens <small>(click to choose the query position)</small></h4>
+          <h4>Tokens <Hint>Click a token to choose the query position.</Hint></h4>
           <div className="toks">
             {tokens.map((t, i) => (
               <button key={i} className={`tok mono ${(s.qpos < 0 ? tokens.length - 1 : s.qpos) === i ? 'sel' : ''}`} onClick={() => s.setQpos(i)} title={`token ${i}`}>{showTok(t)}</button>
@@ -92,7 +95,7 @@ export function RunPanel() {
           </p>
         </div>
       )}
-      {!final && !running && !runErr && <p className="hint">Press Run. Each layer streams in as the forward pass reaches it and lights up its block.</p>}
+      {!final && !running && !runErr && <p className="hint">Press Run.<Hint>Each layer streams in as the forward pass reaches it and lights up its block.</Hint></p>}
     </div>
   )
 }
@@ -102,7 +105,7 @@ export function LayerPanel() {
   const s = useStore()
   const { probe, selLayer: i, selHead, layers, tokens, scan } = s
   if (!probe) return null
-  if (i === null) return <p className="hint">Click a block in the 3D view. Heads are the small teeth on top of each attention plate.</p>
+  if (i === null) return <p className="hint">Click a block in the 3D view.<Hint>Heads are the small teeth on top of each attention plate.</Hint></p>
   const g = probe.graph, blk = g.blocks[i]
   const f = layers[i]
   const maxN = f ? Math.max(...f.resid_norm.map(Math.abs)) : 1
@@ -112,15 +115,15 @@ export function LayerPanel() {
       <h3 className="ttl">Block {i + 1} <small>of {g.blocks.length}</small></h3>
       {f ? (
         <div>
-          <h4>Residual stream size per token <small>after this block</small></h4>
+          <h4>Residual stream size per token <Hint>Measured after this block.</Hint></h4>
           <TopBars items={tokens.map((t, j) => ({ token: t, p: Math.abs(f.resid_norm[j]) }))} max={maxN} color="var(--pos)" />
-          <p className="hint">Attention adds {f.attn_norm.at(-1).toFixed(2)} and the MLP adds {f.mlp_norm.at(-1).toFixed(2)} to the last token. Top MLP neuron: #{f.mlp.top[0][0]} ({f.mlp.top[0][1]}).</p>
+          <p className="hint mono">attn +{f.attn_norm.at(-1).toFixed(2)} · MLP +{f.mlp_norm.at(-1).toFixed(2)}<Hint>What attention and the MLP add to the last token. Top MLP neuron: #{f.mlp.top[0][0]} ({f.mlp.top[0][1]}).</Hint></p>
         </div>
       ) : <p className="hint">Run a prompt to see this block's activations.</p>}
 
       {f && g.runnable && (
         <div>
-          <h4>Attention heads <small>(rows are query tokens, columns are keys)</small></h4>
+          <h4>Attention heads <Hint>Rows are query tokens, columns are keys.</Hint></h4>
           <div className="heads">
             {f.attn.map((m: number[][], h: number) => {
               const imp = scan?.heads?.[i]?.[h]
@@ -142,7 +145,7 @@ export function LayerPanel() {
       )}
 
       <div>
-        <h4>Tensors <small>(heatmaps read only the rows you ask for)</small></h4>
+        <h4>Tensors <Hint>Heatmaps read only the rows you ask for.</Hint></h4>
         <ul className="tensors">
           {weights.map((t: any) => {
             const loaded = s.tensors[t.name]
@@ -193,7 +196,7 @@ export function CalcPanel() {
             <li>
               <h4>Query vector <small>q for “{c.query_token.trim()}”, {c.hd} dimensions</small></h4>
               <DimBars values={c.q} />
-              <p className="hint">Projected from the residual stream by W<sub>q</sub>{s.probe?.graph.family === 'llama-like' ? ', then rotated by RoPE' : ''}.</p>
+              <Hint>Projected from the residual stream by W<sub>q</sub>{s.probe?.graph.family === 'llama-like' ? ', then rotated by RoPE' : ''}.</Hint>
             </li>
             <li>
               <h4>Dot product with the key for “{c.top_key_token.trim()}” <small>each bar is q<sub>d</sub>·k<sub>d</sub> ÷ √{c.hd}</small></h4>
@@ -203,14 +206,14 @@ export function CalcPanel() {
               </p>
             </li>
             <li>
-              <h4>Scores → softmax <small>how much this token attends to each earlier token</small></h4>
+              <h4>Scores → softmax <Hint>How much this token attends to each earlier token.</Hint></h4>
               <TopBars items={c.tokens.map((t: string, j: number) => ({ token: t, p: c.probs[j] }))} ghost={Object.fromEntries(c.tokens.map((t: string, j: number) => [t, c.model_probs[j]]))} max={Math.max(...c.probs, 0.01)} />
-              <p className="hint">Raw scores: <span className="mono">{c.scores.map((x: number) => x.toFixed(2)).join('  ')}</span>. White tick is the model's own attention weight.</p>
+              <p className="hint mono">{c.scores.map((x: number) => x.toFixed(2)).join('  ')}<Hint>Raw scores. The white tick is the model's own attention weight.</Hint></p>
             </li>
             <li>
               <h4>Head output <small>Σ pⱼ · vⱼ, {c.hd} dimensions</small></h4>
               <DimBars values={c.out} />
-              <p className="hint">This vector goes through W<sub>o</sub> and is added to the residual stream.</p>
+              <Hint>This vector goes through W<sub>o</sub> and is added to the residual stream.</Hint>
             </li>
             <li className="ver">Rebuilt from q and k, the attention matches the model's own: max error <b>{sci(c.verify.max_abs_err)}</b> ✓</li>
           </ol>
@@ -261,7 +264,7 @@ export function EditPanel() {
   return (
     <div className="stack">
       <div>
-        <h4>Which heads matter? <small>ablate each one and watch the answer</small></h4>
+        <h4>Which heads matter? <Hint>Ablate each head in turn and watch the answer change.</Hint></h4>
         <div className="row">
           <button className="btn2" onClick={() => s.runScan()} disabled={s.scanning}>{s.scanning ? 'Scanning every head…' : scan ? 'Re-scan' : 'Scan all heads'}</button>
           {scan && <label className="chk"><input type="checkbox" checked={s.showImportance} onChange={(e) => s.setShowImportance(e.target.checked)} /> show in 3D</label>}
@@ -269,7 +272,7 @@ export function EditPanel() {
         {s.scanErr && <div className="err">{s.scanErr}</div>}
         {scan && (
           <>
-            <p className="hint">Target <b className="mono">{showTok(scan.target)}</b> at {(scan.p * 100).toFixed(1)}%. {scan.forward_passes} forward passes{scan.seconds ? ` in ${scan.seconds}s` : ''}. Brighter means ablating that head removes more of the answer.</p>
+            <p className="hint"><b className="mono">{showTok(scan.target)}</b> {(scan.p * 100).toFixed(1)}% · {scan.forward_passes} passes{scan.seconds ? ` · ${scan.seconds}s` : ''}<Hint>Brighter means ablating that head removes more of the answer.</Hint></p>
             <div className="hgrid" style={{ gridTemplateColumns: `repeat(${g.dims.nh}, 1fr)` }}>
               {scan.heads.map((row: number[], l: number) => row.map((v, h) => (
                 <button key={`${l}-${h}`} className={`hc ${s.selLayer === l && s.selHead === h ? 'sel' : ''}`} title={`L${l + 1} H${h}: −${(Math.max(0, v) * 100).toFixed(1)} percentage points`}
@@ -288,7 +291,7 @@ export function EditPanel() {
       </div>
 
       <div>
-        <h4>Edits <small>applied to a copy; the original is restored after every call</small></h4>
+        <h4>Edits <Hint>Applied to a copy; the original is restored after every call.</Hint></h4>
         {mode === 'live' ? (
           <div className="builder">
             <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Edit type">
@@ -317,7 +320,7 @@ export function EditPanel() {
           </div>
         )}
         {mode === 'live' && <div className="row"><button className="btn" onClick={() => s.runCompare()} disabled={s.comparing || edits.length === 0}>{s.comparing ? 'Running both…' : 'Run A/B on the same prompt'}</button></div>}
-        {mode === 'replay' && !c && <p className="hint">Recorded experiments. Start the backend to build your own edits.</p>}
+        {mode === 'replay' && !c && <p className="hint">Recorded experiments.<Hint>Start the backend to build your own edits.</Hint></p>}
         {s.compareErr && <div className="err">{s.compareErr}</div>}
       </div>
 
@@ -328,7 +331,7 @@ export function EditPanel() {
             <div><h4>Original</h4><TopBars items={c.baseline.topk} max={maxP} /><p className="gen mono">{c.baseline.generation}</p></div>
             <div><h4>Edited</h4><TopBars items={c.edited.topk} ghost={baseMap} max={maxP} color="var(--pos)" /><p className="gen mono"><Diverge a={c.baseline.generation} b={c.edited.generation} /></p></div>
           </div>
-          <h4>Where the edit ripples <small>relative change in the residual stream, layer by layer</small></h4>
+          <h4>Where the edit ripples <Hint>Relative change in the residual stream, layer by layer.</Hint></h4>
           <Spark values={c.diff.layer_drift} label="Relative change in the residual stream per layer" />
           <h4>Biggest movers</h4>
           <table className="movers mono"><tbody>{c.diff.movers.slice(0, 6).map((m: any) => (
@@ -336,6 +339,56 @@ export function EditPanel() {
           ))}</tbody></table>
         </div>
       )}
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------- Run score */
+function Count({ value }: { value: number }) {
+  const [v, setV] = useState(0)
+  useEffect(() => { const a = animate(0, value, { duration: 0.9, ease: 'easeOut', onUpdate: (x) => setV(Math.round(x)) }); return () => a.stop() }, [value])
+  return <>{v}</>
+}
+
+/** How well this computer ran this model: hero number on an arc gauge, tier, four part bars. Reuses .gauge / .gnum. */
+export function RunScoreCard({ stats, fit, params, info }: { stats: RunStats | null | undefined; fit: Fit | null; params: number | null; info: any | null }) {
+  if (!stats) return <div className="stack"><p className="hint">Run a model to score this computer.<Hint>The score compares your speed, response time, energy use and memory headroom with a reference run.</Hint></p></div>
+  const r = scoreRun(stats, fit, { params, info })
+  const size = 150, rad = size / 2 - 12, c = size / 2
+  const a0 = Math.PI * 0.8, a1 = Math.PI * 2.2
+  const pt = (a: number) => `${c + rad * Math.cos(a)} ${c + rad * Math.sin(a)}`
+  const arc = `M ${pt(a0)} A ${rad} ${rad} 0 1 1 ${pt(a1)}`
+  return (
+    <div className="stack">
+      <div className="row" style={{ alignItems: 'center', gap: 14 }}>
+        <div className="gauge" style={{ width: size, height: size * 0.9 }}>
+          <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} role="img" aria-label={`Run score ${r.overall}, ${r.tier}`}>
+            <path d={arc} fill="none" stroke="var(--line)" strokeWidth={9} strokeLinecap="round" />
+            <motion.path d={arc} fill="none" stroke="var(--pos)" strokeWidth={9} strokeLinecap="round" initial={{ pathLength: 0 }} animate={{ pathLength: Math.min(1, r.overall / 2000) }}
+              transition={{ type: 'spring', stiffness: 60, damping: 16 }} style={{ filter: 'drop-shadow(0 0 6px color-mix(in srgb, var(--pos) 60%, transparent))' }} />
+          </svg>
+          <div className="gnum"><b><Count value={r.overall} /></b><span>{r.tier}</span></div>
+        </div>
+        <div>
+          <div className="mono ttl">{stats.repo.split('/').pop()}</div>
+          <div className="badges"><span className="badge on">{RUNTIME_NAME[stats.where]}</span><span className="badge">{stats.task}</span></div>
+        </div>
+      </div>
+      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
+        {r.parts.map((p) => (
+          <li key={p.id}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5 }}>
+              <span>{p.label}<Hint label={`How ${p.label} is scored`}><span className="mono">{p.detail}</span></Hint></span>
+              <span className="mono dim">{p.value}</span>
+              <b className="mono">{p.score === null ? '—' : p.score}</b>
+            </div>
+            <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden', marginTop: 3 }}>
+              <motion.div initial={{ width: 0 }} animate={{ width: `${p.score === null ? 0 : Math.min(100, p.score / 20)}%` }} transition={{ type: 'spring', stiffness: 60, damping: 16 }} style={{ height: '100%', background: 'var(--pos)' }} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="hint">{r.summary}<Hint label="Reference">{r.reference}. Scores are linear, 1000 = the reference, bar full at 2000; overall is a weighted geometric mean (speed 40%, others 20%).</Hint></p>
     </div>
   )
 }

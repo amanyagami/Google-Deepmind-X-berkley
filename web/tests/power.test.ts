@@ -43,3 +43,56 @@ test('the browser power estimate rises with busy cores and stays below the power
   expect(all.pkg_w).toBeLessThan(tdp * 1.2)
   expect(all.core_w.length).toBe(8)
 })
+
+import { REF, REF_BROWSER, scoreRun } from '../src/hw/score'
+import type { Fit, RunStats } from '../src/api'
+
+const rs = (o: Partial<RunStats> = {}): RunStats => ({ where: 'companion', repo: 'a/smol', task: 'text-generation', loadMs: 1000, firstMs: 300, totalMs: 3000, items: 60, unit: 'tokens', perSec: 20, memBytes: null, joules: null, estimatedEnergy: false, ...o })
+const fitOk = (o: Partial<Fit> = {}): Fit => ({ verdict: 'fits', needBytes: 5e8, haveBytes: 1e9, where: 'companion', reason: '', ...o })
+const part = (r: ReturnType<typeof scoreRun>, id: string) => r.parts.find((p) => p.id === id)!
+
+test('scoreRun: the reference run (135M, 20 tok/s, 300 ms, half the memory) scores about 1000', () => {
+  const j = (60 * 2 * 135e6) / (0.5 * 2 * 135e6) // joules at exactly the reference work per joule
+  const r = scoreRun(rs({ joules: j }), fitOk(), { params: 135e6, info: null })
+  for (const p of r.parts) { expect(p.score).toBeGreaterThan(995); expect(p.score).toBeLessThan(1005) }
+  expect(r.overall).toBeGreaterThan(990); expect(r.overall).toBeLessThan(1010)
+  expect(r.tier).toBe('Strong')
+  expect(part(r, 'speed').detail).toContain('20')
+})
+
+test('scoreRun: same tokens/s on a bigger model means more work; browser runtimes use their own reference', () => {
+  const small = part(scoreRun(rs(), null, { params: 135e6, info: null }), 'speed').score!
+  const big = part(scoreRun(rs(), null, { params: 270e6, info: null }), 'speed').score!
+  expect(big).toBe(2 * small)
+  const gpu = part(scoreRun(rs({ where: 'webgpu', perSec: REF_BROWSER.ai }), null, { params: 135e6, info: null }), 'speed').score!
+  const wasm = part(scoreRun(rs({ where: 'wasm', perSec: REF_BROWSER.ai_wasm }), null, { params: 135e6, info: null }), 'speed').score!
+  expect(gpu).toBe(1000); expect(wasm).toBe(1000)
+  expect(part(scoreRun(rs({ perSec: REF.ai }), null, { params: 135e6, info: null }), 'speed').score).toBe(1000)
+})
+
+test('scoreRun: missing energy, params or fit leave that part null; the overall comes from the rest', () => {
+  const r = scoreRun(rs(), fitOk(), { params: 135e6, info: null })
+  expect(part(r, 'efficiency').score).toBeNull()
+  expect(r.overall).toBeGreaterThan(0)
+  expect(part(scoreRun(rs(), fitOk(), { params: null, info: null }), 'speed').score).toBeNull()
+  const est = scoreRun(rs({ joules: 50, estimatedEnergy: true }), null, { params: 135e6, info: null })
+  expect(part(est, 'efficiency').label).toContain('est')
+  expect(part(est, 'headroom').score).toBeNull()
+})
+
+test('scoreRun: a too-big model drags the overall down through headroom', () => {
+  const ok = scoreRun(rs(), fitOk(), { params: 135e6, info: null })
+  const big = scoreRun(rs(), fitOk({ verdict: 'too-big', needBytes: 2e9 }), { params: 135e6, info: null })
+  expect(part(big, 'headroom').score).toBe(50)
+  expect(big.overall).toBeLessThan(ok.overall * 0.6)
+  expect(part(scoreRun(rs(), fitOk({ verdict: 'tight', needBytes: 9e8 }), { params: 135e6, info: null }), 'headroom').score!).toBeLessThan(250)
+})
+
+test('scoreRun: overall is the weighted geometric mean of the parts; response is inverse-linear and capped', () => {
+  const r = scoreRun(rs({ joules: 60 }), fitOk({ needBytes: 3e8 }), { params: 100e6, info: null })
+  const W: Record<string, number> = { speed: 0.4, response: 0.2, efficiency: 0.2, headroom: 0.2 }
+  const g = Math.exp(r.parts.reduce((s, p) => s + W[p.id] * Math.log(p.score!), 0))
+  expect(Math.abs(r.overall - g)).toBeLessThanOrEqual(1)
+  expect(part(scoreRun(rs({ firstMs: 600 }), null, { params: 1, info: null }), 'response').score).toBe(500)
+  expect(part(scoreRun(rs({ firstMs: 1 }), null, { params: 1, info: null }), 'response').score).toBe(2000)
+})

@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useHW } from './hwStore'
+import type { Fit, RunStats } from '../api'
 
 // Scores are linear against fixed reference values: 1000 points = the reference.
 // The references are rounded figures for a recent mainstream laptop. This is a relative yardstick for
@@ -108,4 +109,91 @@ export function useScores(): Scores {
   const info = useHW((s) => s.info)
   const power = useHW((s) => s.power)
   return useMemo(() => computeScores(bench, journey, info, power), [bench, journey, info, power])
+}
+
+/* ------------------------------------------------------------------ run score
+ * How well did THIS computer run THIS model? 1000 points = the reference, like the device score above. Scores are
+ * normalised by work so a 22M and a 1B model are comparable: work rate = items/s x 2 x params (FLOP/s, the cost of one
+ * forward pass per item). References come from the language-model rows of REF / REF_BROWSER, measured with the 135M
+ * SmolLM2: 20 tok/s native (PyTorch fp32), 63 tok/s WebGPU, 31 tok/s WebAssembly. Native and browser stay separate. */
+const REF_PARAMS = 135e6
+export const REF_RUN = {
+  companion: REF.ai * 2 * REF_PARAMS,              // 5.4 GFLOP/s
+  webgpu: REF_BROWSER.ai * 2 * REF_PARAMS,         // 17.0 GFLOP/s
+  wasm: REF_BROWSER.ai_wasm * 2 * REF_PARAMS,      // 8.4 GFLOP/s
+  firstMs: 300,                                    // time to first output worth 1000 points
+  joule: 0.5 * 2 * REF_PARAMS,                     // 0.5 tokens per joule (REF_EFF.ai = 500 words/kJ) = 135 MFLOP/J
+  rtf: 5, rtfParams: 74e6,                         // speech: 5x real time for a 74M model
+  needFrac: 0.5,                                   // headroom: 1000 points at half the memory budget
+}
+// One item is a forward pass over a whole input, not one token: tokens of work per item.
+const ITEM_TOKENS: Record<string, number> = { 'text-classification': 16, 'fill-mask': 16, 'image-classification': 197, 'automatic-speech-recognition': 1500 }
+
+export interface RunPart { id: 'speed' | 'response' | 'efficiency' | 'headroom'; label: string; score: number | null; value: string; detail: string }
+export interface RunScore { overall: number; tier: string; parts: RunPart[]; summary: string; reference: string }
+
+const RUN_W = { speed: 0.4, response: 0.2, efficiency: 0.2, headroom: 0.2 }
+const cap = (x: number) => Math.max(0, Math.min(2000, Math.round(x)))
+const si = (x: number, u: string) => (x >= 1e9 ? `${(x / 1e9).toFixed(1)} G${u}` : x >= 1e6 ? `${(x / 1e6).toFixed(1)} M${u}` : `${(x / 1e3).toFixed(1)} k${u}`)
+const nice = (x: number) => (x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2))
+export const RUNTIME_NAME: Record<string, string> = { companion: 'Companion (PyTorch)', webgpu: 'WebGPU', wasm: 'WebAssembly', none: 'not run' }
+
+/** ctx.audioSec (optional): length of the audio for speech tasks, to score by real-time factor. */
+export function scoreRun(stats: RunStats, fit: Fit | null, ctx: { params: number | null; info: any | null; audioSec?: number }): RunScore {
+  const where = stats.where
+  const ref = where === 'companion' ? REF_RUN.companion : where === 'webgpu' ? REF_RUN.webgpu : REF_RUN.wasm
+  const refTps = where === 'companion' ? REF.ai : where === 'webgpu' ? REF_BROWSER.ai : REF_BROWSER.ai_wasm
+  const params = ctx.params && ctx.params > 0 ? ctx.params : null
+  const tokens = stats.unit === 'tokens'
+  const perItem = tokens ? 1 : ITEM_TOKENS[stats.task] ?? 16
+  const flopsPerItem = params ? 2 * params * perItem : null
+  const rate = flopsPerItem && isFinite(stats.perSec) && stats.perSec > 0 ? stats.perSec * flopsPerItem : null
+
+  let speed: RunPart
+  const rtf = ctx.audioSec && stats.totalMs > 0 ? ctx.audioSec / (stats.totalMs / 1000) : null
+  if (stats.task === 'automatic-speech-recognition' && rtf && params) {
+    const sc = cap((1000 * rtf * params) / (REF_RUN.rtf * REF_RUN.rtfParams))
+    speed = { id: 'speed', label: 'Speed', score: sc, value: `${nice(rtf)}x real time`,
+      detail: `${nice(rtf)}x real time (${ctx.audioSec!.toFixed(1)} s of audio in ${(stats.totalMs / 1000).toFixed(2)} s) x ${si(params, '')} params / (${REF_RUN.rtf}x x ${si(REF_RUN.rtfParams, '')}) x 1000 = ${sc}` }
+  } else if (rate) {
+    const sc = cap((1000 * rate) / ref)
+    speed = { id: 'speed', label: 'Speed', score: sc, value: `${nice(stats.perSec)} ${tokens ? 'tok/s' : 'items/s'} · ${si(rate, 'FLOP/s')}`,
+      detail: `${nice(stats.perSec)} ${tokens ? 'tokens' : 'items'}/s x 2 x ${si(params!, '')} params${tokens ? '' : ` x ${perItem} tokens per item`} = ${si(rate, 'FLOP/s')}; / ${si(ref, 'FLOP/s')} reference (${refTps} tok/s on a 135M model) x 1000 = ${sc}` }
+  } else speed = { id: 'speed', label: 'Speed', score: null, value: stats.perSec ? `${nice(stats.perSec)} ${tokens ? 'tok/s' : 'items/s'}` : '—', detail: 'Needs the parameter count to compare models of different sizes.' }
+
+  const first = stats.firstMs > 0 ? stats.firstMs : null
+  const rsc = first ? cap((1000 * REF_RUN.firstMs) / first) : null
+  const response: RunPart = { id: 'response', label: 'Response', score: rsc, value: first ? `${first >= 1000 ? (first / 1000).toFixed(2) + ' s' : Math.round(first) + ' ms'} to first output` : '—',
+    detail: first ? `${REF_RUN.firstMs} ms / ${Math.round(first)} ms x 1000 = ${rsc} (capped at 2000)` : 'No timing recorded.' }
+
+  const work = flopsPerItem ? flopsPerItem * stats.items : null
+  let efficiency: RunPart
+  if (stats.joules && stats.joules > 0 && work) {
+    const wpj = work / stats.joules, sc = cap((1000 * wpj) / REF_RUN.joule), est = stats.estimatedEnergy
+    efficiency = { id: 'efficiency', label: est ? 'Efficiency (est.)' : 'Efficiency', score: sc, value: `${si(wpj, 'FLOP/J')} · ${stats.joules.toFixed(1)} J${est ? ' est.' : ''}`,
+      detail: `${si(work, 'FLOP')} / ${stats.joules.toFixed(1)} J (${est ? 'estimated from load and TDP' : 'measured'}) = ${si(wpj, 'FLOP/J')}; / ${si(REF_RUN.joule, 'FLOP/J')} reference x 1000 = ${sc}` }
+  } else efficiency = { id: 'efficiency', label: 'Efficiency', score: null, value: 'no energy data', detail: 'Needs a power sensor (companion) or an energy estimate.' }
+
+  let headroom: RunPart
+  if (fit) {
+    const frac = fit.haveBytes ? fit.needBytes / fit.haveBytes : null
+    let sc: number
+    if (fit.verdict === 'too-big') sc = 50
+    else if (frac !== null) sc = Math.min(fit.verdict === 'tight' ? 600 : 2000, Math.max(50, cap((1000 * (1 - frac)) / (1 - REF_RUN.needFrac))))
+    else sc = fit.verdict === 'tight' ? 400 : 1000
+    const mem = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${Math.round(b / 1e6)} MB`)
+    headroom = { id: 'headroom', label: 'Headroom', score: sc, value: frac !== null ? `${Math.round(frac * 100)}% of memory · ${fit.verdict}` : fit.verdict,
+      detail: frac !== null ? `${mem(fit.needBytes)} of ${mem(fit.haveBytes!)} = ${Math.round(frac * 100)}% of budget; (1 - ${frac.toFixed(2)}) / ${1 - REF_RUN.needFrac} x 1000 = ${sc}${fit.verdict === 'tight' ? ' (capped at 600: tight)' : fit.verdict === 'too-big' ? ' (floor 50: too big)' : ''}` : `Verdict ${fit.verdict}; memory budget unknown.` }
+  } else headroom = { id: 'headroom', label: 'Headroom', score: null, value: '—', detail: 'No fit estimate for this model.' }
+
+  const parts = [speed, response, efficiency, headroom]
+  let sw = 0, sl = 0
+  for (const p of parts) if (p.score !== null) { const w = RUN_W[p.id]; sw += w; sl += w * Math.log(Math.max(p.score, 1)) }
+  const overall = sw ? Math.round(Math.exp(sl / sw)) : 0
+  const rel = speed.score === null ? null : speed.score / 1000
+  const dev = ctx.info?.cpu?.name ?? ctx.info?.cpu?.model
+  const pace = rel === null ? '' : rel >= 1 ? ` at ${nice(rel)}x the reference speed` : ` at ${Math.round(rel * 100)}% of the reference speed`
+  const summary = `${stats.repo.split('/').pop()} ran on ${RUNTIME_NAME[where]}${dev ? ` (${dev})` : ''}${pace}.`
+  const reference = `1000 = ${refTps} tok/s on a 135M model (${RUNTIME_NAME[where]}) · ${REF_RUN.firstMs} ms to first output · ${Math.round(REF_RUN.joule / 1e6)} MFLOP/J · half the memory budget used`
+  return { overall, tier: tierOf(sw ? overall : null), parts, summary, reference }
 }
