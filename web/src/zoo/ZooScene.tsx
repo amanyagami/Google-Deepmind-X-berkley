@@ -396,12 +396,14 @@ function VlmScene() {
 /** The model loaded at the top of the page, on the shared prompt, in the same visual language as the small networks:
  *  prompt tokens, then one column of glowing spheres per block (each sphere: one token's signal after that block, from
  *  the real run), the attention of the last token in the block being played, and the next-word scores. */
+const MAXT = 48 // token labels are mounted once, for up to this many prompt tokens (HTML labels must never unmount)
 function LlmScene() {
   const T = useZoo((s) => (s.net === 'llm' ? s.out?.T ?? 0 : 0))
   const L = useZoo((s) => (s.net === 'llm' ? s.out?.L ?? 0 : 0))
   const nh = useZoo((s) => (s.net === 'llm' ? s.out?.nh ?? 0 : 0))
-  if (!T || !L) return <group />
-  return <LlmLayout key={`${T}x${L}x${nh}`} T={T} L={L} nh={nh} />
+  const last = useRef<{ T: number; L: number; nh: number } | null>(null)
+  if (T && L) last.current = { T, L, nh }
+  return last.current ? <LlmLayout {...last.current} /> : <group />
 }
 
 function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
@@ -418,49 +420,54 @@ function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
   useFrame(() => {
     if (Z().net !== 'llm') return
     const s = Z(), r = reach('llm', s.t, 'blocks'), k = blockAt()
+    if (!marker.current) return
     marker.current.visible = r > 0 && r < 1
     marker.current.position.x = colX(k)
     if (blockTag.current) blockTag.current.textContent = r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}: attention, then MLP`
     const toks: string[] = s.out?.tokens ?? []
-    for (let t = 0; t < T; t++) { const el = words.current[t]; if (el) { el.textContent = (toks[t] ?? '').replace(/\n/g, '⏎') || '·'; el.style.opacity = reach('llm', s.t, 'input') > (t + 0.5) / T ? '1' : '0.25' } }
+    for (let t = 0; t < MAXT; t++) { const el = words.current[t]; if (el) { el.style.display = t < T ? '' : 'none'; if (t < T) { el.textContent = (toks[t] ?? '').replace(/\n/g, '⏎') || '·'; el.style.opacity = reach('llm', s.t, 'input') > (t + 0.5) / T ? '1' : '0.25' } } }
   })
   const span = z(T - 1) - z(0) + 1.4
   return (
     <group>
-      {/* the prompt, one tile per token: height = size of its embedding */}
-      <Tiles get={() => Z().out?.emb ?? null} count={T} place={(t) => [-8.2, 0, z(t)]} size={0.5} stage="input" maxAbs={1} layer="tok" kind="token" lift={0.7} scanReveal />
-      {Array.from({ length: T }, (_, t) => (
-        <Html key={t} position={[-9.0, 0.25, z(t)]} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
+      {/* Only plain meshes live in the keyed group: they are rebuilt when a run changes shape. Every HTML label sits
+          outside it and stays mounted for good (drei <Html> breaks if it unmounts while the camera moves). */}
+      <group key={`${T}x${L}x${nh}`}>
+        {/* the prompt, one tile per token: height = size of its embedding */}
+        <Tiles get={() => Z().out?.emb ?? null} count={T} place={(t) => [-8.2, 0, z(t)]} size={0.5} stage="input" maxAbs={1} layer="tok" kind="token" lift={0.7} scanReveal />
+        {/* each token's signal as it leaves every block, linked block to block */}
+        <Links stage="blocks" max={T * L + 20} compute={() => {
+          const o = Z().out; const res: { a: THREE.Vector3; b: THREE.Vector3; v: number }[] = []
+          for (let t = 0; t < T; t++) res.push({ a: V(-8.2, 0.3, z(t)), b: V(colX(0), 0.35, z(t)), v: o.emb[t] ?? 0 })
+          for (let k = 1; k < L; k++) for (let t = 0; t < T; t++) res.push({ a: V(colX(k - 1), 0.35, z(t)), b: V(colX(k), 0.35, z(t)), v: o.resid[k * T + t] ?? 0 })
+          return res
+        }} />
+        <Nodes get={() => Z().out?.resid ?? null} count={T * L} place={node} stage="blocks" maxAbs={() => 1} layer="resid" r={Math.min(0.15, 4.2 / L)} />
+        <Tiles get={() => Z().out?.heads ?? null} count={L * nh} place={head} size={Math.min(0.17, 4.5 / L)} stage="blocks" maxAbs={1} layer="heads" kind="head" lift={0.45} scanReveal />
+        {/* the block being played, and who the last token listens to inside it */}
+        <mesh ref={marker} position={[colX(0), 0.35, (z(0) + z(T - 1)) / 2]} visible={false}>
+          <boxGeometry args={[0.06, 0.7, span]} /><meshBasicMaterial color={AMBER.clone().multiplyScalar(1.6)} transparent opacity={0.55} toneMapped={false} />
+        </mesh>
+        <Arcs stage="blocks" max={T} bend={[0.8, 0.6, 0]} compute={() => {
+          const o = Z().out, k = blockAt(), x = colX(k)
+          return Array.from({ length: T }, (_, j) => ({ a: V(x, 0.4, z(T - 1)), b: V(x, 0.4, z(j)), w: o.attn[k]?.[j] ?? 0, head: 0 }))
+        }} />
+        {/* the last token predicts the next word */}
+        <Links stage="out" compute={() => { const o = Z().out; return Array.from({ length: 10 }, (_, i) => ({ a: V(colX(L - 1), 0.35, z(T - 1)), b: V(7.6, 0.1, (i - 4.5) * 0.62), v: o.probs[i] ?? 0 })) }} />
+      </group>
+      {Array.from({ length: MAXT }, (_, t) => (
+        <Html key={t} position={[-9.0, 0.25, z(Math.min(t, T - 1))]} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
           <div style={{ display: active ? undefined : 'none', transform: 'translateX(-50%)' }}><div className="wordtag mono" ref={(el) => { words.current[t] = el }} /></div>
         </Html>
       ))}
-      <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={`${T} tokens · tile height = embedding size`} />
-      {/* each token's signal as it leaves every block, linked block to block */}
-      <Links stage="blocks" max={T * L + 20} compute={() => {
-        const o = Z().out; const res: { a: THREE.Vector3; b: THREE.Vector3; v: number }[] = []
-        for (let t = 0; t < T; t++) res.push({ a: V(-8.2, 0.3, z(t)), b: V(colX(0), 0.35, z(t)), v: o.emb[t] ?? 0 })
-        for (let k = 1; k < L; k++) for (let t = 0; t < T; t++) res.push({ a: V(colX(k - 1), 0.35, z(t)), b: V(colX(k), 0.35, z(t)), v: o.resid[k * T + t] ?? 0 })
-        return res
-      }} />
-      <Nodes get={() => Z().out?.resid ?? null} count={T * L} place={node} stage="blocks" maxAbs={() => 1} layer="resid" r={Math.min(0.15, 4.2 / L)} />
-      <Tiles get={() => Z().out?.heads ?? null} count={L * nh} place={head} size={Math.min(0.17, 4.5 / L)} stage="blocks" maxAbs={1} layer="heads" kind="head" lift={0.45} scanReveal />
-      <Tag pos={[0, 0.2, zHead - nh * 0.2 - 0.5]} name="Attention heads" sub={`${nh} per block · taller = stronger output`} />
-      <Tag pos={[colX(Math.floor(L / 2)), 0.2, z(T - 1) + 1.3]} name={`${L} blocks`} sub="each sphere: one token's signal after a block (log scale)" />
-      {/* the block being played, and who the last token listens to inside it */}
-      <mesh ref={marker} position={[colX(0), 0.35, (z(0) + z(T - 1)) / 2]} visible={false}>
-        <boxGeometry args={[0.06, 0.7, span]} /><meshBasicMaterial color={AMBER.clone().multiplyScalar(1.6)} transparent opacity={0.55} toneMapped={false} />
-      </mesh>
-      <Arcs stage="blocks" max={T} bend={[0.8, 0.6, 0]} compute={() => {
-        const o = Z().out, k = blockAt(), x = colX(k)
-        return Array.from({ length: T }, (_, j) => ({ a: V(x, 0.4, z(T - 1)), b: V(x, 0.4, z(j)), w: o.attn[k]?.[j] ?? 0, head: 0 }))
-      }} />
+      <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={`${T} tokens`} />
+      <Tag pos={[0, 0.2, zHead - nh * 0.2 - 0.5]} name="Attention heads" sub={`${nh} per block`} />
+      <Tag pos={[colX(Math.floor(L / 2)), 0.2, z(T - 1) + 1.3]} name={`${L} blocks`} sub="one sphere per token, per block" />
       <Html position={[0, 1.6, zHead - nh * 0.2 - 1.3]} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
         <div className="mlabel" style={{ display: active ? undefined : 'none' }}><b>Now playing</b><span ref={(el) => { blockTag.current = el }} /></div>
       </Html>
-      {/* the last token predicts the next word */}
-      <Links stage="out" compute={() => { const o = Z().out; return Array.from({ length: 10 }, (_, i) => ({ a: V(colX(L - 1), 0.35, z(T - 1)), b: V(7.6, 0.1, (i - 4.5) * 0.62), v: o.probs[i] ?? 0 })) }} />
       <Bars origin={[7.6, 0, 0]} stage="out" />
-      <Tag pos={[7.6, 0.2, 3.9]} name="Next word" sub="the model's top 10 guesses" />
+      <Tag pos={[7.6, 0.2, 3.9]} name="Next word" sub="top 10 guesses" />
     </group>
   )
 }

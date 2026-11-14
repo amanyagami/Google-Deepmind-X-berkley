@@ -5,6 +5,7 @@ import { FLOPS, isNeutral, readDigit } from './nets'
 import { locateZ, NETS, STAGES, totalZ, useZoo, type DigitNet, type NetId } from './zooStore'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, ModelPanel, RunPanel } from '../ui/panels'
+import { Hint } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
@@ -38,8 +39,8 @@ function DrawPad() {
         onPointerDown={(e) => { drawing.current = true; (e.target as HTMLElement).setPointerCapture(e.pointerId); paint(e) }}
         onPointerMove={(e) => { if (drawing.current) paint(e) }} onPointerUp={() => { drawing.current = false }} />
       <div className="col">
-        <p className="hint small">Draw a digit with the mouse. Every network recomputes as you draw.</p>
-        {stressed && <div className="seen"><canvas ref={seen} width={96} height={96} aria-label="What the networks see after the stress test" /><span className="hint small">what the networks see</span></div>}
+        <p className="small">Draw a digit<Hint>Every network recomputes as you draw. Pick a test digit below, or draw your own with the mouse.</Hint></p>
+        {stressed && <div className="seen"><canvas ref={seen} width={96} height={96} aria-label="What the networks see after the stress test" /><span className="small">they see this</span></div>}
         <button className="btn2 sm" onClick={() => useZoo.getState().setImg(new Array(64).fill(0), null)}>Clear</button>
       </div>
     </div>
@@ -70,7 +71,7 @@ function Output() {
       <div className="ccard">
         <h4>Caption written by the model</h4>
         <p className="caption-out">“{words.join(' ').replace(' ,', ',')}”</p>
-        <p className="hint small">Each word is chosen from {pack.vocab!.length} possible words, given the image tokens and the words written so far. {label !== null ? `This test image is a ${label}.` : ''}</p>
+        <p className="small mono">{label !== null ? `the test image is a ${label}` : 'your drawing'}<Hint>Each word is chosen from {pack.vocab!.length} possible words, given the image tokens and the words written so far.</Hint></p>
       </div>
     )
   }
@@ -79,7 +80,7 @@ function Output() {
     <div className="ccard">
       <h4>Prediction <small>{label !== null ? `the test image is a ${label}` : 'your drawing'}</small></h4>
       <div className="probs">{out.probs.map((p: number, i: number) => <div key={i} className={i === best ? 'on' : ''}><i style={{ height: `${Math.max(2, p * 100)}%` }} /><span>{i}</span></div>)}</div>
-      <p className="hint small">{best} with {(out.probs[best] * 100).toFixed(1)}% confidence.</p>
+      <p className="small mono">{best} · {(out.probs[best] * 100).toFixed(1)}% sure</p>
     </div>
   )
 }
@@ -101,8 +102,7 @@ function DotCard({ title, T, bias, z, act, note }: { title: string; T: ReturnTyp
           {T.nRest > 0 && <tr><td colSpan={3}>{T.nRest} smaller terms</td><td>{f(T.rest)}</td></tr>}
           <tr><td colSpan={3}>bias</td><td>{f(bias)}</td></tr></tbody></table>
       <p className="mono res">sum = <b>{f(z)}</b>{act ? <> → {act[0]} → <b>{f(act[1])}</b></> : null}</p>
-      {T.zeros > 0 && <p className="hint small">{T.zeros} inputs were exactly 0 and add nothing.</p>}
-      {note && <p className="hint small">{note}</p>}
+      {(T.zeros > 0 || note) && <Hint>{T.zeros > 0 ? `${T.zeros} inputs were exactly 0 and add nothing. ` : ''}{note}</Hint>}
     </>
   )
 }
@@ -110,9 +110,9 @@ function DotCard({ title, T, bias, z, act, note }: { title: string; T: ReturnTyp
 function CalcCard() {
   const { net, out, pack, sel } = useZoo(useShallow((s) => ({ net: s.net, out: s.out, pack: s.packs[s.net], sel: s.sel })))
   if (!out || !pack) return null
-  if (!sel) return <div className="ccard"><h4>How is a number computed?</h4><p className="hint">Double-click any neuron, cell or token in the 3D view to see the arithmetic behind it, with the real numbers.</p></div>
+  if (!sel) return <div className="ccard"><h4>How is a number computed?<Hint>Double-click any neuron, cell or token in the 3D view to see the arithmetic behind it, with the real numbers.</Hint></h4></div>
   const w = pack.weights
-  let body: any = <p className="hint">This is an input value: {f(out.input?.[sel.index] ?? 0)} (the brightness of that pixel, 0 to 1).</p>
+  let body: any = <p className="mono small">input pixel = {f(out.input?.[sel.index] ?? 0)}<Hint>The brightness of that pixel, 0 to 1.</Hint></p>
   if (net === 'mlp' && (sel.layer === 'h1' || sel.layer === 'h2')) {
     const L = sel.layer === 'h1' ? 'fc1' : 'fc2', x = sel.layer === 'h1' ? out.input : out.h1, z = (sel.layer === 'h1' ? out.z1 : out.z2)[sel.index]
     body = <DotCard title={`Neuron ${sel.index} of ${sel.layer === 'h1' ? 'hidden layer 1' : 'hidden layer 2'}`} T={terms(w[`${L}.weight`], sel.index, x)} bias={w[`${L}.bias`].data[sel.index]} z={z} act={['ReLU (negative becomes 0)', Math.max(0, z)]} />
@@ -130,7 +130,7 @@ function CalcCard() {
           <div className="kgrid mono">{Array.from({ length: 9 }, (_, k) => { const iy = y + Math.floor(k / 3) - 1, ix = x + (k % 3) - 1; const v = iy >= 0 && ix >= 0 && iy < 8 && ix < 8 ? src[iy * 8 + ix] : 0; const kw = K[(m * 9) + k]; return <div key={k}><span>{f(v, 2)}</span><b className={kw < 0 ? 'neg' : 'pos'}>×{f(kw, 2)}</b></div> })}</div>
         ) : <p className="mono small">{per.map((v, c) => `map ${c}: ${f(v)}`).join(' · ')}</p>}
         <p className="mono res">sum {cin > 1 ? 'over 8 maps × 9 weights' : 'of 9 products'} + bias {f(b)} = <b>{f(z)}</b> → ReLU → <b>{f(Math.max(0, z))}</b></p>
-        <p className="hint small">The same 3×3 filter slides over every position: this map is that one filter's answer everywhere.</p>
+        <Hint>The same 3×3 filter slides over every position: this map is that one filter's answer everywhere.</Hint>
       </>
     )
   } else if (net === 'rnn' && sel.layer?.startsWith('h')) {
@@ -139,9 +139,9 @@ function CalcCard() {
       <>
         <h4>Memory unit {j} after row {t + 1}</h4>
         <ul className="facts mono">
-          <li><span>reset gate r</span><b>{f(g.r[j])}</b><em className="hint small">how much of the old memory to use when forming the new candidate</em></li>
-          <li><span>update gate z</span><b>{f(g.z[j])}</b><em className="hint small">how much of the old memory to keep</em></li>
-          <li><span>candidate n</span><b>{f(g.n[j])}</b><em className="hint small">tanh(new row · weights + r × old memory · weights)</em></li>
+          <li><span>reset gate r</span><b>{f(g.r[j])}</b><Hint>How much of the old memory to use when forming the new candidate.</Hint></li>
+          <li><span>update gate z</span><b>{f(g.z[j])}</b><Hint>How much of the old memory to keep.</Hint></li>
+          <li><span>candidate n</span><b>{f(g.n[j])}</b><Hint>tanh(new row · weights + r × old memory · weights)</Hint></li>
           <li><span>old memory</span><b>{f(hp)}</b></li>
         </ul>
         <p className="mono res">new = (1 − {f(g.z[j], 2)}) × {f(g.n[j], 2)} + {f(g.z[j], 2)} × {f(hp, 2)} = <b>{f(out.hidden[t][j])}</b></p>
@@ -153,10 +153,9 @@ function CalcCard() {
     body = (
       <>
         <h4>{tok === 0 ? 'The summary token' : `Token ${tok} (patch ${tok - 1})`}</h4>
-        <p className="hint small">It compares its query with every token's key (dot product ÷ √8), turns the scores into weights with softmax, and takes the weighted average of their values.</p>
+        <Hint>It compares its query with every token's key (dot product ÷ √8), turns the scores into weights with softmax, and takes the weighted average of their values. The arcs show this token's attention; double-click another token to switch.</Hint>
         {rows.map((r: any[], h: number) => <p key={h} className="mono small">head {h + 1}: {r.map((q) => `${q.j === 0 ? 'summary' : 'patch ' + (q.j - 1)} ${(q.a * 100).toFixed(0)}%`).join(' · ')}</p>)}
-        <p className="hint small">The arcs show this token's attention. Double-click another token to switch.</p>
-      </>
+              </>
     )
   } else if (net === 'vlm') {
     body = <VlmStepCard />
@@ -176,7 +175,7 @@ function VlmStepCard() {
     <>
       <h4>Choosing word {k + 1}: “{pack!.vocab![step.chosen]}”</h4>
       <div className="probs h">{top.map((q: any) => <div key={q.w}><span className="mono">{q.w}</span><i style={{ width: `${q.p * 100}%` }} /><b className="mono">{(q.p * 100).toFixed(1)}%</b></div>)}</div>
-      <p className="hint small">While choosing it, head 1 put {(img[0] * 100).toFixed(0)}% and head 2 {(img[1] * 100).toFixed(0)}% of their attention on the image tokens; the rest went to the words already written. Scrub the timeline to watch each word being chosen.</p>
+      <Hint>While choosing it, head 1 put {(img[0] * 100).toFixed(0)}% and head 2 {(img[1] * 100).toFixed(0)}% of their attention on the image tokens; the rest went to the words already written. Scrub the timeline to watch each word being chosen.</Hint>
     </>
   )
 }
@@ -234,7 +233,7 @@ export function CompareCard() {
           </button>
         ))}
       </div>
-      <p className="hint small">Computed live in this page as you draw. Times are measured here, averaged over {timing.mlp?.n ?? '…'}+ runs; the VLM's time is for writing its whole caption. Click a row to see that network in 3D.</p>
+      <Hint>Computed live in this page as you draw. Times are measured here, averaged over {timing.mlp?.n ?? '…'}+ runs; the VLM's time is for writing its whole caption. Click a row to see that network in 3D.</Hint>
     </div>
   )
 }
@@ -257,7 +256,7 @@ export function StressCard() {
         <button className="btn2 sm" disabled={!fx.noise} onClick={() => set({ seed: fx.seed + 1 })}>New noise</button>
         <button className="btn2 sm" disabled={off} onClick={() => set({ noise: 0, dx: 0, dy: 0, thick: 0 })}>Reset</button>
       </div>
-      <p className="hint small">A CNN's filters slide, so it often survives a shift that breaks the MLP, which ties each weight to one fixed pixel.</p>
+      <Hint>A CNN's filters slide, so it often survives a shift that breaks the MLP, which ties each weight to one fixed pixel.</Hint>
     </div>
   )
 }
@@ -277,7 +276,7 @@ export function RobustCard() {
       <h4>Which network is most robust? <small>accuracy on {sweep?.n ?? 48} test digits as noise rises</small></h4>
       {!sweep ? (
         <>
-          <p className="hint small">Runs all five networks on every test digit at six noise levels (three noise draws each), in this page.</p>
+          <Hint>Runs all five networks on every test digit at six noise levels (three noise draws each), in this page.</Hint>
           <button className="btn2 sm" onClick={() => run()}>Run the robustness test</button>
         </>
       ) : (
@@ -320,7 +319,7 @@ export function RobustCard() {
             <table className="optab mono"><thead><tr><th>noise</th>{done.map((n) => <th key={n.id}>{n.short}</th>)}</tr></thead>
               <tbody>{lv.map((l, i) => <tr key={i}><td>{Math.round(l * 100)}%</td>{done.map((n) => <td key={n.id}>{sweep.acc[n.id]![i] !== undefined ? `${Math.round(sweep.acc[n.id]![i] * 100)}%` : ''}</td>)}</tr>)}</tbody></table>
           )}
-          <p className="hint small">The VLM counts as right when the number word in its caption is the right digit.</p>
+          <Hint>The VLM counts as right when the number word in its caption is the right digit.</Hint>
         </>
       )}
     </div>
@@ -345,10 +344,9 @@ export function ZooView() {
         </div>
         {p && (
           <div className="phud zoohud">
-            <p className="eyebrow">{p.title}</p>
-            <p className="small">{p.blurb}</p>
+            <p className="eyebrow">{p.title}<Hint>{p.blurb}</Hint></p>
             <div className="prow mono"><div><span>parameters</span><b>{p.params.toLocaleString()}</b></div><div><span>{p.accuracy_note ?? 'test accuracy'}</span><b>{(p.accuracy * 100).toFixed(1)}%</b></div></div>
-            <p className="hint small">Work per image: {FLOPS[net as DigitNet]}. Computed in this page, on this device.</p>
+            <p className="small mono">{FLOPS[net as DigitNet].split('≈').pop()?.trim()}<Hint>Work per image: {FLOPS[net as DigitNet]}. Computed in this page, on this device.</Hint></p>
           </div>
         )}
         <div className="stagebottom"><ZooTimeline /></div>
@@ -365,7 +363,7 @@ export function ZooView() {
             <Output />
             <CalcCard />
             <RobustCard />
-            <p className="hint small">All five were trained on the same 1,500 handwritten digits (scikit-learn's 8×8 set) by server/train_zoo.py, so you can compare how each kind of network solves the same problem. The browser's arithmetic is checked against PyTorch's by tests/zoo.test.ts.</p>
+            <p className="small">About these networks<Hint>All five were trained on the same 1,500 handwritten digits (scikit-learn's 8×8 set) by server/train_zoo.py, so you can compare how each kind of network solves the same problem. The browser's arithmetic is checked against PyTorch's by tests/zoo.test.ts.</Hint></p>
           </div>
         </div>}
       </aside>
