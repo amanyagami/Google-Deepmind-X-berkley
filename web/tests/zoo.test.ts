@@ -93,6 +93,7 @@ test('S6 breadcrumb and smaller-model suggestion', () => {
   const rows = [{ id: 'a', task: 'text-generation', bytes: 900, verdict: 'too-big' }, { id: 'b', task: 'text-generation', bytes: 80, verdict: 'fits' }, { id: 'c', task: 'text-generation', bytes: 300, verdict: 'fits' }]
   assert.equal(smallerSuggestion(rows[0], rows)!.id, 'c')
 
+})
 /* ===================================================================================== S4 models engine (fenced block) */
 import { describe as s4describe, it as s4it, expect as s4expect, vi as s4vi, beforeEach as s4beforeEach, afterEach as s4afterEach } from 'vitest'
 import * as S4 from '../src/api'
