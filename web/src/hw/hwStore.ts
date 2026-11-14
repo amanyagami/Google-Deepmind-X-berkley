@@ -57,9 +57,10 @@ export const REGISTRY: RegistryRow[] = []                       // filled below 
  * the spreads recorded on the test PC (median/max: 1-core 0.94, all-core 0.85, RAM 0.97). It is NOT frozen yet:
  * REF v1 is frozen later, on the reference device (5 sessions per engine, raw medians). Until then 1000 is a
  * placeholder, and a REF change re-scores stored results because results keep raw samples and medians. */
+/** Units follow the runners: GFLOP/s, GB/s (cache, RAM), MB/s (storage). */
 export const REF_V1: Record<Scale, Record<string, number>> = {
-  native: { cpu1: 94, cpun: 340, cache: 100, ram: 39, storage: 2, gpu: 500 },
-  browser: { cpu1: 28, cpun: 113, cache: 160, ram: 53, storage: 0.8, gpu: 500 },
+  native: { cpu1: 94, cpun: 340, cache: 100, ram: 39, storage: 2000, gpu: 500 },
+  browser: { cpu1: 28, cpun: 113, cache: 160, ram: 53, storage: 250, gpu: 500 },
 }
 /** Language-model decode reference (tokens/s of the 135M reference model) per runtime. */
 export const MODEL_REF: Record<'companion' | 'webgpu' | 'wasm', number> = { companion: 20, webgpu: 63, wasm: 31 }
@@ -341,7 +342,7 @@ export const useHW = create<HW>((set, get) => ({
     current = ctrl
     set((s) => ({ running: id, progress: null, testErrors: Object.fromEntries(Object.entries(s.testErrors).filter(([k]) => k !== id)) }))
     try {
-      let r = await row.run(v.value, ctrl.signal, (p) => { if (current === ctrl) set({ progress: p }) })
+      let r = await row.run(input == null ? null : v.value, ctrl.signal, (p) => { if (current === ctrl) set({ progress: p }) })
       if (ctrl.signal.aborted) return null
       // a custom input never overwrites the standard result: it is stored apart and never scored
       if (input != null && row.input && input !== row.input.default && r.input.kind !== 'custom')
