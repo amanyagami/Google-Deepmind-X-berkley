@@ -242,3 +242,86 @@ export function timeNet(net: NetId, p: Pack, images: number[][]): Speed {
   while (n < images.length || (performance.now() - t0 < 60 && n < images.length * 20)) { readDigit(net, p, images[n % images.length]); n++ }
   return { us: ((performance.now() - t0) * 1000) / n, n }
 }
+
+/* ======================================================================================= S6 model UI helpers (pure) */
+export type UiTask = 'text-generation' | 'fill-mask' | 'text-classification' | 'image-classification' | 'automatic-speech-recognition'
+
+/** The five groups of the model picker, in order. */
+export const TASK_GROUPS: { task: UiTask; label: string }[] = [
+  { task: 'text-generation', label: 'Text' }, { task: 'fill-mask', label: 'Fill-mask' }, { task: 'text-classification', label: 'Sentiment' },
+  { task: 'image-classification', label: 'Image' }, { task: 'automatic-speech-recognition', label: 'Speech' },
+]
+
+/** The layer-type legend (TODO §6.3). S8 draws the shapes; this only names them. */
+export const LAYER_LEGEND: { name: string; shape: string; icon: string; tint: string }[] = [
+  { name: 'Embedding / input', shape: 'flat tiles', icon: '▦', tint: '#7d8bb0' },
+  { name: 'Attention', shape: 'head teeth and arcs', icon: '◎', tint: '#7b86e0' },
+  { name: 'MLP / dense', shape: 'spheres', icon: '●', tint: '#c9a46a' },
+  { name: 'Convolution', shape: 'cell grid and kernel frame', icon: '▣', tint: '#3fb3a6' },
+  { name: 'Pooling', shape: 'flatter cells', icon: '▫', tint: '#8fd1c8' },
+  { name: 'Recurrent', shape: 'spheres and a loop ring', icon: '↻', tint: '#a68bd8' },
+  { name: 'Norm', shape: 'thin outline ring', icon: '○', tint: '#7d8bb0' },
+  { name: 'Output', shape: 'bars', icon: '▮', tint: '#7d8bb0' },
+]
+
+export const MB = 1024 * 1024
+export const fmtBytes = (b: number | null | undefined) => (b == null || !isFinite(b) ? 'size unknown' : b >= 1024 * MB ? `${(b / 1024 / MB).toFixed(1)} GB` : `${Math.max(1, Math.round(b / MB))} MB`)
+/** Seconds to download `bytes` at `mbps` megabits per second. */
+export const etaSecs = (bytes: number | null | undefined, mbps = 20) => (bytes == null ? null : Math.max(1, Math.round((bytes * 8) / (mbps * 1e6))))
+export const fmtEta = (s: number | null | undefined) => (s == null ? '' : s < 90 ? `about ${Math.max(1, Math.round(s))} s` : `about ${Math.round(s / 60)} min`)
+/** Rule from TODO section 0.3: under 25 MB one click, 25-150 MB show size, above that warn. */
+export const consentFor = (bytes: number | null | undefined, saveData = false): 'none' | 'size' | 'warn' => (saveData || (bytes ?? 0) > 150 * MB ? 'warn' : (bytes ?? 0) >= 25 * MB ? 'size' : 'none')
+/** The button text of the one primary action. */
+export const startLabel = (p: { bytes: number | null; cached: boolean } | null | undefined, verb = '▶ Start') => (!p || (!p.cached && p.bytes == null) ? verb : p.cached ? `${verb} (cached)` : `${verb} (download ${fmtBytes(p.bytes)})`)
+
+export const VERDICT_WORD = { fits: 'runs', tight: 'slow', 'too-big': 'too big' } as const
+
+/** Group catalog rows by task, keeping the picker's order and dropping empty groups. */
+export function groupByTask<T extends { task?: string | null }>(rows: T[]): { task: UiTask; label: string; rows: T[] }[] {
+  return TASK_GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => (r.task ?? 'text-generation') === g.task) })).filter((g) => g.rows.length)
+}
+
+/** The nearest smaller model of the same task that is not too big: the suggestion shown beside a "too big" verdict. */
+export function smallerSuggestion<T extends { id: string; task?: string | null; bytes: number | null; verdict?: string }>(row: T, rows: T[]): T | null {
+  const t = row.task ?? 'text-generation'
+  const c = rows.filter((r) => r.id !== row.id && (r.task ?? 'text-generation') === t && r.verdict !== 'too-big' && (r.bytes ?? Infinity) < (row.bytes ?? Infinity))
+  return c.sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0))[0] ?? null
+}
+
+/** `inspect` as the path shown above the scene: Model > Block 12 > Attention. Layers count from 0 inside, from 1 on screen. */
+export function crumbs(i: { kind: string; layer?: number; part?: string; name?: string; index?: number } | null): string[] {
+  if (!i) return []
+  const out = ['Model']
+  if (i.kind === 'block' || i.layer !== undefined) out.push(`Block ${(i.layer ?? 0) + 1}`)
+  if (i.part) out.push({ attn: 'Attention', mlp: 'MLP', norm: 'Norm', embed: 'Embedding' }[i.part] ?? i.part)
+  if (i.kind === 'tensor' && i.name) out.push(i.name.split('.').slice(-2).join('.'))
+  if (i.kind === 'token') out.push(`Token ${i.index ?? 0}`)
+  if (i.kind === 'output') out.push('Output')
+  return out
+}
+
+export interface InputCaps { deviceMemoryGB?: number | null }
+export const TEXT_CAP_TOKENS = 512, TEXT_CAP_LOW = 128, IMAGE_CAP_MB = 10, AUDIO_CAP_S = 30
+/** Fallback check, used until the models engine's own validateInput is present. Returns a message, or null when fine. */
+export function checkInput(task: UiTask | null, input: { kind: string; text?: string; url?: string }, caps?: InputCaps | null, extra?: { bytes?: number; seconds?: number }): string | null {
+  if (input.kind === 'text') {
+    const text = (input.text ?? '').trim()
+    if (!text) return 'Type some text first.'
+    const cap = (caps?.deviceMemoryGB ?? 8) < 4 ? TEXT_CAP_LOW : TEXT_CAP_TOKENS
+    const est = Math.ceil(text.length / 4)
+    if (est > cap) return `That is too long. This device takes up to ${cap} tokens (about ${cap * 4} letters).`
+    if (task === 'fill-mask' && !/\[MASK\]/.test(text)) return 'Add [MASK] where the word goes.'
+    return null
+  }
+  if (!input.url) return input.kind === 'image' ? 'Pick an image first.' : 'Pick a sound first.'
+  if (input.kind === 'image' && extra?.bytes && extra.bytes > IMAGE_CAP_MB * MB) return `That image is over ${IMAGE_CAP_MB} MB. Pick a smaller one.`
+  if (input.kind === 'audio' && extra?.seconds && extra.seconds > AUDIO_CAP_S) return `That clip is over ${AUDIO_CAP_S} s. Pick a shorter one.`
+  return null
+}
+/** The models engine may return a string, null, or {ok,message}: read all of them the same way. */
+export function readCheck(r: any): string | null {
+  if (!r || r === true) return null
+  if (typeof r === 'string') return r
+  if (r.ok === true || r.valid === true) return null
+  return String(r.message ?? r.error ?? r.reason ?? 'That input does not work.')
+}
