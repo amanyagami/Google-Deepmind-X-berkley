@@ -10,3 +10,4 @@ torch
 psutil
 scikit-learn
 pytest
+httpx
