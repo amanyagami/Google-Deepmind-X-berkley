@@ -1,12 +1,15 @@
 import { create } from 'zustand'
-import { api, parseRepo, streamRun } from './api'
+import { api, checkFit, deviceBudget, parseRepo, resolveModel, streamRun } from './api'
+import type { Fit, ModelSpec, RunStats, Task, TaskInput } from './api'
 
 export type Tab = 'model' | 'run' | 'layer' | 'calc' | 'edit'
 export interface Edit { type: string; layer?: number; head?: number; index?: number; name?: string; factor?: number; row?: number; col?: number; value?: number }
-export interface ExampleMeta { id: string; title: string; repo: string; prompt: string; file: string }
+/** A recorded example has `file` and `prompt`; a default model per task has `task` and `input` only. */
+export interface ExampleMeta { id: string; title: string; repo: string; prompt?: string; file?: string; task?: Task; input?: TaskInput }
 
 const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 let timer: ReturnType<typeof setInterval> | null = null
+let loadSeq = 0
 
 export type AppView = 'model' | 'journey' | 'power' | 'zoo'
 let lockUntil = 0
@@ -44,6 +47,12 @@ interface S {
   examples: ExampleMeta[]
   pack: any | null
   repo: string
+  /** what the Hub says about the repo, whether it fits this computer, and what to run it on */
+  spec: ModelSpec | null
+  fit: Fit | null
+  input: TaskInput
+  setInput: (i: TaskInput) => void
+  lastStats: RunStats | null
   probe: any | null
   probing: boolean
   probeErr: string | null
@@ -81,7 +90,7 @@ interface S {
   runScan: () => Promise<void>
   setShowImportance: (v: boolean) => void
   init: () => Promise<void>
-  loadModel: (text: string, prompt?: string) => Promise<void>
+  loadModel: (text: string, prompt?: string, input?: TaskInput) => Promise<void>
   loadExample: (id: string) => Promise<void>
   setPrompt: (p: string) => void
   run: () => Promise<void>
@@ -104,7 +113,7 @@ interface S {
 
 const resetRun = {
   tokens: [], embed: null, layers: [], final: null, revealed: 0, running: false, streaming: false,
-  runStatus: null, runErr: null, maxes: { attn: 1, mlp: 1, head: 1 },
+  runStatus: null, runErr: null, lastStats: null as RunStats | null, maxes: { attn: 1, mlp: 1, head: 1 },
 }
 
 export const useStore = create<S>((set, get) => {
@@ -142,13 +151,15 @@ export const useStore = create<S>((set, get) => {
     setAppView: (appView: AppView) => set({ appView } as any),
     visible: { model: true }, setVisible: (visible) => set({ visible } as any),
     details: readDetails(), setDetails: (details) => { set({ details } as any); try { localStorage.setItem(DETAILS_KEY, details ? '1' : '0') } catch { /* private mode */ } },
-    backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', probe: null, probing: false, probeErr: null,
+    backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
     prompt: 'The capital of France is', ...resetRun, selLayer: null, selHead: null, qpos: -1, hover: null, tab: 'model',
     runSeq: 0, tensors: {}, tensorErr: null, edits: [], useEdits: true, compare: null, comparing: false, compareErr: null,
     calc: null, calcing: false, calcErr: null,
     scan: null, scanning: false, scanErr: null, scanMax: 1, showImportance: false,
 
     setShowImportance: (showImportance) => set({ showImportance }),
+
+    setInput: (input) => set(input.kind === 'text' ? { input, prompt: input.text } : { input }),
 
     async runScan() {
       const s = get()
@@ -172,44 +183,90 @@ export const useStore = create<S>((set, get) => {
       else await get().loadModel('HuggingFaceTB/SmolLM2-135M')
     },
 
-    async loadModel(text, prompt) {
+    async loadModel(text, prompt, input) {
       const repo = parseRepo(text)
       if (timer) { clearInterval(timer); timer = null }
-      set({ repo, probing: true, probeErr: null, probe: null, ...resetRun, selLayer: null, selHead: null, tensors: {}, edits: [], compare: null, calc: null, scan: null, showImportance: false, tab: 'model', ...(prompt ? { prompt } : {}) })
+      const mySeq = ++loadSeq
+      const prevTask = get().spec?.task
+      set({ repo, spec: null, fit: null, probing: true, probeErr: null, probe: null, ...resetRun, selLayer: null, selHead: null, tensors: {}, edits: [], compare: null, calc: null, scan: null, showImportance: false, tab: 'model', ...(prompt ? { prompt, input: { kind: 'text', text: prompt } as TaskInput } : {}) })
+      // what the Hub says and whether it fits here (needs no companion)
+      let spec: ModelSpec | null = null, fit: Fit | null = null, specErr: string | null = null
+      try {
+        spec = await resolveModel(repo)
+        fit = checkFit(spec, await deviceBudget())
+      } catch (e: any) { specErr = e.message ?? String(e) }
+      if (mySeq !== loadSeq) return
+      if (spec) {
+        const keep = !prompt && !input && prevTask === spec.task && get().input.kind === 'text'
+        const inp: TaskInput = input ?? (prompt ? { kind: 'text', text: prompt } : keep ? get().input : spec.defaultInput)
+        set({ spec, fit, input: inp, ...(inp.kind === 'text' ? { prompt: inp.text } : {}) })
+      }
+      const browserOk = !!fit && (fit.where === 'webgpu' || fit.where === 'wasm')
       try {
         if (get().backend === 'online') {
-          const probe = await api.probe(repo)
-          set({ probe, mode: 'live', pack: null })
+          try {
+            const probe = await api.probe(repo)
+            set({ probe, mode: 'live', pack: null })
+          } catch (e) {
+            if (!browserOk) throw e
+            set({ mode: 'live', pack: null })   // the browser can still run it; only the companion's deep views are missing
+          }
         } else {
-          const meta = get().examples.find((e) => e.repo.toLowerCase() === repo.toLowerCase())
-          if (!meta) throw new Error('The backend is offline and this model has no recorded example. Start the server to load any model.')
-          const pack = await (await fetch(`${import.meta.env.BASE_URL}examples/${meta.file}`)).json()
-          set({ probe: pack.probe, pack, mode: 'replay', prompt: pack.prompt })
+          const meta = get().examples.find((e) => e.file && e.repo.toLowerCase() === repo.toLowerCase())
+          if (meta) {
+            const pack = await (await fetch(`${import.meta.env.BASE_URL}examples/${meta.file}`)).json()
+            set({ probe: pack.probe, pack, mode: 'replay', prompt: pack.prompt, input: { kind: 'text', text: pack.prompt } })
+          } else if (browserOk) set({ mode: 'live', pack: null })
+          else throw new Error(specErr ?? fit?.reason ?? 'The backend is offline and this model has no recorded example. Start the server to load any model.')
         }
       } catch (e: any) {
-        set({ probeErr: e.message ?? String(e) })
+        // a repo the Hub could not resolve (gated, private, missing) is reported as such, not as a failed probe
+        if (mySeq === loadSeq) set({ probeErr: specErr ?? e.message ?? String(e) })
       } finally {
-        set({ probing: false })
+        if (mySeq === loadSeq) set({ probing: false })
       }
     },
 
     async loadExample(id) {
       const meta = get().examples.find((e) => e.id === id)
-      if (meta) await get().loadModel(meta.repo, meta.prompt)
+      if (meta) await get().loadModel(meta.repo, meta.prompt, meta.input)
     },
 
-    setPrompt: (prompt) => set({ prompt }),
+    setPrompt: (prompt) => set({ prompt, input: { kind: 'text', text: prompt } }),
 
     async run() {
       const s = get()
-      if (!s.probe) return
+      if (!s.probe && !s.spec) return
+      const replay = s.mode === 'replay' && !!s.pack
+      const where = s.fit?.where ?? 'none'
+      if (!replay && s.fit?.verdict === 'too-big') {
+        const same = (e: ExampleMeta) => e.repo.toLowerCase() !== s.repo.toLowerCase()
+        const alt = s.examples.find((e) => same(e) && (e.task ?? 'text-generation') === s.spec?.task) ?? s.examples.find(same)
+        set({ ...resetRun, tab: 'run', runErr: `${s.fit.reason}${alt ? ` Try ${alt.repo} instead, a smaller model for the same task.` : ''}` })
+        return
+      }
+      const viaBrowser = !replay && (where === 'webgpu' || where === 'wasm')
+      // the companion path, also for repos the probe can read but the fit rules do not list (kept from before)
+      const viaCompanion = !replay && !viaBrowser && s.mode === 'live' && !!s.probe
+      if (!replay && !viaBrowser && !viaCompanion) {
+        set({ ...resetRun, tab: 'run', runErr: s.fit?.reason ?? 'This model cannot run on this computer.' })
+        return
+      }
       set({ ...resetRun, running: true, streaming: true, tab: 'run' })
       startReveal()
+      const t0 = performance.now()
       try {
-        if (s.mode === 'live') {
-          await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], onFrame)
-        } else {
+        if (replay) {
           for (const f of s.pack.run.frames) onFrame(f)
+        } else if (viaBrowser) {
+          const eng: any = await import('./hw/browserBench')
+          if (typeof eng.runInBrowser !== 'function') throw new Error('The in-browser engine is not available in this build.')
+          const stats: RunStats = await eng.runInBrowser(s.spec, s.input, onFrame, { device: where })
+          set({ lastStats: stats })
+        } else {
+          await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], onFrame)
+          const totalMs = performance.now() - t0, fin = get().final
+          set({ lastStats: { where: 'companion', repo: s.repo, task: s.spec?.task ?? 'text-generation', loadMs: 0, firstMs: (fin?.seconds ?? totalMs / 1000) * 1000, totalMs, items: 1, unit: 'items', perSec: 1000 / totalMs, memBytes: null, joules: null, estimatedEnergy: false } })
         }
       } catch (e: any) {
         set({ runErr: e.message ?? String(e), running: false })
