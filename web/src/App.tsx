@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { Hint } from './ui/charts'
 import { probe } from './hw/browserBench'
-import { jumpLocked, jumpTo, useStore, type AppView } from './store'
+import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
 // Each view loads its own code on first use, so the first page needs only what it shows.
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
@@ -91,7 +91,7 @@ function Dock() {
         <form className="dockform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
           <label className="sr" htmlFor="sharedprompt">Prompt</label>
           <input id="sharedprompt" className="dockprompt" value={s.prompt} onChange={(e) => s.setPrompt(e.target.value)} spellCheck={false} disabled={s.mode === 'replay'} title={s.mode === 'replay' ? 'Recorded run. Start the companion to type your own prompt.' : 'The same prompt drives the model and the machine'} />
-          <button className="btn primary" type="submit" disabled={s.running || !s.probe?.graph?.runnable}>{s.running ? <><span className="spin" aria-hidden />Running</> : <><Ico d={PLAY} fill />Run</>}</button>
+          <button className="btn primary" type="submit" disabled={!canRun(s)}>{s.running ? <><span className="spin" aria-hidden />Running</> : <><Ico d={PLAY} fill />Run</>}</button>
         </form>
         {s.runStatus && <span className="dockstat mono" role="status">{s.runStatus}</span>}
       </div>
@@ -188,7 +188,7 @@ export default function App() {
   useSheet()
   // every model opens already run on the shared prompt, so the animations have something real to show
   const autoRan = useRef('')
-  useEffect(() => { const s = useStore.getState(); if (probeRes?.graph?.runnable && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run() } }, [probeRes, layers])
+  useEffect(() => { const s = useStore.getState(); if (canRun(s) && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run({ auto: true }) } }, [probeRes, layers])
   useEffect(() => { init() }, [init])
   // a link such as /#power opens at that section (the old #journey link opens the merged Machine section)
   useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first === 'journey' ? 'power' : first, false)) }, [])
