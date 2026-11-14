@@ -221,7 +221,7 @@ export function CompareCard() {
   const maxUs = Math.max(1, ...NETS.map((n) => timing[n.id]?.us ?? 0))
   return (
     <div className="ccard">
-      <h4>All five networks <small>{digits.length < 5 ? 'loading…' : agree ? `all read a ${digits[0]}` : 'they disagree'}</small></h4>
+      <h4>All five networks <small>{digits.length < 5 ? 'loading…' : agree ? `all read a ${digits[0]}` : 'they disagree'}</small><Hint>Computed live in this page as you draw. Times are measured here, averaged over {timing.mlp?.n ?? '…'}+ runs; the VLM's time is for writing its whole caption. Click a row to see that network in 3D.</Hint></h4>
       <div className="cmp" role="table" aria-label="What each network reads, how sure it is, and how long it takes here">
         <div className="cmph" role="row"><span role="columnheader">network</span><span role="columnheader">reads</span><span role="columnheader">sure</span><span role="columnheader">time per image, this device</span></div>
         {rows.map(({ id, r }) => (
@@ -233,7 +233,6 @@ export function CompareCard() {
           </button>
         ))}
       </div>
-      <Hint>Computed live in this page as you draw. Times are measured here, averaged over {timing.mlp?.n ?? '…'}+ runs; the VLM's time is for writing its whole caption. Click a row to see that network in 3D.</Hint>
     </div>
   )
 }
@@ -245,7 +244,7 @@ export function StressCard() {
   const off = isNeutral(fx)
   return (
     <div className="ccard">
-      <h4>Stress test <small>{off ? 'the clean image' : 'every network sees the changed image'}</small></h4>
+      <h4>Stress test <small>{off ? 'the clean image' : 'every network sees the changed image'}</small><Hint>A CNN's filters slide, so it often survives a shift that breaks the MLP, which ties each weight to one fixed pixel.</Hint></h4>
       <div className="fxgrid">
         <label>Noise <input type="range" min={0} max={0.9} step={0.05} value={fx.noise} onChange={(e) => set({ noise: +e.target.value })} /><em className="mono">{Math.round(fx.noise * 100)}%</em></label>
         <label>Shift → <input type="range" min={-2} max={2} step={1} value={fx.dx} onChange={(e) => set({ dx: +e.target.value })} /><em className="mono">{fx.dx > 0 ? '+' : ''}{fx.dx} px</em></label>
@@ -256,7 +255,6 @@ export function StressCard() {
         <button className="btn2 sm" disabled={!fx.noise} onClick={() => set({ seed: fx.seed + 1 })}>New noise</button>
         <button className="btn2 sm" disabled={off} onClick={() => set({ noise: 0, dx: 0, dy: 0, thick: 0 })}>Reset</button>
       </div>
-      <Hint>A CNN's filters slide, so it often survives a shift that breaks the MLP, which ties each weight to one fixed pixel.</Hint>
     </div>
   )
 }
@@ -273,10 +271,9 @@ export function RobustCard() {
   const done = NETS.filter((n) => (sweep?.acc[n.id]?.length ?? 0) > 0)
   return (
     <div className="ccard">
-      <h4>Which network is most robust? <small>accuracy on {sweep?.n ?? 48} test digits as noise rises</small></h4>
+      <h4>Which network is most robust? <small>accuracy on {sweep?.n ?? 48} test digits as noise rises</small><Hint>Runs all five networks on every test digit at six noise levels (three noise draws each), in this page. The VLM counts as right when the number word in its caption is the right digit.</Hint></h4>
       {!sweep ? (
         <>
-          <Hint>Runs all five networks on every test digit at six noise levels (three noise draws each), in this page.</Hint>
           <button className="btn2 sm" onClick={() => run()}>Run the robustness test</button>
         </>
       ) : (
@@ -319,7 +316,6 @@ export function RobustCard() {
             <table className="optab mono"><thead><tr><th>noise</th>{done.map((n) => <th key={n.id}>{n.short}</th>)}</tr></thead>
               <tbody>{lv.map((l, i) => <tr key={i}><td>{Math.round(l * 100)}%</td>{done.map((n) => <td key={n.id}>{sweep.acc[n.id]![i] !== undefined ? `${Math.round(sweep.acc[n.id]![i] * 100)}%` : ''}</td>)}</tr>)}</tbody></table>
           )}
-          <Hint>The VLM counts as right when the number word in its caption is the right digit.</Hint>
         </>
       )}
     </div>
