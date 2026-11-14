@@ -273,5 +273,5 @@ export const checks = [
     const comp = await fetch('http://127.0.0.1:8000/api/hw/info').then(async (r) => (r.ok ? `ok, ${(await r.json()).cpu?.name ?? 'cpu ?'}` : r.status), () => 'down')
     return hub === 200 ? P(`Hub ${hub}; companion ${comp}`) : F(`Hub ${hub}; companion ${comp}`) } },
   { id: 'T2', tier: 3, title: 'smoke: real page, real Hub, no mocks: a first score appears', needs: ['S4'], run: async (env) => {
-    const p = await env.open({ hub: false, companion: 'real' }); await p.goto(); await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 180000 }); await p.shot('t2'); return P('score shown') } },
+    const p = await env.open({ hub: false, companion: 'real' }); await p.goto(); await startModel(p.page); await p.page.waitForSelector('p[data-runscore]', { timeout: 180000 }); await p.shot('t2'); return P('score shown') } },
 ]

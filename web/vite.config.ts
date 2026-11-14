@@ -33,7 +33,12 @@ const selfHostOrt = (): Plugin => ({
       res.end(readFileSync(resolve(ortDir, f)))
     })
   },
-  generateBundle() { for (const n of ORT) this.emitFile({ type: 'asset', fileName: 'ort/' + n, source: readFileSync(resolve(ortDir, n)) }) },
+  enforce: 'post',
+  generateBundle(_o, bundle) {
+    // the runtime also gets bundled as a hashed 26 MB asset nobody loads (wasmPaths points at /ort/): drop that copy
+    for (const k of Object.keys(bundle)) if (/^assets\/ort-wasm[^/]*\.wasm$/.test(k)) delete bundle[k]
+    for (const n of ORT) this.emitFile({ type: 'asset', fileName: 'ort/' + n, source: readFileSync(resolve(ortDir, n)) })
+  },
 })
 
 export default defineConfig({
