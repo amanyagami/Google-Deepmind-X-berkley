@@ -11,6 +11,40 @@ const pbuf: any[] = []
 let pflush = 0
 let lastProg = 0
 
+/* ================================================================== CONTRACT (frozen in Phase 0; owner: S3)
+ * One result shape for every test, browser or companion. S2 produces it, S3 scores and stores it, S5 shows it.
+ * Change it only through the gate owner. */
+export type ComponentId = 'cpu1' | 'cpun' | 'cache' | 'ram' | 'storage' | 'gpu' | 'net' | 'energy' | `model:${string}`
+export type Pillar = 'compute' | 'memory' | 'gpu' | 'storage' | 'model'
+export type Scale = 'browser' | 'native'
+export type Flag = 'noisy' | 'hidden-tab' | 'on-battery' | 'not-isolated' | 'coarse-timer' | 'software-gpu' | 'size-halved' | 'estimated' | 'cancelled' | 'custom' | `fallback:${string}`
+export interface TestResult {
+  v: 1
+  component: ComponentId
+  scale: Scale
+  workload: { id: string; v: number }
+  input: { kind: 'default' | 'custom'; summary: string }      // never raw user data
+  samples: number[]; value: number; unit: string               // value = median of samples
+  ci95: [number, number]; cv: number                           // cv in percent
+  score: number | null                                         // null: custom input, failed gate, or unscored
+  flags: Flag[]
+  env: { where: 'companion' | 'webgpu' | 'wasm'; threads?: number; isolated?: boolean; adapter?: string }
+  energy?: { joules: number; estimated: boolean }
+  at: string                                                   // ISO time
+}
+export interface InputSchema { type: 'number' | 'text' | 'file' | 'url'; label: string; unit?: string; min?: number; max?: number; step?: number; default: number | string; cap?: string }
+export type Progress = (p: { value?: number; unit?: string; fraction?: number; note?: string }) => void
+/** One row per component. The UI, the scorer and the companion read this table; adding a component = adding a row. */
+export interface RegistryRow {
+  id: ComponentId; label: string; pillar: Pillar | null        // null = shown, not in the device score
+  weight: number                                               // within its pillar
+  input: InputSchema | null
+  run(input: number | string | null, signal: AbortSignal, onProgress: Progress): Promise<TestResult>
+  ref: Partial<Record<Scale, Record<number, number>>>          // reference value per scale and workload version
+}
+export const REGISTRY: RegistryRow[] = []                       // S3 fills this in; S2 supplies the runners
+/* ================================================================== */
+
 export type Source = 'companion' | 'browser'
 export type PowerSample = { t: number; stage: string; pkg_w: number; core_w: number[]; mhz: number | null; util: number[]; estimated?: boolean }
 export interface PowerRun { samples: PowerSample[]; summary: Record<string, any>; source: string; estimated?: boolean; reference?: { recorded: string; cpu: string; bench: any } }

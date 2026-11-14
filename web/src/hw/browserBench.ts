@@ -8,6 +8,20 @@
 //    Power here is therefore an ESTIMATE from a small model (see estimatePower), and is labelled so.
 import type { ModelSpec, RunStats, Task, TaskInput } from '../api'
 
+/* ================================================================== CONTRACT (frozen in Phase 0; owner: S2)
+ * What this browser and device can do. probe() runs once at page load, takes <= 2 s and downloads nothing. */
+export interface Capabilities {
+  isolated: boolean; cores: number; deviceMemoryGB: number | null; simd: boolean
+  timerResolutionMs: { page: number; worker: number | null }
+  gpu: { available: boolean; software: boolean; f16: boolean; timestamps: boolean; adapter: string | null; canaryOk: boolean | null; maxBuffer: number | null }
+  opfs: { available: boolean; syncHandle: boolean; quotaBytes: number | null }
+  net: { type: string | null; saveData: boolean; online: boolean }
+  battery: { charging: boolean; level: number } | null
+  profile: 'lite' | 'standard' | 'full'
+}
+export async function probe(): Promise<Capabilities> { throw new Error('probe: not implemented (stream S2)') }
+/* ================================================================== */
+
 export type Emit = (m: any) => void
 
 /* ------------------------------------------------------------------------------------- info */

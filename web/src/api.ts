@@ -489,3 +489,17 @@ export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (
     throw friendly(e, device)
   }
 }
+
+/* ================================================================== CONTRACT (frozen in Phase 0; owner: S4)
+ * Downloads with consent, and real weights/activations for the inspector. */
+export interface DownloadPlan { repo: string; bytes: number | null; cached: boolean; etaSeconds: number | null; consent: 'none' | 'size' | 'warn' }
+export interface DownloadHandle { cancel(): void; done: Promise<{ cached: boolean; bytes: number }> }
+/** consent: 'none' < 25 MB, 'size' 25-150 MB (show size + time), 'warn' > 150 MB or cellular/saveData. */
+export async function planDownload(_spec: ModelSpec): Promise<DownloadPlan> { throw new Error('planDownload: not implemented (stream S4)') }
+export function ensureModel(_spec: ModelSpec, _o: { onProgress: (done: number, total: number | null) => void; signal?: AbortSignal }): DownloadHandle { throw new Error('ensureModel: not implemented (stream S4)') }
+export interface TensorReq { repo: string; file: string; name: string; i0?: number; r0: number; c0: number; rows: number; cols: number; stride?: number }
+export interface TensorWin { name: string; dtype: string; shape: number[]; r0: number; c0: number; rows: number; cols: number; stride: number; data: Float32Array; fetchedBytes: number; requests: number; truncated: boolean; decoded: boolean }
+export async function tensorWindow(_q: TensorReq, _signal?: AbortSignal): Promise<TensorWin> { throw new Error('tensorWindow: not implemented (stream S4)') }
+export type Activation = { available: false; reason: string } | { available: true; dim: number; data: Float32Array; stats: { min: number; max: number; mean: number; std: number }; source: 'companion' | 'onnx' }
+export async function activation(_q: { repo: string; input: TaskInput; layer: number; pos: number; kind: 'resid' | 'attn' | 'mlp' }): Promise<Activation> { return { available: false, reason: 'not implemented (stream S4)' } }
+/* ================================================================== */

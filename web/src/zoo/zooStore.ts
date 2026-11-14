@@ -37,6 +37,9 @@ export function reach(net: NetId, t: number, id: string) {
   return 0
 }
 
+/* CONTRACT (frozen in Phase 0; owner: S6). What the inspector is looking at. S8 sets it on click, S7 renders it.
+ * Null = overview (the default). Never set by default. */
+export type Inspect = { kind: 'block' | 'tensor' | 'token' | 'output'; layer?: number; part?: 'attn' | 'mlp' | 'norm' | 'embed'; name?: string; index?: number } | null
 export type Sel = { kind: string; layer?: string; index: number; extra?: number } | null
 
 interface Z {
@@ -57,6 +60,8 @@ interface Z {
   playing: boolean
   speed: number
   sel: Sel
+  inspect: Inspect
+  setInspect(i: Inspect): void
   init: () => Promise<void>
   setNet: (n: NetId) => Promise<void>
   setImg: (img: number[], label?: number | null) => void
@@ -75,7 +80,7 @@ let raf = 0, last = 0
 const base = () => `${import.meta.env.BASE_URL}zoo/`
 
 export const useZoo = create<Z>((set, get) => ({
-  net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, fx: FX0, timing: {}, sweep: null, sweepBusy: null, out: null, err: null, t: 0, playing: false, speed: 1, sel: null,
+  net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, fx: FX0, timing: {}, sweep: null, sweepBusy: null, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
 
   async init() {
     if (get().digits) return
