@@ -22,7 +22,8 @@ with the owner's requirements. Section 9 lists what the reviews changed and the 
 4. **Honest numbers.** Every value is tagged `measured`, `estimated` (≈) or `not available`. Browsers have no power
    sensor, so every browser watt/joule is "estimated" and is **not** in the score. Browser and companion scores are
    separate scales and are never mixed or compared.
-5. **Little text.** At most one short visible line per card; everything else behind a 💡 hint.
+5. **Little text, plain words.** At most one short visible line per card; everything else behind a 💡 hint. All
+   copy, visible or in a hint, is written in a short, plain Hemingway style (rules in §6.4).
 6. **Fewest files.** No new source files (one exception allowed only if the chosen host needs a headers file, see D1).
    Section 2 merges four files away.
 
@@ -86,7 +87,7 @@ against the frozen contracts on day one.
 | **S7 Inspector and hints** | `ui/charts.tsx` | Inspector card, semantic-zoom heatmap, vectors, logits, new `Hint` |
 | **S8 3D scenes** | `zoo/ZooScene.tsx`, `hw/PowerScene.tsx` | Layer-type styling, label chips, selection, camera, resize, DPR |
 | **S9 Companion** | `server/**` | Origin hardening, per-component runs, cancel, header validation |
-| **S10 Verification** | `tests/e2e/**` | Three test tiers, the 25 acceptance checks, perf budgets |
+| **S10 Verification** | `tests/e2e/**` | Three test tiers, the 26 acceptance checks, perf budgets |
 
 Dependency graph (→ = needs the contract or output of):
 `S5 → S3, S2` · `S6 → S4, S7` · `S7 → S4 (tensor window), S8 (selection)` · `S8 → S6 (sel)` · `S10 → all` ·
@@ -250,7 +251,7 @@ S1, S2, S3, S4, S9 depend only on Phase 0.
   ONNX; (3) a small real smoke run (real Hub, real model, real companion), manual or nightly, not gating.
 - [ ] Assert shapes and invariants (a score exists, flags consistent, zero page errors via `onerror` /
   `unhandledrejection` counters), never absolute GFLOP/s.
-- [ ] Implement checks A1–A25 (§8); a real-browser pass on Chrome, Edge, Firefox and Safari (iOS) for the probe, the
+- [ ] Implement checks A1–A26 (§8); a real-browser pass on Chrome, Edge, Firefox and Safari (iOS) for the probe, the
   5 default tasks and the score.
 - [ ] One consolidated e2e entry (`tests/e2e/run.mjs --grep`) replacing the nine scripts where they overlap.
 - *Acceptance:* tier 1 + tier 2 run in ≤ 3 min and gate every merge; tier 3 log attached to the release.
@@ -352,6 +353,34 @@ Plate tints are desaturated and never applied to nodes, so amber/blue keep meani
 A legend sits behind a 💡 in each scene. *Acceptance:* the plate tints pass the palette validator as a categorical set
 on `--bg` (ΔE ≥ 8 adjacent under CVD); a viewer can name the layer type from shape alone in greyscale screenshots.
 
+### 6.4 Words: short, plain, Hemingway style
+Every stream writes its own copy to these rules while building. One owner does a final copy pass in Phase 2.
+
+**Rules**
+- Short sentences. Average ≤ 12 words. None over 20.
+- One idea per sentence. Cut the rest.
+- Plain words. "Use", not "utilise". "Fast", not "performant".
+- Active voice. "The GPU multiplies the numbers", not "The numbers are multiplied".
+- Concrete beats abstract. Give the number: "82 MB · about 20 s", not "a large download".
+- No filler adverbs ("very", "simply", "actually", "basically").
+- No jargon on screen. If a term must appear (softmax, RAPL), the 💡 says what it means in one sentence.
+- Buttons are verbs: `Run`, `Test`, `Cancel`, `Share`. Labels are nouns.
+- Hints: at most 2 sentences. Errors: what happened, then what to do. "Out of memory. Try a smaller model."
+- Numbers in a sentence are mono and have units.
+
+**Before → after** (from the current page)
+- "All five were trained on the same 1,500 handwritten digits (scikit-learn's 8×8 set) by server/train_zoo.py, so you
+  can compare how each kind of network solves the same problem." → "All five learned from the same 1,500 digits.
+  Compare how each one solves it."
+- "It compares its query with every token's key (dot product ÷ √8), turns the scores into weights with softmax, and
+  takes the weighted average of their values." → "It scores every token. The scores become weights. It mixes the
+  tokens by those weights."
+- "Computed live in this page as you draw. Times are measured here, averaged over N+ runs." → "It runs in this page
+  as you draw. Times are from this device."
+
+*Acceptance:* check A26 passes; the copy pass touches every user-facing string in the UI files and in README's
+first screen.
+
 ---
 
 ## 7. Inspector data APIs (S4 implements, S7 consumes)
@@ -386,7 +415,9 @@ outside closes on touch, stays in viewport · A18 ▲/○ and +/− present (col
 sentence (≤ 120 chars) per card · A20 CLS ≤ 0.02 during a full Test all · A21 mocked no-WebGPU / out-of-memory /
 offline / mic-denied each show a message + button within 2 s, zero page errors · A22 reduced motion: no transition
 > 1 ms, no camera tween · A23 share PNG 1200×630 without hostname or UA · A24 omitting a component never raises the
-final score · A25 hostile-origin page cannot start a companion run.
+final score · A25 hostile-origin page cannot start a companion run · A26 plain words: collect every visible string
+and every hint text; average sentence ≤ 12 words, none > 20, Flesch–Kincaid grade ≤ 8, no word from a banned list
+("utilise", "leverage", "performant", "very", "simply", "basically", "actually").
 
 ---
 
@@ -420,7 +451,9 @@ whether the f16 zero-output issue appears on other GPUs.
 
 ## 10. Phase 2: integration and release (after Phase 1)
 - [ ] Merge streams in this order: S3, S2, S4, S1, S8, S7, S6, S5, S9; tier 1 + 2 tests after each merge.
-- [ ] Full A1–A25 run at four widths; real-browser tier on Chrome, Edge, Firefox, Safari iOS, one Android phone.
+- [ ] **Copy pass (one owner, after all merges so it never conflicts):** rewrite every user-facing string to §6.4;
+  move anything longer than one line into a 💡; A26 passes.
+- [ ] Full A1–A26 run at four widths; real-browser tier on Chrome, Edge, Firefox, Safari iOS, one Android phone.
 - [ ] Independent fresh-eyes review from screenshots and code only; fix findings; re-run.
 - [ ] Freeze REF v1 on the reference device; regenerate `machine.json` with `make_examples.py machine`.
 - [ ] README: how to use, what is measured and how, privacy, companion pairing. Deploy (D1).
