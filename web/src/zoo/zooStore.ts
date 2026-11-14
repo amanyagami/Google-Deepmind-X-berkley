@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import { useStore } from '../store'
 import * as api from '../api'
 import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
-import { consentFor, etaSecs, type InputCaps } from './nets'
+import type { InputCaps } from './nets'
+import { useHW } from '../hw/hwStore'
 import { accuracyAt, applyFx, cnn, FX0, mlp, rnn, SWEEP_LEVELS, timeNet, vit, vlm, type Fx, type Pack, type Speed, type Sweep } from './nets'
 
 /** 'llm' is the real model loaded at the top of the page, run on the shared prompt; the others are the five tiny
@@ -47,7 +48,6 @@ export type Sel = { kind: string; layer?: string; index: number; extra?: number 
 
 /** What the picker and the first-visit card know about one model: its Hub facts, the fit verdict and the download plan. */
 export interface CatRow { id: string; title: string; repo: string; task: Task | null; recorded: boolean; bytes: number | null; plan: DownloadPlan | null; fit: Fit | null; spec: ModelSpec | null; verdict?: Fit['verdict'] }
-export type Dl = { phase: 'idle' | 'warn' | 'downloading' | 'running' | 'error'; done: number; total: number | null; t0: number; eta?: number | null; id?: string; src?: 'card' | 'dock'; err?: string }
 
 interface Z {
   custom: Partial<Record<Task, TaskInput>>
@@ -59,9 +59,8 @@ interface Z {
   catalog: Record<string, CatRow>
   loadCatalog: () => Promise<void>
   planFor: (spec: ModelSpec, fit: Fit | null) => Promise<DownloadPlan>
-  dl: Dl
-  startLive: (exampleId?: string, confirmed?: boolean, src?: 'card' | 'dock') => Promise<void>
-  cancelLive: () => void
+  /** The one primary action: switch to the example if needed, then run (consent and download progress live in the main store). */
+  startLive: (exampleId?: string) => Promise<void>
   net: NetId
   packs: Partial<Record<DigitNet, Pack>>
   digits: { images: number[][]; labels: number[] } | null
@@ -98,17 +97,16 @@ interface Z {
 let raf = 0, last = 0
 const base = () => `${import.meta.env.BASE_URL}zoo/`
 
-let abort: AbortController | null = null, handle: { cancel(): void } | null = null
-const dl0: Dl = { phase: 'idle', done: 0, total: null, t0: 0 }
-const mbps = () => { const c: any = (navigator as any).connection; return c?.downlink > 0 ? c.downlink : 20 }
 
 export const useZoo = create<Z>((set, get) => ({
   custom: {}, remember: (t, i) => set((s) => ({ custom: { ...s.custom, [t]: i } })),
   cardOff: false, setCardOff: (cardOff) => set({ cardOff }),
-  caps: null, catalog: {}, dl: dl0,
+  caps: null, catalog: {},
 
   async loadCaps() {
     if (get().caps) return
+    const hw: any = useHW.getState().caps
+    if (hw) { const mem = hw.deviceMemoryGB ?? null; set({ caps: { deviceMemoryGB: mem, line: `${hw.cores} cores · ${hw.gpu?.available ? (hw.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}` } }); return }
     let line = '', mem: number | null = (navigator as any).deviceMemory ?? null
     try {
       const m: any = await import('../hw/browserBench')
@@ -122,14 +120,11 @@ export const useZoo = create<Z>((set, get) => ({
     set({ caps: { line, deviceMemoryGB: mem } })
   },
 
-  /** The download plan: the models engine's, or a local estimate from the Hub facts until it exists. */
+  /** The download plan from the models engine; a companion run downloads nothing in the browser. */
   async planFor(spec, fit) {
-    try { return await api.planDownload(spec) } catch { /* engine not present yet */ }
-    const dt = fit?.dtype ?? (spec.onnx?.dtypes.length ? api.pickDtype(spec.onnx.dtypes, 'wasm') : null)
-    const companion = fit?.where === 'companion'
-    const bytes = companion ? null : (dt && spec.onnx?.sizes?.[dt]) || spec.bytes || null
-    const sd = !!(navigator as any).connection?.saveData
-    return { repo: spec.repo, bytes, cached: false, etaSeconds: etaSecs(bytes, mbps()), consent: consentFor(bytes, sd) }
+    const dev = fit?.where === 'webgpu' || fit?.where === 'wasm' ? fit.where : undefined
+    if (!dev) return { repo: spec.repo, bytes: null, cached: false, etaSeconds: null, consent: 'none' }
+    return api.planDownload(spec, { device: dev })
   },
 
   /** Every example once (Hub facts only, no model files), so the picker can show size, time and fit. */
@@ -148,46 +143,15 @@ export const useZoo = create<Z>((set, get) => ({
     }))
   },
 
-  cancelLive() { abort?.abort(); handle?.cancel(); abort = null; handle = null; set({ dl: dl0 }) },
-
-  /** The one primary action. Consent first (size shown, a warning above 150 MB), then the download with progress, then the run. */
-  async startLive(exampleId, confirmed = false, src = 'dock') {
+  async startLive(exampleId) {
+    set({ cardOff: true })
     const st = useStore.getState()
     const ex = exampleId ? st.examples.find((e) => e.id === exampleId) : undefined
-    set({ dl: { ...dl0, phase: 'running', t0: performance.now(), src }, cardOff: true })
-    try {
-      // plan from the catalog while the recorded run keeps playing; the model loads (and replaces it) only when the run starts
-      const pre = ex ? get().catalog[ex.id] : undefined
-      const switching = !!ex && st.repo.toLowerCase() !== ex.repo.toLowerCase()
-      if (switching && !pre?.spec) await st.loadExample(ex!.id)
-      const now = useStore.getState()
-      const spec = switching && pre?.spec ? pre.spec : now.spec, fit = switching && pre?.spec ? pre.fit : now.fit
-      if (!spec) { set({ dl: { ...dl0, phase: 'error', src, err: now.probeErr ?? 'The model could not be read. Check the name and try again.' } }); return }
-      const plan = await get().planFor(spec, fit)
-      if (plan.consent === 'warn' && !plan.cached && !confirmed) { set({ dl: { ...dl0, phase: 'warn', total: plan.bytes, eta: plan.etaSeconds, id: exampleId, src } }); return }
-      if (!plan.cached && fit && fit.where !== 'companion' && fit.verdict !== 'too-big') {
-        abort = new AbortController()
-        set({ dl: { phase: 'downloading', done: 0, total: plan.bytes, t0: performance.now(), src } })
-        try {
-          const h = api.ensureModel(spec, { onProgress: (done, total) => set((s) => ({ dl: { ...s.dl, done, total: total ?? s.dl.total } })), signal: abort.signal })
-          handle = h
-          await h.done
-        } catch (e: any) {
-          if (!/not implemented/i.test(String(e?.message))) {
-            if (abort?.signal.aborted || /abort|cancel/i.test(String(e?.name ?? e?.message))) { set({ dl: dl0 }); return }
-            set({ dl: { ...dl0, phase: 'error', src, err: e?.message ?? String(e) } }); return
-          }
-        }
-      }
-      set({ dl: { ...dl0, phase: 'running', t0: performance.now(), src } })
-      if (switching && pre?.spec) await st.loadExample(ex!.id)
-      await useStore.getState().run()
-      const s2: any = useStore.getState()
-      if (s2.pendingDownload && typeof s2.confirmDownload === 'function') await s2.confirmDownload()
-      set({ dl: dl0 })
-    } catch (e: any) {
-      set({ dl: { ...dl0, phase: 'error', src, err: e?.message ?? String(e) } })
-    } finally { abort = null; handle = null }
+    if (ex && st.repo.toLowerCase() !== ex.repo.toLowerCase()) await st.loadExample(ex.id)
+    await useStore.getState().run()
+    // the button showed the size, so the click is the consent for a normal download; a big one waits for its own button
+    const p = useStore.getState().pendingDownload
+    if (p && p.consent === 'size') await useStore.getState().confirmDownload()
   },
 
   net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, fx: FX0, timing: {}, sweep: null, sweepBusy: null, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },

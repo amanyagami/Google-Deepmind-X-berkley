@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
@@ -8,7 +8,7 @@ import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
-import { Hint, TopBars } from '../ui/charts'
+import { Hint, Inspector, TopBars, inspectCrumb, inspectParent } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
@@ -326,10 +326,9 @@ export function RobustCard() {
 }
 
 /* ================================================================================ S6 model UI */
-// The S7 inspector may not exist yet in a build: a missing export draws nothing.
-const Inspector = lazy(() => import('../ui/charts').then((m: any) => ({ default: (m.Inspector ?? (() => null)) as React.ComponentType })))
-
 const CSS = `
+#dock-slot:has([data-s6dock])>:not([data-s6dock]){display:none}
+#model-picker-slot:has([data-picker])>:not([data-picker]){display:none}
 .s6card{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;width:min(440px,calc(100% - 28px));display:flex;flex-direction:column;gap:10px;padding:18px 20px;background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px);box-shadow:0 12px 40px #0008}
 .s6card h2{margin:0;font-size:20px;line-height:1.2}
 .s6card p{margin:0}
@@ -352,6 +351,12 @@ const CSS = `
 .s6v-fits{color:var(--pos-ink)} .s6v-tight{color:#e0b341} .s6v-too-big{color:var(--bad)}
 .s6dock{display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:14px}
 .s6dock.fallback{margin:10px 12px 0}
+.s6dock.compact{position:relative;flex-direction:row;padding:0;border:0;background:none;width:100%}
+.s6dock.compact .s6go{align-self:flex-start;white-space:nowrap}
+.s6dock.compact>div:first-child{width:100%}
+.s6float{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.s6float:empty{display:none}.s6small{font-size:12px;padding:5px 10px}
+.s6dock .s6go{min-height:44px}
 .s6dock textarea,.s6dock input[type=text],.s6dock input[type=url]{width:100%;box-sizing:border-box;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font:13px var(--mono)}
 .s6dock .s6go{align-self:flex-start}
 .s6drop{border:1px dashed var(--line);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px} .s6drop.over{border-color:var(--pos);background:color-mix(in srgb,var(--pos) 8%,transparent)}
@@ -383,42 +388,44 @@ function usePortal(id: string): HTMLElement | null {
 
 const kindOf = (t: Task | null): TaskInput['kind'] => (t === 'image-classification' ? 'image' : t === 'automatic-speech-recognition' ? 'audio' : 'text')
 
-/** What the models engine says about one input; falls back to the same rules here until that engine has them. */
-function validate(task: Task | null, input: TaskInput, caps: { deviceMemoryGB?: number | null } | null, extra?: { bytes?: number; seconds?: number }): string | null {
-  try { const v = (engine as any).validateInput?.(task, input, caps ?? undefined); if (v !== undefined) { const m = readCheck(v); if (m) return m } } catch { /* use the local rules */ }
-  return checkInput(task, input as any, caps, extra)
+/** What the models engine says about one input (async); the local rules answer first so the message never lags. */
+function useProblem(task: Task | null, input: TaskInput, caps: { deviceMemoryGB?: number | null } | null, extra?: { bytes?: number; seconds?: number }): string | null {
+  const local = checkInput(task, input as any, caps, extra)
+  const [remote, setRemote] = useState<string | null>(null)
+  const key = JSON.stringify([task, input, caps?.deviceMemoryGB])
+  useEffect(() => {
+    let live = true
+    setRemote(null)
+    if (!task || local) return
+    Promise.resolve(engine.validateInput(task, input, { ...(caps ?? {}), prepare: false })).then((r) => { if (live) setRemote(readCheck(r)) }, () => {})
+    return () => { live = false }
+  }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
+  return local ?? remote
 }
 
 /* ---------------------------------------------------------------- download / run status */
-function Status({ from }: { from: 'card' | 'dock' }) {
-  const { dl, cancel, start } = useZoo(useShallow((s) => ({ dl: s.dl, cancel: s.cancelLive, start: s.startLive })))
-  const { running, runStatus } = useStore(useShallow((s) => ({ running: s.running, runStatus: s.runStatus })))
-  const [, tick] = useState(0)
-  useEffect(() => { if (dl.phase !== 'downloading') return; const t = setInterval(() => tick((n) => n + 1), 500); return () => clearInterval(t) }, [dl.phase])
-  if (dl.phase !== 'idle' && dl.src && dl.src !== from) return null
-  if (dl.phase === 'warn') {
-    const eta = fmtEta(dl.eta)
+/** Consent, download progress and run status. The numbers come from the main store (plan, download, running). */
+function Status() {
+  const { pending, download, running, runStatus, runErr, confirm, decline, cancel } = useStore(useShallow((s) => ({ pending: s.pendingDownload, download: s.download, running: s.running, runStatus: s.runStatus, runErr: s.runErr, confirm: s.confirmDownload, decline: s.declineDownload, cancel: s.cancelDownload })))
+  if (pending) {
     return (
       <div role="alert" className="s6row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-        <p className="s6line"><b>Big download: {fmtBytes(dl.total)}{eta ? `, ${eta}` : ''}.</b> It may use mobile data.</p>
-        <div className="s6row"><button className="btn2" onClick={() => start(dl.id, true, from)}>Download anyway</button><button className="btn2" onClick={() => { useZoo.getState().cancelLive(); window.dispatchEvent(new Event('ns-open-picker')) }}>Use a smaller model</button></div>
+        <p className="s6line"><b>{pending.consent === 'warn' ? 'Big download' : 'Download'}: {fmtBytes(pending.bytes)}{pending.etaSeconds ? `, ${fmtEta(pending.etaSeconds)}` : ''}.</b>{pending.consent === 'warn' ? ' It may use mobile data.' : ''}</p>
+        <div className="s6row"><button className="btn2" data-start onClick={() => confirm()}>Download {fmtBytes(pending.bytes)}</button><button className="btn2" onClick={() => { decline(); window.dispatchEvent(new Event('ns-open-picker')) }}>Use a smaller model</button></div>
       </div>
     )
   }
-  if (dl.phase === 'downloading') {
-    const secs = Math.max(0.5, (performance.now() - dl.t0) / 1000), rate = dl.done / secs
-    const left = dl.total && rate > 0 ? Math.max(0, (dl.total - dl.done) / rate) : null
-    const pct = dl.total ? Math.min(100, (dl.done / dl.total) * 100) : 0
+  if (download) {
+    const pct = download.total ? Math.min(100, (download.done / download.total) * 100) : 0
     return (
       <div className="stack" style={{ gap: 6 }}>
         <div className="s6bar" role="progressbar" aria-label="Download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}><i style={{ width: `${pct}%` }} /></div>
-        <div className="s6row"><span className="s6line mono" aria-live="polite">{fmtBytes(dl.done)} of {fmtBytes(dl.total)} · {(rate / 1048576).toFixed(1)} MB/s{left !== null ? ` · ${fmtEta(left)} left` : ''}</span><button className="btn2 sm" onClick={cancel}>Cancel</button></div>
+        <div className="s6row"><span className="s6line mono" aria-live="polite">{fmtBytes(download.done)} of {fmtBytes(download.total)}{download.bytesPerSec ? ` · ${(download.bytesPerSec / 1048576).toFixed(1)} MB/s` : ''}{download.etaSeconds != null ? ` · ${fmtEta(download.etaSeconds)} left` : ''}</span><button className="btn2 sm" onClick={() => cancel()}>Cancel</button></div>
       </div>
     )
   }
-  if (dl.phase === 'error') return <div className="err" role="alert">{dl.err}</div>
-  if (dl.phase === 'running' || running) return <div className="stack" style={{ gap: 6 }}><div className="s6bar ind" aria-hidden><i /></div><p className="s6line" aria-live="polite">{runStatus ? `${runStatus}…` : 'Running…'}</p></div>
-  return null
+  if (running) return <div className="stack" style={{ gap: 6 }}><div className="s6bar ind" aria-hidden><i /></div><p className="s6line" aria-live="polite">{runStatus ? `${runStatus}…` : 'Running…'}</p></div>
+  return runErr ? <div className="err" role="alert" data-error>{runErr}</div> : null
 }
 
 /** The plan for the model that is loaded now (size, time, cached). */
@@ -434,7 +441,8 @@ const isBrowserFit = (fit: engine.Fit | null) => !!fit && (fit.where === 'webgpu
 /* --------------------------------------------------------------------------- first visit card */
 function FirstVisit() {
   const { examples, running, lastStats, mode, spec, fit } = useStore(useShallow((s) => ({ examples: s.examples, running: s.running, lastStats: s.lastStats, mode: s.mode, spec: s.spec, fit: s.fit })))
-  const { cardOff, caps, catalog, dl } = useZoo(useShallow((s) => ({ cardOff: s.cardOff, caps: s.caps, catalog: s.catalog, dl: s.dl })))
+  const { cardOff, caps, catalog } = useZoo(useShallow((s) => ({ cardOff: s.cardOff, caps: s.caps, catalog: s.catalog })))
+  const { pending, download } = useStore(useShallow((s) => ({ pending: s.pendingDownload, download: s.download })))
   useEffect(() => { useZoo.getState().loadCaps() }, [])
   useEffect(() => { if (examples.length) useZoo.getState().loadCatalog() }, [examples.length])
   const cur = useCurrentPlan()
@@ -442,10 +450,12 @@ function FirstVisit() {
   const row: CatRow | undefined = def ? catalog[def.id] : undefined
   const usingCurrent = !!spec && mode === 'live' && isBrowserFit(fit)
   const title = usingCurrent ? (examples.find((e) => e.repo.toLowerCase() === spec!.repo.toLowerCase())?.title ?? spec!.repo.split('/').pop()) : def?.title
-  const plan = usingCurrent ? cur : row?.plan ?? null
+  const rawPlan = usingCurrent ? cur : row?.plan ?? null
+  const sb = (usingCurrent ? spec : row?.spec)?.bytes ?? null
+  const plan = rawPlan && rawPlan.bytes == null && sb && !(usingCurrent ? fit : row?.fit)?.where?.startsWith('comp') ? { ...rawPlan, bytes: sb } : rawPlan
   const blocked = (usingCurrent ? fit : row?.fit)?.verdict === 'too-big'
-  const forced = dl.phase === 'warn' || dl.phase === 'downloading' || dl.phase === 'error'
-  if (!def || (!forced && (cardOff || (lastStats && lastStats.where !== 'companion') || running || dl.phase !== 'idle'))) return null
+  const forced = !!pending || !!download
+  if (!def || (!forced && (cardOff || (lastStats && lastStats.where !== 'companion') || running))) return null
   const watch = async () => {
     const z = useZoo.getState(); z.setCardOff(true)
     const st = useStore.getState(), rec = st.examples.find((e) => e.file)
@@ -453,17 +463,16 @@ function FirstVisit() {
     if (st.repo.toLowerCase() !== rec.repo.toLowerCase()) await st.loadExample(rec.id)
     if (!useStore.getState().running) await useStore.getState().run()
   }
-  const busy = dl.phase !== 'idle'
+  const busy = forced
   return (
-    <div className="s6card" role="region" aria-label="Start here">
+    <div className="s6card" data-card role="region" aria-label="Start here">
       <h2>See an AI run on your device</h2>
-      <p className="s6line">{caps ? <>Your device: <b>{caps.line}</b></> : 'Reading your device…'}</p>
-      <p className="s6line">The model: <b>{title}</b>{plan ? <> · {fmtBytes(plan.bytes)}{plan.cached ? '' : plan.etaSeconds ? ` · ${fmtEta(plan.etaSeconds)}` : ''}{plan.cached && <b className="s6v-fits"> · cached ✓</b>}</> : ''}</p>
-      {!busy && <button className="s6go" disabled={blocked} onClick={() => useZoo.getState().startLive(usingCurrent ? undefined : def.id, false, 'card')}>{startLabel(plan)}</button>}
-      <Status from="card" />
+      <p className="s6line" data-detail>{caps ? <>Your device: <b>{caps.line}</b></> : 'Reading your device…'}</p>
+      <p className="s6line" data-detail>The model: <b>{title}</b>{plan ? <> · {fmtBytes(plan.bytes)}{plan.cached ? '' : plan.etaSeconds ? ` · ${fmtEta(plan.etaSeconds)}` : ''}{plan.cached && <b className="s6v-fits" data-cached> · cached ✓</b>}</> : ''}</p>
+      {!busy && <button className="s6go" data-start data-primary disabled={blocked} onClick={() => useZoo.getState().startLive(usingCurrent ? undefined : def.id)}>{startLabel(plan)}</button>}
+      <Status />
       {blocked && <p className="s6line">This device cannot hold that model. Pick a smaller one at the top.</p>}
       {!busy && <button className="s6link" onClick={watch}>Watch a recorded run</button>}
-      {!busy && !plan?.cached && <p className="s6line">Nothing downloads until you press Start.</p>}
     </div>
   )
 }
@@ -489,7 +498,7 @@ function Picker() {
   const rows = useMemo(() => examples.map((e): CatRow => catalog[e.id] ?? { id: e.id, title: e.title, repo: e.repo, task: e.task ?? 'text-generation', recorded: !!e.file, bytes: null, plan: null, fit: null, spec: null }), [examples, catalog])
   const current = examples.find((e) => e.repo.toLowerCase() === repo.toLowerCase())
   const node = (
-    <div className={`s6pick ${slot ? '' : 'fallback'}`} ref={box}>
+    <div className={`s6pick ${slot ? '' : 'fallback'}`} ref={box} data-picker>
       <button className="s6pickbtn" aria-haspopup="true" aria-expanded={open} onClick={() => setOpen(!open)} title="Choose a model"><span>Model: <b>{current?.title ?? (repo.split('/').pop() || 'none')}</b></span><i aria-hidden>▾</i></button>
       {open && (
         <div className="s6pop" role="menu" aria-label="Models">
@@ -501,7 +510,7 @@ function Picker() {
                 const note = r.recorded && backend !== 'online' ? 'recorded run, no download' : r.plan ? r.bytes == null ? (r.fit?.where === 'companion' ? 'runs on the companion' : 'size unknown') : `${fmtBytes(r.bytes)}${r.plan.cached ? '' : r.plan.etaSeconds ? ` · ${fmtEta(r.plan.etaSeconds)}` : ''}` : 'reading size…'
                 return (
                   <button key={r.id} role="menuitem" className="s6rowb" aria-current={!!current && current.id === r.id} onClick={() => { setOpen(false); loadExample(r.id) }}>
-                    <span>{r.title}{r.plan?.cached && <b className="s6v-fits"> cached ✓</b>}</span>
+                    <span>{r.title}{r.plan?.cached && <b className="s6v-fits" data-cached> cached ✓</b>}</span>
                     {r.verdict && <em className={`s6v-${r.verdict}`}>{VERDICT_WORD[r.verdict]}</em>}
                     <small>{note}{sug ? ` · try ${sug.title}` : ''}</small>
                   </button>
@@ -527,7 +536,7 @@ function Picker() {
 }
 
 /* ---------------------------------------------------------------------------- task input */
-function InputBox() {
+function InputBox({ compact = false }: { compact?: boolean }) {
   const { spec, input, setInput, mode } = useStore(useShallow((s) => ({ spec: s.spec, input: s.input, setInput: s.setInput, mode: s.mode })))
   const { custom, remember, caps } = useZoo(useShallow((s) => ({ custom: s.custom, remember: s.remember, caps: s.caps })))
   const task: Task = spec?.task ?? 'text-generation'
@@ -537,6 +546,7 @@ function InputBox() {
   const [urlText, setUrlText] = useState('')
   const [over, setOver] = useState(false)
   const [rec, setRec] = useState<MediaRecorder | null>(null)
+  const [more, setMore] = useState(false)
   const file = useRef<HTMLInputElement>(null)
   const dflt = spec?.defaultInput ?? engine.defaultInputFor(task)
   // a model of another task opens with that task's remembered custom input, else its default
@@ -545,12 +555,13 @@ function InputBox() {
     if (!spec || seen.current === `${spec.repo}|${task}`) return
     seen.current = `${spec.repo}|${task}`
     setMsg(null); setMeta({})
-    const c = custom[task]
+    const c = custom[task] ?? engine.loadSavedInput(task)
     if (c && c.kind === kind && JSON.stringify(c) !== JSON.stringify(input)) setInput(c)
   }, [spec, task]) // eslint-disable-line react-hooks/exhaustive-deps
   const cur: TaskInput = input.kind === kind ? input : dflt
-  const set = (i: TaskInput, m: { bytes?: number; seconds?: number } = {}) => { setMsg(null); setMeta(m); setInput(i); remember(task, i) }
-  const problem = msg ?? validate(task, cur, caps, meta)
+  const set = (i: TaskInput, m: { bytes?: number; seconds?: number } = {}) => { setMsg(null); setMeta(m); setInput(i); remember(task, i); engine.saveInput(task, i) }
+  const check = useProblem(task, cur, caps, meta)
+  const problem = msg ?? check
   const replay = mode === 'replay'
   const pickFile = (f: File | undefined) => {
     if (!f) return
@@ -583,19 +594,20 @@ function InputBox() {
     <div className="stack" style={{ gap: 8 }}>
       {kind === 'text' && cur.kind === 'text' && (
         <>
-          <label className="lbl" htmlFor="s6text">{task === 'fill-mask' ? 'Sentence with a gap' : task === 'text-classification' ? 'Text to judge' : 'Start of a sentence'}</label>
-          <textarea id="s6text" rows={2} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })}
-            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void startFromInput() }} />
-          <div className="s6row">
-            {task === 'fill-mask' && <button className="btn2 sm" disabled={replay} onClick={insertMask}>Add [MASK]</button>}
-            <button className="btn2 sm" disabled={replay} onClick={() => set(dflt)}>Use the example</button>
-            {task === 'fill-mask' && <span className="s6line">The model guesses the word at [MASK].</span>}
+          <label className={compact ? 'sr' : 'lbl'} htmlFor="s6text">{task === 'fill-mask' ? 'Sentence with a gap' : task === 'text-classification' ? 'Text to judge' : 'Start of a sentence'}</label>
+          <div className="s6row" style={{ flexWrap: 'nowrap' }}>
+            {compact
+              ? <input id="s6text" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
+              : <textarea id="s6text" rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
+            {task === 'fill-mask' && <button className="btn2 sm" disabled={replay} onClick={insertMask}>[MASK]</button>}
+            <button className="btn2 sm" disabled={replay} onClick={() => set(dflt)} title="Put the example text back">Example</button>
           </div>
-          {replay && <p className="s6line">Recorded run. Pick a browser model to type your own.</p>}
+          {replay && !compact && <p className="s6line">Recorded run. Pick a browser model to type your own.</p>}
         </>
       )}
-      {kind === 'image' && cur.kind === 'image' && (
-        <div className={`s6drop ${over ? 'over' : ''}`} onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={drop}>
+      {compact && kind !== 'text' && <div className="s6row" style={{ flexWrap: 'nowrap' }}><span className="s6line" style={{ flex: 1 }}>{kind === 'image' ? 'Picture' : 'Sound'}: <b>{JSON.stringify(cur) === JSON.stringify(dflt) ? 'sample' : 'yours'}</b></span><button className="btn2 sm" aria-expanded={more} onClick={() => setMore(!more)}>Change</button></div>}
+      {kind === 'image' && cur.kind === 'image' && (!compact || more) && (
+        <div className={`s6drop ${compact ? 's6float' : ''} ${over ? 'over' : ''}`} onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={drop}>
           <img src={cur.url} alt="The picture the model will look at" />
           <div className="s6row">
             <button className="btn2 sm" onClick={() => set(dflt)}>Use the sample</button>
@@ -610,8 +622,8 @@ function InputBox() {
           <span className="s6line">You can also drop a picture here.</span>
         </div>
       )}
-      {kind === 'audio' && cur.kind === 'audio' && (
-        <div className="s6drop">
+      {kind === 'audio' && cur.kind === 'audio' && (!compact || more) && (
+        <div className={`s6drop ${compact ? 's6float' : ''}`}>
           <audio controls src={cur.url} style={{ width: '100%' }} />
           <div className="s6row">
             <button className="btn2 sm" onClick={() => set(dflt)}>Use the sample clip</button>
@@ -621,7 +633,7 @@ function InputBox() {
           </div>
         </div>
       )}
-      {problem && <p className="err" role="alert">{problem}</p>}
+      {problem && <p className={`err ${compact ? 's6float s6small' : ''}`} role="alert" data-error>{problem}</p>}
     </div>
   )
 }
@@ -636,22 +648,22 @@ function runNow() {
 /* ------------------------------------------------------------------------------ dock (Run) */
 function RunDock() {
   const { spec, fit, running, mode, probe, lastStats, input, backend } = useStore(useShallow((s) => ({ spec: s.spec, fit: s.fit, running: s.running, mode: s.mode, probe: s.probe, lastStats: s.lastStats, input: s.input, backend: s.backend })))
-  const { dl, caps } = useZoo(useShallow((s) => ({ dl: s.dl, caps: s.caps })))
+  const caps = useZoo((s) => s.caps)
+  const busy = useStore((s) => !!s.pendingDownload || !!s.download)
   const plan = useCurrentPlan()
   const slot = usePortal('dock-slot')
   const viaBrowser = mode === 'live' && isBrowserFit(fit)
   const task = spec?.task ?? 'text-generation'
-  const bad = validate(task, input.kind === kindOf(task) ? input : spec?.defaultInput ?? input, caps)
+  const bad = useProblem(task, input.kind === kindOf(task) ? input : spec?.defaultInput ?? input, caps)
   const first = viaBrowser && !!plan && !plan.cached && lastStats?.repo?.toLowerCase() !== spec?.repo?.toLowerCase()
-  const can = !!(spec || probe) && !running && dl.phase === 'idle' && !(bad && mode !== 'replay')
+  const can = !!(spec || probe) && !running && !busy && !(bad && mode !== 'replay')
   const node = (
-    <div className={`s6dock ${slot ? '' : 'fallback'}`} aria-label="Run">
-      <InputBox />
-      <div className="s6row">
-        <button className="s6go" disabled={!can} onClick={() => void runNow()}>{running ? 'Running…' : first ? startLabel(plan, '▶ Run') : '▶ Run'}</button>
-        {backend === 'online' && !viaBrowser && <span className="s6line">on the companion</span>}
+    <div className={`s6dock ${slot ? 'compact' : 'fallback'}`} aria-label="Run" data-s6dock>
+      <div className="s6row" style={{ flexWrap: 'nowrap', width: '100%', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}><InputBox compact={!!slot} /></div>
+        <button className="s6go" data-start data-primary disabled={!can} onClick={() => void runNow()}>{running ? 'Running…' : first ? startLabel(plan, '▶ Run') : '▶ Run'}</button>
       </div>
-      <Status from="dock" />
+      <div className={slot ? 's6float' : ''}><Status /></div>
     </div>
   )
   return slot ? createPortal(node, slot) : node
@@ -665,7 +677,7 @@ function Result() {
   const text: string | undefined = final?.text
   return (
     <div className="stack">
-      {runErr && <div className="err" role="alert">{runErr}{alt && <> <button className="btn2 sm" onClick={() => loadExample(alt.id)}>Use {alt.title}</button></>}</div>}
+      {runErr && <div className="err" role="alert" data-error>{runErr}{alt && <> <button className="btn2 sm" onClick={() => loadExample(alt.id)}>Use {alt.title}</button></>}</div>}
       {final && !running && (
         <div className="ccard">
           <h4>Response <small>from the model</small></h4>
@@ -675,7 +687,7 @@ function Result() {
       )}
       {lastStats && !running && (
         <>
-          <p className="s6line">Ran on <b>{lastStats.where === 'webgpu' ? 'the GPU, in your browser' : lastStats.where === 'wasm' ? 'the CPU, in your browser' : 'the companion'}</b>{fit?.reason ? `. ${fit.reason}` : '.'}<Hint>The page picks the GPU when it can. It falls back to the CPU if the GPU cannot hold the model.</Hint></p>
+          <p className="s6line" data-score>Ran on <b>{lastStats.where === 'webgpu' ? 'the GPU, in your browser' : lastStats.where === 'wasm' ? 'the CPU, in your browser' : 'the companion'}</b>{fit?.reason ? `. ${fit.reason}` : '.'}<Hint>The page picks the GPU when it can. It falls back to the CPU if the GPU cannot hold the model.</Hint></p>
           <RunScoreCard stats={lastStats} fit={fit} params={spec?.params ?? null} info={null} />
           <p className="s6line">Speed and energy here are <b>estimated</b>. The score uses speed, wait and memory.{lastStats.joules != null && <> Energy: about <b className="mono">{lastStats.joules.toFixed(1)} J</b> (estimated).</>}</p>
           {fit && <p className="s6fit">Fit: <b className={`s6v-${fit.verdict}`}>{VERDICT_WORD[fit.verdict]}</b>. Needs about {fmtBytes(fit.needBytes)}{fit.haveBytes ? `, this device has ${fmtBytes(fit.haveBytes)}` : ''}.</p>}
@@ -689,18 +701,12 @@ function Result() {
 /* ------------------------------------------------------------------------------------- view */
 function Crumb() {
   const inspect = useZoo((s) => s.inspect)
-  useEffect(() => {
-    if (!inspect) return
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') useZoo.getState().setInspect(null) }
-    document.addEventListener('keydown', esc)
-    return () => document.removeEventListener('keydown', esc)
-  }, [inspect])
   if (!inspect) return null
-  const parts = crumbs(inspect)
+  const parts = inspectCrumb(inspect).split(' › ')
   return (
     <nav className="s6crumb" aria-label="Where you are">
-      {parts.map((p, i) => <span key={i}>{i > 0 && ' › '}{i === parts.length - 1 ? <b aria-current="location">{p}</b> : <button className="s6link" style={{ padding: 0, textDecoration: 'none' }} onClick={() => i === 0 && useZoo.getState().setInspect(null)}>{p}</button>}</span>)}
-      <button className="btn2 sm" aria-label="Back to the whole model" onClick={() => useZoo.getState().setInspect(null)}>Esc</button>
+      {parts.map((p, i) => <span key={i}>{i > 0 && ' › '}{i === parts.length - 1 ? <b aria-current="location">{p}</b> : <span>{p}</span>}</span>)}
+      <button className="btn2 sm" aria-label="Go up one level (Esc)" onClick={() => useZoo.getState().setInspect(inspectParent(inspect))}>Esc</button>
     </nav>
   )
 }
@@ -780,12 +786,12 @@ function ModelTools({ inspecting }: { inspecting: boolean }) {
   return (
     <>
       <RunDock />
+      <div className="pane" style={{ flex: 'none' }}><Inspector /></div>
       <div className="pane" role="region" aria-label="Run">
         {!inspecting && <Result />}
         {inspecting && (
           <div className="stack">
-            <Suspense fallback={null}><Inspector /></Suspense>
-            <div className="s6acts">
+                        <div className="s6acts">
               <button className={`btn2 ${tab === 'calc' ? 'on' : ''}`} aria-pressed={tab === 'calc'} onClick={() => setTab(tab === 'calc' ? 'layer' : 'calc')}>See the maths</button>
               <button className={`btn2 ${tab === 'edit' ? 'on' : ''}`} aria-pressed={tab === 'edit'} onClick={() => setTab(tab === 'edit' ? 'layer' : 'edit')}>Change weights</button>
             </div>
