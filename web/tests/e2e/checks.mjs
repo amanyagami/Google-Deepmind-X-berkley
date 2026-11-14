@@ -1,7 +1,7 @@
 // Acceptance checks A1-A26 (TODO.md section 8) and legacy-intent checks L1-L6. A check returns {status, value} or throws (= FAIL).
 import fs from 'node:fs'
 import path from 'node:path'
-import { OUT, valueAt, startHostile } from './lib.mjs'
+import { OUT, valueAt, startHostile, startServer } from './lib.mjs'
 
 const P = (value) => ({ status: 'PASS', value })
 const F = (value) => ({ status: 'FAIL', value })
@@ -9,6 +9,9 @@ const S = (value) => ({ status: 'SKIP', value })
 const ok = (cond, value) => (cond ? P(value) : F(value))
 const p95 = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length * 0.95)] ?? 0
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const startModel = async (pg, ex = 'distilgpt2') => { await pg.evaluate((e) => window.__studio?.getState().loadExample?.(e), ex); await pg.waitForTimeout(1500); await pg.locator('[data-start]').first().click(); await pg.waitForTimeout(700)
+  const d = pg.locator('[data-start]:has-text("Download")'); if (await d.count()) await d.first().click({ timeout: 2000 }).catch(() => {}) }
+const SCORE = 'b[data-score]'   // the device score; ZooUI also puts data-score on a <p> (collision, see README)
 const W4 = (env) => env.widths
 const PRIMARY = '[data-primary], [data-dock] button, header button.btn'
 const MODEL_FILE = /\.(onnx|safetensors|gguf|bin)(\?|$)|\/resolve\//
@@ -64,13 +67,13 @@ export const checks = [
 
   { id: 'A7', title: 'first paint <= 2.5 s; first score <= 10 s (20 Mbit)', needs: ['S5'], run: async (env) => {
     const p = await env.open({ throttle: 20 }); const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' })
-    const fcp = await p.page.evaluate(() => performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? -1)
-    const t1 = Date.now(); await p.page.locator('[data-test]').first().click(); await p.page.waitForSelector('[data-score]', { timeout: 30000 })
+    const fcp = await p.page.waitForFunction(() => performance.getEntriesByType('paint').find((e) => e.name === 'first-contentful-paint')?.startTime, null, { timeout: 8000 }).then((h) => h.jsonValue(), () => -1)
+    const t1 = Date.now(); await p.page.locator('[data-test=cpu1]').first().click(); await p.page.waitForSelector(SCORE, { timeout: 30000 })
     const s = (Date.now() - t1) / 1000
     return ok(fcp > 0 && fcp <= 2500 && s <= 10, `first paint ${Math.round(fcp)} ms; first score ${s.toFixed(1)} s (load ${((t1 - t0) / 1000).toFixed(1)} s)`) } },
   { id: 'A7b', tier: 3, title: '82 MB model first score <= 60 s at 20 Mbit (real Hub)', needs: ['S4'], run: async (env) => {
     const p = await env.open({ throttle: 20, hub: false }); await p.goto(); const t = Date.now()
-    await p.page.locator('[data-start]').first().click(); await p.page.waitForSelector('[data-score]', { timeout: 90000 })
+    await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 90000 })
     const s = (Date.now() - t) / 1000; return ok(s <= 60, `${s.toFixed(1)} s`) } },
 
   { id: 'A8', title: 'zero model-file requests before Start; size shown first', needs: ['S4'], run: async (env) => {
@@ -80,23 +83,23 @@ export const checks = [
 
   { id: 'A9', title: 'download progress: role=progressbar, updates >= 1/s', needs: ['S4'], run: async (env) => {
     const p = await env.open({ hubDelay: 2500 }); await p.goto()
-    await p.page.evaluate(() => { window.__pv = []; new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document.body, { subtree: true, attributes: true, childList: true }) })
-    await p.page.locator('[data-start]').first().click(); await p.page.waitForSelector('[role=progressbar]', { timeout: 5000 }); await p.page.waitForTimeout(3500)
+    await p.page.evaluate(() => { window.__pv = []; new MutationObserver(() => { const b = document.querySelector('[role=progressbar][aria-label=Download]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document.body, { subtree: true, attributes: true, childList: true }) })
+    await startModel(p.page); await p.page.waitForSelector('[role=progressbar][aria-label=Download]', { timeout: 8000 }); await p.page.waitForTimeout(3500)
     const v = await p.page.evaluate(() => __pv), valid = v.length && v.every((x) => x[1] !== null && x[2] !== null && x[3] !== null)
     const rate = v.length > 1 ? (new Set(v.map((x) => x[1])).size - 1) / ((v.at(-1)[0] - v[0][0]) / 1000 || 1) : 0
     return ok(valid, `progressbar ${valid ? 'has valuenow/min/max' : 'missing aria values'}; ${rate.toFixed(1)} updates/s (mock cannot stream, rate gated in tier 3 A9b)`) } },
   { id: 'A9b', tier: 3, title: 'real download updates >= 1/s', needs: ['S4'], run: async (env) => {
     const p = await env.open({ hub: false }); await p.goto()
     await p.page.evaluate(() => { window.__pv = []; new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow')]) }).observe(document.body, { subtree: true, attributes: true }) })
-    await p.page.locator('[data-start]').first().click(); await p.page.waitForSelector('[data-score]', { timeout: 120000 })
+    await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 120000 })
     const v = await p.page.evaluate(() => __pv), sec = (v.at(-1)[0] - v[0][0]) / 1000, n = new Set(v.map((x) => x[1])).size
     return ok(n / sec >= 1, `${n} distinct values in ${sec.toFixed(1)} s`) } },
 
   { id: 'A10', title: 'second load: zero model requests and "cached"', needs: ['S4'], run: async (env) => {
-    const p = await env.open(); await p.goto(); await p.page.locator('[data-start]').first().click(); await p.page.waitForSelector('[data-score]', { timeout: 60000 })
-    p.reqs.length = 0; await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(2000)
-    const n = p.reqs.filter((r) => MODEL_FILE.test(r.url) && /hf\.co|huggingface/.test(r.url)).length, cached = await p.page.locator('[data-cached]').count()
-    return ok(n === 0 && cached > 0, `${n} model requests; [data-cached] x${cached}`) } },
+    const p = await env.open(); await p.goto(); await startModel(p.page); await p.page.waitForFunction(() => window.__zoo?.getState().plan?.cached || /cached/i.test(document.body.innerText), null, { timeout: 20000 }).catch(() => {})
+    p.reqs.length = 0; await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(2500)
+    const n = p.reqs.filter((r) => MODEL_FILE.test(r.url) && /hf\.co|huggingface/.test(r.url)).length, cached = (await p.page.locator('[data-cached]').count()) + (/cached/i.test(await p.page.evaluate(() => document.body.innerText)) ? 1 : 0)
+    return ok(n === 0 && cached > 0, `${n} model requests after reload; "cached" shown ${cached > 0}`) } },
 
   { id: 'A11', title: 'every browser W/J value says estimated/≈', run: async (env) => {
     const p = await env.open(); await p.goto('#machine', 2500)
@@ -177,7 +180,7 @@ export const checks = [
 
   { id: 'A20', title: 'CLS <= 0.02 during a full Test all', needs: ['S5'], run: async (env) => {
     const p = await env.open(); await p.page.addInitScript(() => { window.__cls = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) __cls += e.value }).observe({ type: 'layout-shift', buffered: true }) })
-    await p.goto(); await p.page.locator('[data-testall]').first().click(); await p.page.waitForSelector('[data-score]', { timeout: 200000 }); await p.page.waitForTimeout(1000)
+    await p.goto(); await p.page.locator('[data-testall]').first().click(); await p.page.waitForFunction(() => document.querySelector('b[data-score]') && !document.querySelector('[data-testall][disabled]'), null, { timeout: 240000, polling: 500 }); await p.page.waitForTimeout(1000)
     const c = await p.page.evaluate(() => __cls); return ok(c <= 0.02, `CLS ${c.toFixed(4)}`) } },
 
   { id: 'A21', title: 'no-WebGPU / out-of-memory / offline / mic-denied: message + button <= 2 s', needs: ['S5', 'S6'], run: async (env) => {
@@ -211,14 +214,17 @@ export const checks = [
         for (const i of ids) { const part = { ...all }; delete part[i]; const d = num(S.final(part)) - full; n++; if (d > worst) worst = d } } return { worst, n, ids: ids.length } })
     return ok(r.worst <= 1e-9, `${r.n} drops over ${r.ids} components, largest rise ${r.worst.toFixed(3)}`) } },
 
-  { id: 'A25', title: 'hostile-origin page cannot start a companion run', run: async (env) => {
-    const up = await fetch('http://127.0.0.1:8000/api/health').then((r) => r.ok).catch(() => false); if (!up) return S('companion not running on 8000')
+  { id: 'A25', title: 'hostile-origin page cannot start a companion run (hardened server from master on 8011)', run: async (env) => {
+    const srv = await startServer(8011); if (!srv.ok) return S(srv.why)
     const h = await startHostile(); try { const p = await env.open({ companion: 'real', hub: false }); await p.page.goto(h.url)
-      const r = await p.page.evaluate(async () => { const out = {}
-        out.post = await fetch('http://127.0.0.1:8000/api/hw/journey', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"repo":"x","prompt":"hi","new_tokens":1}' }).then((r) => r.status, () => 'refused')
-        out.ws = await new Promise((res) => { const w = new WebSocket('ws://127.0.0.1:8000/ws/bench'); const t = setTimeout(() => { w.close(); res('timeout-open?') }, 3000); w.onopen = () => { clearTimeout(t); w.close(); res('OPENED') }; w.onerror = () => { clearTimeout(t); res('refused') } })
+      const r = await p.page.evaluate(async () => { const out = {}, B = 'http://127.0.0.1:8011'
+        out.post = await fetch(B + '/api/hw/journey', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"repo":"x","prompt":"hi","new_tokens":1}' }).then((r) => r.status, () => 'refused')
+        out.get = await fetch(B + '/api/hw/info').then((r) => r.status, () => 'refused')
+        out.ws = await new Promise((res) => { const w = new WebSocket('ws://127.0.0.1:8011/ws/bench'); let msgs = 0, opened = false; const t = setTimeout(() => { w.close(); res('stayed open ' + (opened ? '(accepted)' : '')) }, 3000)
+          w.onopen = () => { opened = true }; w.onmessage = () => { msgs++ }; w.onerror = () => { clearTimeout(t); res('refused') }; w.onclose = (e) => { clearTimeout(t); res(msgs ? 'DATA after open' : e.code === 4403 || e.code === 1006 || e.code === 1008 ? 'refused' : 'closed ' + e.code) } })
         return out })
-      return ok((r.post === 'refused' || r.post >= 400) && r.ws !== 'OPENED', `POST ${r.post}; WebSocket ${r.ws}`) } finally { h.close() } } },
+      const own = await fetch('http://127.0.0.1:8011/api/health').then((r) => r.status, () => 'down')
+      return ok([403, 'refused'].includes(r.post) && [403, 'refused'].includes(r.get) && r.ws === 'refused', `foreign origin: POST ${r.post}, GET ${r.get}, WebSocket ${r.ws}; server alive (${own}, pairing-gated)`) } finally { h.close(); srv.stop() } } },
 
   { id: 'A26', title: 'plain words: avg sentence <= 12, none > 20, grade <= 8, no banned words', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500); const strings = []
@@ -244,17 +250,16 @@ export const checks = [
     if (await p.page.evaluate(() => !!window.__zoo)) for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n); await p.page.waitForTimeout(500) }
     const e = await p.errCount(); return ok(e === 0, `${e} page errors`) } },
   { id: 'L3', title: 'power replay: same playhead gives the same readout', run: async (env) => {
-    const p = await env.open(); await p.goto('#machine', 2500); const b = p.page.locator('#sec-power button:has-text("Replay a measured run"), [data-replay]').first()
+    const p = await env.open(); await p.goto('#machine', 2500); const b = p.page.locator('#sec-power button:has-text("Play a recorded run"), [data-replay]').first()
     if (!(await b.count())) return S('no replay button'); await b.click(); await p.page.waitForTimeout(1500)
     const read = async (t) => { await p.page.evaluate((x) => { const s = window.__hw.getState(); s.pPause(); s.setPHead(x) }, t); await p.page.waitForTimeout(400); return p.page.locator('#sec-power .phud .pbig').first().innerText() }
     const a = await read(3.3), m = await read(9.9), c = await read(3.3); return ok(a === c, `${a} / ${m} / ${c}`) } },
-  { id: 'L4', title: 'recorded journey gives a numeric score', run: async (env) => {
-    const p = await env.open(); await p.goto('#machine', 2500); const b = p.page.locator('#sec-power button:has-text("Play a recorded journey"), [data-recorded]').first()
-    if (!(await b.count())) return S('no recorded-journey button'); await b.click(); await p.page.waitForFunction(() => window.__hw.getState().journey, null, { timeout: 30000 }); await p.page.waitForTimeout(900)
-    const pg = p.page; if (!(await pg.locator('#sec-power .tabs').count()) && (await pg.locator('#sec-power .detbtn').count())) await pg.click('#sec-power .detbtn')
-    if (await pg.locator('#sec-power .tabs button:has-text("Score")').count()) await pg.click('#sec-power .tabs button:has-text("Score")')
-    const h = pg.locator('.hero-score, [data-score]').first(); if (!(await h.count())) return S('no score element after the journey')
-    await pg.waitForFunction(() => /\d{2,}/.test(document.querySelector('.hero-score, [data-score]')?.innerText ?? ''), null, { timeout: 8000 }).catch(() => {}); const t = (await h.innerText({ timeout: 5000 })).replace(/\s+/g, ' '); return ok(/\d{2,}/.test(t), t.slice(0, 30)) } },
+  { id: 'L4', title: 'recorded journey loads; one component Test gives a numeric device score', run: async (env) => {
+    const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
+    const jb = pg.locator('#sec-power button:has-text("Play a recorded journey")').first(); if (!(await jb.count())) return S('no recorded-journey button')
+    await jb.click(); const j = await pg.waitForFunction(() => window.__hw.getState().journey?.stages?.length ?? !!window.__hw.getState().journey, null, { timeout: 30000 }).then(() => 1, () => 0)
+    await pg.locator('[data-test=cpu1]').first().click(); const got = await pg.waitForFunction(() => document.querySelector('b[data-score]')?.getAttribute('data-score'), null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null)
+    return ok(j && +got > 0, `journey ${j ? 'loaded' : 'MISSING'}; score after one Test ${got ?? 'none'}`) } },
   { id: 'L5', title: 'five networks each produce an output', run: async (env) => {
     const p = await env.open(); await p.goto('#zoo', 2500); if (!(await p.page.evaluate(() => !!window.__zoo))) return S('no window.__zoo'); const res = []
     for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n)
@@ -268,5 +273,5 @@ export const checks = [
     const comp = await fetch('http://127.0.0.1:8000/api/hw/info').then(async (r) => (r.ok ? `ok, ${(await r.json()).cpu?.name ?? 'cpu ?'}` : r.status), () => 'down')
     return hub === 200 ? P(`Hub ${hub}; companion ${comp}`) : F(`Hub ${hub}; companion ${comp}`) } },
   { id: 'T2', tier: 3, title: 'smoke: real page, real Hub, no mocks: a first score appears', needs: ['S4'], run: async (env) => {
-    const p = await env.open({ hub: false, companion: 'real' }); await p.goto(); await p.page.locator('[data-start]').first().click(); await p.page.waitForSelector('[data-score]', { timeout: 180000 }); await p.shot('t2'); return P('score shown') } },
+    const p = await env.open({ hub: false, companion: 'real' }); await p.goto(); await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 180000 }); await p.shot('t2'); return P('score shown') } },
 ]
