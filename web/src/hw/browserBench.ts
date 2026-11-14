@@ -7,6 +7,7 @@
 //  - The CPU model, cache sizes, RAM speed and every power sensor are hidden from web pages.
 //    Power here is therefore an ESTIMATE from a small model (see estimatePower), and is labelled so.
 import type { ModelSpec, RunStats, Task, TaskInput } from '../api'
+import type { Flag, Progress, TestResult } from './hwStore'
 
 /* ================================================================== CONTRACT (frozen in Phase 0; owner: S2)
  * What this browser and device can do. probe() runs once at page load, takes <= 2 s and downloads nothing. */
@@ -19,7 +20,6 @@ export interface Capabilities {
   battery: { charging: boolean; level: number } | null
   profile: 'lite' | 'standard' | 'full'
 }
-export async function probe(): Promise<Capabilities> { throw new Error('probe: not implemented (stream S2)') }
 /* ================================================================== */
 
 export type Emit = (m: any) => void
@@ -95,7 +95,6 @@ function call(w: Worker, id: number, cmd: string, args: any, onTick?: (m: any) =
   })
 }
 
-const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : 0 }
 function spread(xs: number[]) {
   const s = [...xs].sort((a, b) => a - b), m = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length)
   const sd = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, xs.length))
@@ -389,7 +388,7 @@ function body(): number[] {
   return [...uleb(fn.length), ...fn]
 }
 
-export const MAX_N = 512
+export const MAX_N = 1024
 export function kernelBytes(): Uint8Array {
   const pages = Math.ceil((3 * MAX_N * MAX_N * 4) / 65536)
   const bytes = [
@@ -409,4 +408,726 @@ export async function loadKernel(): Promise<Kernel> {
   const instance = await WebAssembly.instantiate(mod)
   const ex = instance.exports as any
   return { mm: ex.mm, f32: new Float32Array(ex.mem.buffer) }
+}
+
+/* ================================================================================================
+ * S2 MEASUREMENT ENGINE: pure helpers (unit-tested), probe(), and one runner per component.
+ * ============================================================================================== */
+
+/* ------------------------------------------------------------------------------- statistics */
+export const median = (xs: number[]) => {
+  if (!xs.length) return 0
+  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+export const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0)
+export const stdev = (xs: number[]) => {
+  if (xs.length < 2) return 0
+  const m = mean(xs)
+  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1))
+}
+/** Coefficient of variation in percent. */
+export const cvPct = (xs: number[]) => { const m = mean(xs); return m ? (100 * stdev(xs)) / Math.abs(m) : 0 }
+export const geomean = (xs: number[]) => (xs.length && xs.every((x) => x > 0) ? Math.exp(mean(xs.map(Math.log))) : 0)
+export const percentile = (xs: number[], p: number) => {
+  if (!xs.length) return 0
+  const s = [...xs].sort((a, b) => a - b), i = (s.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i)
+  return s[lo] + (s[hi] - s[lo]) * (i - lo)
+}
+const T95 = [0, 0, 12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131, 2.12, 2.11, 2.101, 2.093]
+const tcrit = (n: number) => (n < 2 ? Infinity : n < T95.length ? T95[n] : n < 31 ? 2.05 : 1.96)
+/** 95 % confidence interval of the median (normal approximation: se = 1.2533 * sd / sqrt(n), Student t for small n). */
+export function ci95(xs: number[]): [number, number] {
+  const m = median(xs)
+  if (xs.length < 2) return [m, m]
+  const h = tcrit(xs.length) * 1.2533 * stdev(xs) / Math.sqrt(xs.length)
+  return [m - h, m + h]
+}
+/** Half-width of the CI relative to the median (0.02 = +-2 %). Infinity when it cannot be known yet. */
+export function ciRel(xs: number[]): number {
+  if (xs.length < 2) return Infinity
+  const [lo, hi] = ci95(xs), m = median(xs)
+  return m ? (hi - lo) / 2 / Math.abs(m) : Infinity
+}
+export const shouldStopEarly = (xs: number[], minSamples = 5, tol = 0.02) => xs.length >= minSamples && ciRel(xs) <= tol
+export const NOISY_CV = 15
+export interface FlagCtx { cv: number; hidden?: boolean; timerMs?: number | null; onBattery?: boolean; isolated?: boolean; halved?: boolean; cancelled?: boolean; custom?: boolean }
+export function sampleFlags(c: FlagCtx): Flag[] {
+  const f: Flag[] = []
+  if (c.cv > NOISY_CV) f.push('noisy')
+  if (c.hidden) f.push('hidden-tab')
+  if (c.onBattery) f.push('on-battery')
+  if (c.isolated === false) f.push('not-isolated')
+  if (c.timerMs != null && c.timerMs >= 1) f.push('coarse-timer')
+  if (c.halved) f.push('size-halved')
+  if (c.cancelled) f.push('cancelled')
+  if (c.custom) f.push('custom')
+  return f
+}
+/** Minimum duration of one sample: 50 ms, or 250 ms when the timer is 1 ms or coarser. */
+export const minSampleMs = (timerMs: number | null | undefined) => (timerMs != null && timerMs >= 1 ? 250 : 50)
+
+/* ------------------------------------------------------------------------- caps and halving */
+export const clampInt = (x: number, lo: number, hi: number, step = 1) => {
+  const raw = Math.round(x / step) * step
+  const v = Math.min(hi, Math.max(lo, raw))
+  return { value: v, clamped: v !== raw }
+}
+/** Bytes this page may use for a test: `fraction` of device memory (unknown memory is treated as 4 GB). */
+export const memoryBudget = (deviceMemoryGB: number | null, fraction = 0.12) => (deviceMemoryGB ?? 4) * 2 ** 30 * fraction
+/** RAM test plan: threads x 3 arrays per worker, each array >= 4x the largest cache knee, total <= 12 % of memory. */
+export function planTriad(o: { deviceMemoryGB: number | null; threads: number; kneeBytes: number | null; requestedMB: number | null }) {
+  const MB = 2 ** 20
+  const want = o.requestedMB != null ? clampInt(o.requestedMB, 16, 128).value * MB : Math.max(16 * MB, Math.min(128 * MB, 4 * (o.kneeBytes ?? 8 * MB)))
+  const maxArr = Math.floor(memoryBudget(o.deviceMemoryGB) / (3 * Math.max(1, o.threads)) / MB) * MB
+  const arr = Math.max(MB, Math.min(want, maxArr))
+  return { arrayBytes: arr, halved: arr < want, memoryUnknown: o.deviceMemoryGB == null }
+}
+/** Cache sweep sizes: 13 doublings, 16 KB to 64 MB; the largest is capped (lite: 32 MB; else 25 % of the memory budget). */
+export function cacheSizes(profile: Capabilities['profile'], deviceMemoryGB: number | null): number[] {
+  const all = Array.from({ length: 13 }, (_, i) => 16384 * 2 ** i)
+  const cap = profile === 'lite' ? 32 * 2 ** 20 : Math.max(2 ** 20, memoryBudget(deviceMemoryGB, 1) * 0.25 * 0.5)
+  return all.filter((s) => s <= cap)
+}
+/** Run fn(size); on RangeError halve the size (down to `min`) and try again. */
+export async function withHalving<T>(fn: (size: number) => Promise<T>, size: number, min: number): Promise<{ result: T; size: number; halved: boolean }> {
+  let s = size, halved = false
+  for (;;) {
+    try { return { result: await fn(s), size: s, halved } } catch (e) {
+      const oom = e instanceof RangeError || (e as any)?.name === 'GPUOutOfMemoryError' || /out of memory|allocation|invalid (typed )?array length/i.test(String((e as any)?.message))
+      if (!oom || s / 2 < min) throw e
+      s = Math.floor(s / 2); halved = true
+    }
+  }
+}
+export const chooseProfile = (o: { deviceMemoryGB: number | null; cores: number; mobile: boolean; gpuOk: boolean }): Capabilities['profile'] =>
+  (o.deviceMemoryGB != null && o.deviceMemoryGB <= 2) || o.mobile ? 'lite' : o.cores >= 8 && (o.deviceMemoryGB ?? 0) >= 8 && o.gpuOk ? 'full' : 'standard'
+
+/* ------------------------------------------------------------------------- knee detection */
+/** Cache boundaries from a latency curve: the largest size still on a plateau before each rise. Up to 3 (L1, L2, L3). */
+export function findKnees(sizes: number[], lat: number[], rise = 1.3): number[] {
+  const knees: number[] = []
+  if (sizes.length < 3) return knees
+  let plateau = lat[0], i = 1
+  while (i < sizes.length && knees.length < 3) {
+    // a step of >30 % between neighbours, or >2x the plateau it started from (slow creep that adds up)
+    if (lat[i] > lat[i - 1] * rise || lat[i] > plateau * 2) {
+      knees.push(sizes[i - 1])
+      let j = i
+      while (j + 1 < sizes.length && lat[j + 1] > lat[j] * 1.15) j++ // still climbing through the transition
+      plateau = lat[j]; i = j + 1
+    } else i++
+  }
+  return knees
+}
+
+/* ---------------------------------------------------------------------------- run control */
+export interface Clock { now(): number }
+export const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' })
+/** Disposers (worker.terminate, device.destroy, ...) fire synchronously on abort; latency is measured with an injectable clock. */
+export class RunScope {
+  private fns: (() => void)[] = []
+  firedAt: number | null = null
+  latencyMs: number | null = null
+  constructor(readonly signal: AbortSignal, private clock: Clock = performance) {
+    if (signal.aborted) this.fire(); else signal.addEventListener('abort', () => this.fire(), { once: true })
+  }
+  get aborted() { return this.firedAt != null || this.signal.aborted }
+  add(fn: () => void) { if (this.firedAt != null) { try { fn() } catch { /* ignore */ } } else this.fns.push(fn) }
+  private fire() {
+    if (this.firedAt != null) return
+    this.firedAt = this.clock.now()
+    for (const f of this.fns.splice(0)) { try { f() } catch { /* ignore */ } }
+    this.latencyMs = this.clock.now() - this.firedAt
+  }
+  /** Normal end: run the disposers without marking an abort. */
+  dispose() { for (const f of this.fns.splice(0)) { try { f() } catch { /* ignore */ } } }
+}
+
+export interface SampleOpts {
+  clock?: Clock; signal?: AbortSignal; warmups?: number; minSamples?: number; maxSamples?: number
+  budgetMs: number; tol?: number; onSample?: (v: number, n: number, elapsedMs: number) => void
+}
+export interface SampleOut { samples: number[]; cancelled: boolean; stopped: 'ci' | 'budget' | 'max' | 'cancel' }
+/** The one sampling loop every test uses: warm-up discarded, >= minSamples, stop when the median's CI <= tol, budget, or abort. */
+export async function collectSamples(measure: () => number | Promise<number>, o: SampleOpts): Promise<SampleOut> {
+  const clock = o.clock ?? performance, min = o.minSamples ?? 5, max = o.maxSamples ?? 60, tol = o.tol ?? 0.02
+  const samples: number[] = []
+  const gone = () => !!o.signal?.aborted
+  for (let w = 0; w < (o.warmups ?? 1); w++) { if (gone()) return { samples, cancelled: true, stopped: 'cancel' }; await measure() }
+  const t0 = clock.now()
+  for (;;) {
+    if (gone()) return { samples, cancelled: true, stopped: 'cancel' }
+    const v = await measure()
+    if (gone()) return { samples, cancelled: true, stopped: 'cancel' }
+    samples.push(v)
+    const el = clock.now() - t0
+    o.onSample?.(v, samples.length, el)
+    if (shouldStopEarly(samples, min, tol)) return { samples, cancelled: false, stopped: 'ci' }
+    if (samples.length >= max) return { samples, cancelled: false, stopped: 'max' }
+    if (el >= o.budgetMs && samples.length >= min) return { samples, cancelled: false, stopped: 'budget' }
+    if (el >= 3 * o.budgetMs) return { samples, cancelled: false, stopped: 'budget' }
+  }
+}
+/** Find a repeat count whose run takes >= minMs (this is also the warm-up). fn(reps) runs the op `reps` times. */
+export function calibrateReps(fn: (reps: number) => void, minMs: number, clock: Clock = performance, maxReps = 1 << 24): number {
+  let reps = 1
+  for (;;) {
+    const t = clock.now(); fn(reps); const dt = clock.now() - t
+    if (dt >= minMs || reps >= maxReps) return reps
+    reps = Math.min(maxReps, Math.ceil(reps * (dt <= 0 ? 16 : Math.min(16, Math.max(2, (minMs * 1.15) / dt)))))
+  }
+}
+
+/* ---------------------------------------------------------------------------------- kernels (pure JS) */
+/** Random single-cycle pointer chain, one pointer per 64-byte line (Sattolo), so the footprint is exactly `bytes`. */
+export function buildChase(bytes: number, rng: () => number = Math.random): Uint32Array {
+  const lines = Math.max(2, bytes >> 6), a = new Uint32Array(lines * 16), ord = new Uint32Array(lines)
+  for (let i = 0; i < lines; i++) ord[i] = i
+  for (let i = lines - 1; i > 0; i--) { const j = Math.floor(rng() * i), t = ord[i]; ord[i] = ord[j]; ord[j] = t }
+  for (let i = 0; i < lines; i++) a[ord[i] * 16] = ord[(i + 1) % lines] * 16
+  return a
+}
+export function chase(a: Uint32Array, steps: number): number {
+  let p = 0
+  for (let s = 0; s < steps; s += 4) { p = a[p]; p = a[p]; p = a[p]; p = a[p] }
+  return p
+}
+export function readSum(a: Float64Array, reps: number): number {
+  let s0 = 0, s1 = 0, s2 = 0, s3 = 0
+  const n = a.length
+  for (let r = 0; r < reps; r++) for (let i = 0; i < n; i += 4) { s0 += a[i]; s1 += a[i + 1]; s2 += a[i + 2]; s3 += a[i + 3] }
+  return s0 + s1 + s2 + s3
+}
+/** STREAM triad a = b + s*c: 24 bytes per element. */
+export function triad(a: Float64Array, b: Float64Array, c: Float64Array, s: number, reps: number) {
+  const n = a.length
+  for (let r = 0; r < reps; r++) for (let i = 0; i < n; i++) a[i] = b[i] + s * c[i]
+}
+
+/* ----------------------------------------------------------------------------------------- probe */
+const withTimeout = <T>(p: Promise<T>, ms: number, dflt: T): Promise<T> =>
+  Promise.race([p.catch(() => dflt), new Promise<T>((r) => setTimeout(() => r(dflt), ms))])
+
+export function pageTimerMs(): number {
+  let min = Infinity, last = performance.now()
+  const t0 = last
+  for (let i = 0; i < 400000 && performance.now() - t0 < 20; i++) {
+    const t = performance.now(), d = t - last
+    if (d > 0) { if (d < min) min = d; last = t }
+  }
+  return Number.isFinite(min) ? min : 1
+}
+/** One throw-away worker: its timer resolution and whether OPFS sync handles exist there (they are worker-only). */
+async function workerProbe(): Promise<{ ms: number | null; sync: boolean }> {
+  let w: Worker | null = null
+  try {
+    w = spawn()
+    return await withTimeout(call(w, 1, 'timer', {}).then((r) => ({ ms: r.ms as number, sync: !!r.sync })), 1000, { ms: null, sync: false })
+  } catch { return { ms: null, sync: false } } finally { w?.terminate() }
+}
+
+const CANARY_N = 16
+const canaryWgsl = (f16: boolean) => `${f16 ? 'enable f16;' : ''}
+alias T = ${f16 ? 'f16' : 'f32'};
+@group(0) @binding(0) var<storage, read> A: array<T>;
+@group(0) @binding(1) var<storage, read> B: array<T>;
+@group(0) @binding(2) var<storage, read_write> C: array<T>;
+@compute @workgroup_size(16) fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+  if (g.x >= 16u) { return; }
+  let i = g.x / 4u; let j = g.x % 4u;
+  var s = T(0);
+  for (var k = 0u; k < 4u; k = k + 1u) { s = s + A[i * 4u + k] * B[k * 4u + j]; }
+  C[g.x] = s;
+}`
+/** 4x4 matmul on the GPU against the CPU, f32 or f16. Values are multiples of 1/4 so f16 is exact. */
+async function gpuCanary(device: any, f16: boolean): Promise<boolean> {
+  const U = (globalThis as any).GPUBufferUsage, M = (globalThis as any).GPUMapMode
+  const A = Array.from({ length: CANARY_N }, (_, i) => ((i * 3) % 7 - 3) / 4), B = Array.from({ length: CANARY_N }, (_, i) => ((i * 5) % 9 - 4) / 4)
+  const cpu = Array.from({ length: CANARY_N }, (_, x) => { const i = x >> 2, j = x & 3; let s = 0; for (let k = 0; k < 4; k++) s += A[i * 4 + k] * B[k * 4 + j]; return s })
+  const toHalf = (v: number) => {
+    if (v === 0) return 0
+    const sign = v < 0 ? 0x8000 : 0, a = Math.abs(v), e = Math.floor(Math.log2(a)), m = Math.round((a / 2 ** e - 1) * 1024)
+    return sign | ((e + 15) << 10) | m
+  }
+  const fromHalf = (h: number) => { const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023; return e === 0 ? s * 2 ** -14 * (m / 1024) : s * 2 ** (e - 15) * (1 + m / 1024) }
+  const size = f16 ? 32 : 64
+  const mk = (data: number[]) => {
+    const b = device.createBuffer({ size, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST, mappedAtCreation: true })
+    if (f16) new Uint16Array(b.getMappedRange()).set(data.map(toHalf)); else new Float32Array(b.getMappedRange()).set(data)
+    b.unmap(); return b
+  }
+  const a = mk(A), b = mk(B), c = device.createBuffer({ size, usage: U.STORAGE | U.COPY_SRC })
+  const rd = device.createBuffer({ size, usage: U.MAP_READ | U.COPY_DST })
+  const pipe = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code: canaryWgsl(f16) }), entryPoint: 'main' } })
+  const bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [a, b, c].map((buffer, i) => ({ binding: i, resource: { buffer } })) })
+  const enc = device.createCommandEncoder(), pass = enc.beginComputePass()
+  pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(1); pass.end()
+  enc.copyBufferToBuffer(c, 0, rd, 0, size)
+  device.queue.submit([enc.finish()])
+  await rd.mapAsync(M.READ)
+  const out = f16 ? Array.from(new Uint16Array(rd.getMappedRange().slice(0))).map(fromHalf) : Array.from(new Float32Array(rd.getMappedRange().slice(0)))
+  rd.unmap()
+  return out.every((v, i) => Math.abs(v - cpu[i]) < 1e-3) && out.some((v) => v !== 0)
+}
+
+const SOFTWARE_RE = /swiftshader|llvmpipe|software|basic render|microsoft basic|softpipe/i
+async function probeGpu(): Promise<Capabilities['gpu']> {
+  const none = { available: false, software: false, f16: false, timestamps: false, adapter: null, canaryOk: null, maxBuffer: null }
+  const gpu = (navigator as any).gpu
+  if (!gpu) return none
+  const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' })
+  if (!adapter) return none
+  const info = adapter.info ?? (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {})
+  const name = [info.vendor, info.architecture, info.description].filter(Boolean).join(' ') || null
+  const software = !!(adapter.isFallbackAdapter ?? info.isFallbackAdapter) || (name != null && SOFTWARE_RE.test(name))
+  let f16 = adapter.features?.has('shader-f16') ?? false
+  const timestamps = adapter.features?.has('timestamp-query') ?? false
+  const out = { available: true, software, f16, timestamps, adapter: name, canaryOk: null as boolean | null, maxBuffer: (adapter.limits?.maxBufferSize as number) ?? null }
+  if (software) return out
+  let device: any = null
+  try {
+    device = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] })
+    out.canaryOk = await gpuCanary(device, false)
+    if (f16) f16 = await gpuCanary(device, true).catch(() => false)
+  } catch { out.canaryOk = false } finally { try { device?.destroy() } catch { /* ignore */ } }
+  out.f16 = f16
+  return out
+}
+async function probeOpfs(): Promise<Capabilities['opfs']> {
+  const s = (navigator as any).storage
+  const available = typeof s?.getDirectory === 'function'
+  const syncHandle = available && typeof (globalThis as any).FileSystemFileHandle !== 'undefined' && 'createSyncAccessHandle' in (globalThis as any).FileSystemFileHandle.prototype
+  let quotaBytes: number | null = null
+  try { quotaBytes = (await s.estimate()).quota ?? null } catch { /* ignore */ }
+  return { available, syncHandle, quotaBytes }
+}
+
+let probeCache: Promise<Capabilities> | null = null
+/** Runs once (the result is remembered). <= 2 s, downloads nothing. */
+export function probe(): Promise<Capabilities> { return (probeCache ??= probeNow()) }
+export function resetProbe() { probeCache = null }
+async function probeNow(): Promise<Capabilities> {
+  const nav = navigator as any
+  const cores = navigator.hardwareConcurrency || 4
+  const deviceMemoryGB: number | null = nav.deviceMemory ?? null
+  let simd = false
+  try { simd = WebAssembly.validate(kernelBytes() as BufferSource) } catch { /* no wasm */ }
+  const conn = nav.connection
+  const gpuNone: Capabilities['gpu'] = { available: false, software: false, f16: false, timestamps: false, adapter: null, canaryOk: null, maxBuffer: null }
+  const [wp, gpu, opfs0, battery] = await Promise.all([
+    workerProbe(),
+    withTimeout(probeGpu(), 1600, gpuNone),
+    withTimeout(probeOpfs(), 800, { available: false, syncHandle: false, quotaBytes: null } as Capabilities['opfs']),
+    withTimeout((async () => { const b = await nav.getBattery?.(); return b ? { charging: !!b.charging, level: +b.level } : null })(), 500, null),
+  ])
+  const opfs = { ...opfs0, syncHandle: opfs0.available && wp.sync }
+  const mobile = !!nav.userAgentData?.mobile || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)
+  return {
+    isolated: !!(globalThis as any).crossOriginIsolated, cores, deviceMemoryGB, simd,
+    timerResolutionMs: { page: +pageTimerMs().toFixed(4), worker: wp.ms },
+    gpu, opfs,
+    net: { type: conn?.effectiveType ? `${conn.type ? conn.type + ' ' : ''}${conn.effectiveType}`.trim() : conn?.type ?? null, saveData: !!conn?.saveData, online: navigator.onLine },
+    battery,
+    profile: chooseProfile({ deviceMemoryGB, cores, mobile, gpuOk: gpu.available && !gpu.software }),
+  }
+}
+
+/* ------------------------------------------------------------------------------ runner plumbing */
+export type RunResult = TestResult & { extra?: Record<string, unknown> }
+const nowIso = () => new Date().toISOString()
+const timerOf = (c: Capabilities) => Math.max(c.timerResolutionMs.page, c.timerResolutionMs.worker ?? 0)
+
+function watchHidden(scope: RunScope) {
+  const has = typeof document !== 'undefined'
+  let hidden = has && document.hidden
+  const h = () => { if (document.hidden) hidden = true }
+  if (has) { document.addEventListener('visibilitychange', h); scope.add(() => document.removeEventListener('visibilitychange', h)) }
+  return { get hidden() { return hidden }, stop: () => { if (has) document.removeEventListener('visibilitychange', h) } }
+}
+
+interface Built {
+  component: TestResult['component']; workload: { id: string; v: number }; custom?: boolean; summary: string
+  samples: number[]; unit: string; env: TestResult['env']; flags: Flag[]; extra?: Record<string, unknown>
+  value?: number; ci?: [number, number]; cv?: number
+}
+function build(b: Built): RunResult {
+  const value = b.value ?? median(b.samples)
+  return {
+    v: 1, component: b.component, scale: 'browser', workload: b.workload,
+    input: { kind: b.custom ? 'custom' : 'default', summary: b.summary },
+    samples: b.samples, value, unit: b.unit, ci95: b.ci ?? ci95(b.samples), cv: b.cv ?? cvPct(b.samples),
+    score: null, // S3 computes the score from value, REF and the gates
+    flags: [...new Set(b.flags)], env: b.env, at: nowIso(), ...(b.extra ? { extra: b.extra } : {}),
+  }
+}
+function baseFlags(caps: Capabilities, hid: { hidden: boolean }, cv: number, cancelled: boolean, extra: Partial<FlagCtx> = {}): Flag[] {
+  return sampleFlags({ cv, hidden: hid.hidden, timerMs: timerOf(caps), onBattery: !!caps.battery && !caps.battery.charging, isolated: caps.isolated, cancelled, ...extra })
+}
+
+function callW(w: Worker, id: number, cmd: string, args: any, scope: RunScope | null, onTick?: (m: any) => void): Promise<any> {
+  return new Promise((resolve, reject) => {
+    scope?.add(() => reject(abortError()))
+    call(w, id, cmd, args, onTick).then(resolve, reject)
+  })
+}
+function pool(n: number, scope: RunScope): Worker[] {
+  const ws = Array.from({ length: n }, spawn)
+  scope.add(() => ws.forEach((w) => w.terminate()))
+  return ws
+}
+const isAbort = (e: any) => e?.name === 'AbortError'
+const poolSize = (caps: Capabilities) => Math.max(1, Math.min(8, caps.cores, caps.profile === 'lite' ? 4 : 8))
+const epochIn = (ms: number) => performance.timeOrigin + performance.now() + ms
+
+/* ---------------------------------------------------------------------------- CPU: 1 core, all cores */
+const MM_WORKLOAD = { id: 'matmul_f32_simd', v: 1 }
+
+export async function run_cpu1(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  const custom = input != null && input !== 256
+  const n = clampInt(input ?? 256, 128, 1024, 16).value
+  let samples: number[] = [], cancelled = false
+  try {
+    const [w] = pool(1, scope)
+    await callW(w, 1, 'prep', { kind: 'mm', n, minMs: minSampleMs(timerOf(caps)) }, scope)
+    const r = await callW(w, 2, 'run', { startAt: 0, budgetMs: 2500, minSamples: 5, maxSamples: 40 }, scope, (m) => onProgress({ value: m.value, unit: 'GFLOP/s', fraction: Math.min(0.95, (m.elapsed ?? 0) / 2500) }))
+    samples = r.samples
+  } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
+  onProgress({ value: median(samples), unit: 'GFLOP/s', fraction: 1 })
+  return build({
+    component: 'cpu1', workload: MM_WORKLOAD, custom, summary: `matmul n=${n}, 1 thread`, samples, unit: 'GFLOP/s',
+    env: { where: 'wasm', threads: 1, isolated: caps.isolated }, flags: baseFlags(caps, hid, cvPct(samples), cancelled, { custom }),
+    extra: { n, peak: samples.length ? Math.max(...samples) : 0 },
+  })
+}
+
+/** `input` = thread count (1..cores, pool <= 8). */
+export async function run_cpun(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  const max = poolSize(caps)
+  const custom = input != null && input !== max
+  const threads = clampInt(input ?? max, 1, max).value
+  const n = 256
+  let agg: number[] = [], cancelled = false, sustained = 0
+  try {
+    const ws = pool(threads, scope)
+    await Promise.all(ws.map((w, i) => callW(w, 10 * i + 1, 'prep', { kind: 'mm', n, minMs: minSampleMs(timerOf(caps)) }, scope)))
+    const per = new Array(threads).fill(0)
+    const startAt = epochIn(100)
+    const rs = await Promise.all(ws.map((w, i) => callW(w, 10 * i + 2, 'run', { startAt, budgetMs: 3500, minSamples: 5, maxSamples: 40 }, scope, (m) => {
+      per[i] = m.value; onProgress({ value: per.reduce((a, b) => a + b, 0), unit: 'GFLOP/s', fraction: Math.min(0.55, ((m.elapsed ?? 0) / 3500) * 0.55) })
+    })))
+    const len = Math.min(...rs.map((r: any) => r.samples.length))
+    agg = Array.from({ length: len }, (_, k) => rs.reduce((a: number, r: any) => a + r.samples[k], 0))
+    // sustained: 3 s straight on every thread; throughput over the whole window
+    const t1 = epochIn(100)
+    const ss = await Promise.all(ws.map((w, i) => callW(w, 10 * i + 3, 'run', { startAt: t1, budgetMs: 3000, sustain: true }, scope, (m) => onProgress({ unit: 'GFLOP/s', fraction: 0.55 + Math.min(0.44, ((m.elapsed ?? 0) / 3000) * 0.44) }))))
+    sustained = ss.reduce((a: number, r: any) => a + r.flop / (r.ms / 1000) / 1e9, 0)
+  } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
+  const burst = median(agg), ratio = burst ? sustained / burst : 0
+  const flags = baseFlags(caps, hid, cvPct(agg), cancelled, { custom })
+  if (!cancelled && sustained && ratio < 0.85) flags.push('sustained-low' as Flag)
+  onProgress({ value: burst, unit: 'GFLOP/s', fraction: 1 })
+  return build({
+    component: 'cpun', workload: MM_WORKLOAD, custom, summary: `matmul n=${n}, ${threads} threads`, samples: agg, unit: 'GFLOP/s',
+    env: { where: 'wasm', threads, isolated: caps.isolated }, flags,
+    extra: { n, threads, burst, sustained, sustainedRatio: ratio },
+  })
+}
+
+/* ----------------------------------------------------------------------------------------- cache */
+let lastKnees: number[] = []
+/** `input` = largest working set in MB (capped by the profile). */
+export async function run_cache(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  let sizes = cacheSizes(caps.profile, caps.deviceMemoryGB)
+  const custom = input != null
+  if (input != null) { const cap = Math.max(2 ** 20, input * 2 ** 20); sizes = sizes.filter((s) => s <= cap) }
+  let rows: { bytes: number; lat: number[]; bw: number[] }[] = [], cancelled = false
+  try {
+    const [w] = pool(1, scope)
+    const r = await callW(w, 1, 'sweep', { sizes, minMs: minSampleMs(timerOf(caps)) }, scope, (m) => onProgress({ fraction: m.fraction, unit: 'GB/s', value: m.bw, note: m.note }))
+    rows = r.rows
+  } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
+  const sz = rows.map((r) => r.bytes), lat = rows.map((r) => median(r.lat)), bw = rows.map((r) => median(r.bw))
+  const knees = findKnees(sz, lat)
+  if (knees.length) lastKnees = knees
+  const l2 = knees[1] ?? knees[0] ?? sz[Math.min(5, sz.length - 1)]
+  const l2i = Math.max(0, sz.indexOf(l2)), l2Samples = rows[l2i]?.bw ?? []
+  const l3 = knees[2], target = l3 ? 4 * l3 : sz[sz.length - 1]
+  const di = sz.findIndex((s) => s >= target), dramI = di < 0 ? sz.length - 1 : di
+  const flags = baseFlags(caps, hid, cvPct(l2Samples), cancelled, { custom })
+  if (!cancelled && knees.length < 2) flags.push('no-knee' as Flag)
+  return build({
+    component: 'cache', workload: { id: 'chase_read_sweep', v: 1 }, custom, summary: `${sz.length} sizes, ${sz.length ? sz[0] / 1024 : 0} KB to ${sz.length ? sz[sz.length - 1] / 2 ** 20 : 0} MB`,
+    samples: bw, unit: 'GB/s', value: bw[l2i] ?? 0, ci: ci95(l2Samples), cv: cvPct(l2Samples),
+    env: { where: 'wasm', threads: 1, isolated: caps.isolated }, flags,
+    extra: { sizes: sz, latencyNs: lat, bandwidthGBs: bw, knees, l2BandwidthGBs: bw[l2i] ?? 0, latencyAt4xL3Ns: lat[dramI] ?? 0, dramLatencyNs: lat[lat.length - 1] ?? 0 },
+  })
+}
+
+/* ------------------------------------------------------------------------------------------ RAM */
+/** `input` = MB per array per worker (16-128); total <= 12 % of device memory. */
+export async function run_ram(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  const threads = poolSize(caps)
+  const plan = planTriad({ deviceMemoryGB: caps.deviceMemoryGB, threads, kneeBytes: lastKnees[2] ?? lastKnees[lastKnees.length - 1] ?? null, requestedMB: input })
+  const custom = input != null
+  let arrayBytes = plan.arrayBytes, halved = plan.halved, agg: number[] = [], cancelled = false
+  try {
+    const ws = pool(threads, scope)
+    const prep = await withHalving(async (bytes) => {
+      await Promise.all(ws.map((w, i) => callW(w, i + 1, 'prep', { kind: 'triad', bytes, minMs: minSampleMs(timerOf(caps)) }, scope)))
+      return bytes
+    }, arrayBytes, 2 ** 20)
+    if (prep.halved) { halved = true; arrayBytes = prep.size }
+    const startAt = epochIn(100)
+    const per = new Array(threads).fill(0)
+    const rs = await Promise.all(ws.map((w, i) => callW(w, i + 1001, 'run', { startAt, budgetMs: 3500, minSamples: 5, maxSamples: 40 }, scope, (m) => {
+      per[i] = m.value; onProgress({ value: per.reduce((a, b) => a + b, 0), unit: 'GB/s', fraction: Math.min(0.99, (m.elapsed ?? 0) / 3500) })
+    })))
+    const len = Math.min(...rs.map((r: any) => r.samples.length))
+    agg = Array.from({ length: len }, (_, k) => rs.reduce((a: number, r: any) => a + r.samples[k], 0))
+  } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
+  const flags = baseFlags(caps, hid, cvPct(agg), cancelled, { halved, custom })
+  if (plan.memoryUnknown) flags.push('fallback:memory-unknown')
+  onProgress({ value: median(agg), unit: 'GB/s', fraction: 1 })
+  return build({
+    component: 'ram', workload: { id: 'stream_triad_f64', v: 1 }, custom, summary: `STREAM triad (24 B/element), ${threads} threads x 3 x ${Math.round(arrayBytes / 2 ** 20)} MB`,
+    samples: agg, unit: 'GB/s', env: { where: 'wasm', threads, isolated: caps.isolated }, flags,
+    extra: { arrayBytes, threads, totalBytes: arrayBytes * 3 * threads, peak: agg.length ? Math.max(...agg) : 0 },
+  })
+}
+
+/* ------------------------------------------------------------------------------------- storage */
+/** `input` = file size in MB (16-512, <= 10 % of the free quota). Labelled "browser file storage", never "SSD". */
+export async function run_storage(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  const custom = input != null && input !== 128
+  const wl = { id: 'opfs_seq_rand', v: 1 }
+  if (!caps.opfs.available || !caps.opfs.syncHandle) {
+    scope.dispose(); hid.stop()
+    return build({ component: 'storage', workload: wl, summary: 'browser file storage unavailable', samples: [], unit: 'MB/s', env: { where: 'wasm', isolated: caps.isolated }, flags: ['fallback:no-opfs'], extra: { unavailable: true, label: 'browser file storage' } })
+  }
+  let mb = clampInt(input ?? 128, 16, 512, 16).value, halved = false
+  if (caps.opfs.quotaBytes) { const cap = Math.max(16, Math.floor((caps.opfs.quotaBytes * 0.1) / 2 ** 20 / 16) * 16); if (mb > cap) { mb = cap; halved = true } }
+  let rounds: any[] = [], cancelled = false
+  try {
+    const [w] = pool(1, scope)
+    const r = await withHalving((size) => callW(w, 1, 'store', { mb: size, rounds: 3, randomMs: 330 }, scope, (m) => onProgress({ fraction: m.fraction, unit: 'MB/s', value: m.value, note: m.note })), mb, 16)
+    rounds = r.result.rounds; if (r.halved) { halved = true; mb = r.size }
+  } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
+  const samples = rounds.map((r) => geomean([r.writeMBs, r.readMBs, r.randMBs]))
+  const med = (k: string) => median(rounds.map((r) => r[k]))
+  const flags = baseFlags(caps, hid, cvPct(samples), cancelled, { halved, custom })
+  if (rounds.length && med('readMBs') > 2 * med('writeMBs')) flags.push('cached-read' as Flag)
+  if (caps.opfs.quotaBytes != null && caps.opfs.quotaBytes < 2 ** 30) flags.push('small-quota' as Flag)
+  onProgress({ value: median(samples), unit: 'MB/s', fraction: 1 })
+  return build({
+    component: 'storage', workload: wl, custom, summary: `browser file storage, ${mb} MB seq write+flush, seq read, 4K random read QD1`, samples, unit: 'MB/s',
+    env: { where: 'wasm', isolated: caps.isolated }, flags,
+    extra: { label: 'browser file storage', mb, writeMBs: med('writeMBs'), readMBs: med('readMBs'), randMBs: med('randMBs'), randIops: med('randIops') },
+  })
+}
+
+/* --------------------------------------------------------------------------------------- GPU */
+/** Tiled matmul: 64x64 output tile per 16x16 workgroup, each thread keeps a 4x4 block in registers, k-tile 16. */
+export const gpuWgsl = (n: number) => /* wgsl */ `
+@group(0) @binding(0) var<storage, read> A: array<f32>;
+@group(0) @binding(1) var<storage, read> B: array<f32>;
+@group(0) @binding(2) var<storage, read_write> C: array<f32>;
+const N: u32 = ${n}u;
+var<workgroup> As: array<f32, 1024>;
+var<workgroup> Bs: array<f32, 1024>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l: vec3<u32>) {
+  let tid = l.y * 16u + l.x;
+  let row0 = wg.y * 64u; let col0 = wg.x * 64u;
+  var acc: array<f32, 16>;
+  for (var t = 0u; t < N / 16u; t = t + 1u) {
+    for (var q = 0u; q < 4u; q = q + 1u) {
+      let idx = tid + q * 256u;
+      As[idx] = A[(row0 + idx / 16u) * N + t * 16u + idx % 16u];
+      Bs[idx] = B[(t * 16u + idx / 64u) * N + col0 + idx % 64u];
+    }
+    workgroupBarrier();
+    for (var k = 0u; k < 16u; k = k + 1u) {
+      var a: array<f32, 4>; var b: array<f32, 4>;
+      for (var i = 0u; i < 4u; i = i + 1u) { a[i] = As[(l.y * 4u + i) * 16u + k]; b[i] = Bs[k * 64u + l.x * 4u + i]; }
+      for (var i = 0u; i < 4u; i = i + 1u) { for (var j = 0u; j < 4u; j = j + 1u) { acc[i * 4u + j] = fma(a[i], b[j], acc[i * 4u + j]); } }
+    }
+    workgroupBarrier();
+  }
+  for (var i = 0u; i < 4u; i = i + 1u) { for (var j = 0u; j < 4u; j = j + 1u) { C[(row0 + l.y * 4u + i) * N + col0 + l.x * 4u + j] = acc[i * 4u + j]; } }
+}`
+const hashVal = (i: number, s: number) => { let h = (Math.imul(i, 0x9e3779b1) ^ Math.imul(s, 0x85ebca6b)) >>> 0; h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d) >>> 0; return ((h >>> 8) & 0xffff) / 65536 - 0.5 }
+
+/** `input` = N (512-4096, multiple of 64). A software adapter is reported as unavailable, never scored. */
+export async function run_gpu(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  const wl = { id: 'matmul_f32_tiled4x4', v: 1 }
+  const custom = input != null && input !== 1024
+  const env = (adapter?: string): TestResult['env'] => ({ where: 'webgpu', isolated: caps.isolated, ...(adapter ? { adapter } : {}) })
+  const unavailable = (reason: string, flags: Flag[]) => { scope.dispose(); hid.stop(); return build({ component: 'gpu', workload: wl, summary: reason, samples: [], unit: 'GFLOP/s', env: env(caps.gpu.adapter ?? undefined), flags, extra: { unavailable: true, reason } }) }
+  if (!caps.gpu.available) return unavailable('No WebGPU on this browser', ['fallback:no-webgpu'])
+  if (caps.gpu.software) return unavailable('Software GPU adapter, not scored', ['software-gpu'])
+  const lim = Math.min(256 * 2 ** 20, caps.gpu.maxBuffer ?? 256 * 2 ** 20)
+  let N = clampInt(input ?? 1024, 512, 4096, 64).value
+  while (N * N * 4 > lim && N > 512) N -= 64
+  let samples: number[] = [], cancelled = false, halved = false, lost = false, check = { ok: true, worst: 0 }, finalN = N, batchUsed = 1
+  let device: any = null
+  try {
+    const adapter = await (navigator as any).gpu.requestAdapter({ powerPreference: 'high-performance' })
+    if (!adapter) return unavailable('No WebGPU adapter', ['fallback:no-webgpu'])
+    device = await adapter.requestDevice()
+    let destroyed = false
+    scope.add(() => { destroyed = true; try { device.destroy() } catch { /* ignore */ } })
+    device.lost.then(() => { if (!destroyed) lost = true })
+    const U = (globalThis as any).GPUBufferUsage, M = (globalThis as any).GPUMapMode
+    const target = minSampleMs(timerOf(caps)) === 250 ? 250 : 100
+    const attempt = async (n: number) => {
+      device.pushErrorScope('out-of-memory')
+      const bytes = n * n * 4
+      const hostA = new Float32Array(n * n), hostB = new Float32Array(n * n)
+      for (let i = 0; i < n * n; i++) { hostA[i] = hashVal(i, 1); hostB[i] = hashVal(i, 2) }
+      const mk = (src: Float32Array | null) => {
+        const b = device.createBuffer({ size: bytes, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST, mappedAtCreation: !!src })
+        if (src) { new Float32Array(b.getMappedRange()).set(src); b.unmap() }
+        return b
+      }
+      const A = mk(hostA), B = mk(hostB), C = mk(null)
+      if (await device.popErrorScope()) throw new RangeError('GPU out of memory')
+      const pipe = await device.createComputePipelineAsync({ layout: 'auto', compute: { module: device.createShaderModule({ code: gpuWgsl(n) }), entryPoint: 'main' } })
+      const bind = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [A, B, C].map((buffer, i) => ({ binding: i, resource: { buffer } })) })
+      const flop = 2 * n ** 3
+      const timed = async (batch: number) => {
+        const enc = device.createCommandEncoder(), pass = enc.beginComputePass()
+        pass.setPipeline(pipe); pass.setBindGroup(0, bind)
+        for (let b = 0; b < batch; b++) pass.dispatchWorkgroups(n / 64, n / 64)
+        pass.end()
+        const t = performance.now()
+        device.queue.submit([enc.finish()])
+        await device.queue.onSubmittedWorkDone()
+        return performance.now() - t
+      }
+      // batch so that one sample takes >= target ms; this doubles as the warm-up (shader compile, clocks ramp)
+      let batch = 1, dt = await timed(1)
+      while (dt < target && batch < 4096 && !scope.aborted) { batch = Math.min(4096, Math.ceil(batch * Math.min(8, Math.max(1.5, (target * 1.15) / Math.max(dt, 0.5))))); dt = await timed(batch) }
+      let prev = 0
+      for (let i = 0; i < 8 && !scope.aborted; i++) { const g = (flop * batch) / (await timed(batch)) / 1e6; if (prev && Math.abs(g - prev) / prev < 0.05) break; prev = g }
+      const out = await collectSamples(async () => (flop * batch) / (await timed(batch)) / 1e6, {
+        signal, warmups: 0, budgetMs: 4000, minSamples: 5, maxSamples: 30,
+        onSample: (v, _k, el) => onProgress({ value: v, unit: 'GFLOP/s', fraction: Math.min(0.95, el / 4000) }),
+      })
+      // spot-check one result against the CPU (double precision)
+      let worst = 0
+      if (!scope.aborted && !lost) {
+        const rd = device.createBuffer({ size: bytes, usage: U.MAP_READ | U.COPY_DST })
+        const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(C, 0, rd, 0, bytes); device.queue.submit([enc.finish()])
+        await rd.mapAsync(M.READ)
+        const got = new Float32Array(rd.getMappedRange())
+        for (let q = 0; q < 24; q++) {
+          const i = Math.floor((hashVal(q, 7) + 0.5) * n) % n, j = Math.floor((hashVal(q, 8) + 0.5) * n) % n
+          let s = 0; for (let k = 0; k < n; k++) s += hostA[i * n + k] * hostB[k * n + j]
+          worst = Math.max(worst, Math.abs(s - got[i * n + j]))
+        }
+        rd.unmap()
+      }
+      batchUsed = batch
+      return { samples: out.samples, cancelled: out.cancelled, worst }
+    }
+    const r = await withHalving(attempt, N, 512)
+    finalN = r.size; halved = r.halved
+    samples = r.result.samples; cancelled = r.result.cancelled
+    check = { ok: r.result.worst < 1e-3 * Math.sqrt(finalN / 64), worst: r.result.worst }
+  } catch (e: any) {
+    if (scope.aborted || isAbort(e)) cancelled = true
+    else if (lost || /lost|destroyed/i.test(String(e?.message))) lost = true
+    else { scope.dispose(); hid.stop(); return build({ component: 'gpu', workload: wl, summary: 'GPU test failed', samples, unit: 'GFLOP/s', env: env(caps.gpu.adapter ?? undefined), flags: ['fallback:gpu-error'], extra: { error: String(e?.message ?? e) } }) }
+  } finally { scope.dispose(); hid.stop() }
+  const flags = baseFlags(caps, hid, cvPct(samples), cancelled, { halved, custom })
+  if (lost) flags.push('fallback:device-lost')
+  if (!check.ok) flags.push('fallback:gpu-incorrect')
+  onProgress({ value: median(samples), unit: 'GFLOP/s', fraction: 1 })
+  return build({
+    component: 'gpu', workload: wl, custom, summary: `matmul N=${finalN} f32, ${batchUsed} dispatches per sample`, samples, unit: 'GFLOP/s', env: env(caps.gpu.adapter ?? undefined), flags,
+    extra: { n: finalN, batch: batchUsed, correct: check.ok, maxError: check.worst, f16Available: caps.gpu.f16, peak: samples.length ? Math.max(...samples) : 0 },
+  })
+}
+
+/* ------------------------------------------------------------------------------- connection */
+const HUB_URL = 'https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors'
+function pickTarget(): { url: string; range: string | null; hub: boolean } {
+  try {
+    const here = location.origin
+    const e = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+      .filter((r) => r.name.startsWith(here) && (r.encodedBodySize || r.decodedBodySize) > 256 * 1024)
+      .sort((a, b) => (b.encodedBodySize || b.decodedBodySize) - (a.encodedBodySize || a.decodedBodySize))[0]
+    if (e) return { url: e.name.split('?')[0], range: null, hub: false }
+  } catch { /* fall through */ }
+  return { url: HUB_URL, range: 'bytes=0-8388607', hub: true }
+}
+/** `input` = seconds of download (3-15, default 5). Not part of the device score. Flags confirm-needed on saveData / cellular. */
+export async function run_net(input: number | null, signal: AbortSignal, onProgress: Progress): Promise<RunResult> {
+  const caps = await probe(), scope = new RunScope(signal), hid = watchHidden(scope)
+  const wl = { id: 'net_latency_download', v: 1 }
+  const custom = input != null
+  const secs = clampInt(input ?? 5, 3, 15).value
+  const flags: Flag[] = []
+  const cellular = /cellular|2g|3g/i.test(caps.net.type ?? '')
+  if (caps.net.saveData) flags.push('save-data' as Flag)
+  if (cellular) flags.push('cellular' as Flag)
+  if (caps.net.saveData || cellular) flags.push('confirm-needed' as Flag)
+  if (!caps.net.online) { scope.dispose(); hid.stop(); return build({ component: 'net', workload: wl, summary: 'connection test', samples: [], unit: 'Mbit/s', env: { where: 'wasm', isolated: caps.isolated }, flags: [...flags, 'fallback:offline'] }) }
+  const ping = new URL('./examples/index.json', document.baseURI).href
+  const rtt = async () => {
+    const t = performance.now()
+    const r = await fetch(`${ping}?nsr=${Math.random()}`, { cache: 'no-store', headers: { Range: 'bytes=0-0' }, signal })
+    const dt = performance.now() - t
+    await r.arrayBuffer().catch(() => null)
+    return dt
+  }
+  const idle: number[] = [], loaded: number[] = [], windows: number[] = []
+  let bytesTotal = 0, cancelled = false, hub = false
+  try {
+    for (let i = 0; i < 15; i++) { if (scope.aborted) throw abortError(); idle.push(await rtt()); onProgress({ fraction: ((i + 1) / 15) * 0.2, unit: 'ms', value: idle[i] }) }
+    const tg = pickTarget(); hub = tg.hub
+    const ctl = new AbortController()
+    scope.add(() => ctl.abort())
+    let bytes = 0
+    const stream = async (delay: number, id: number) => {
+      await new Promise((r) => setTimeout(r, delay))
+      while (!ctl.signal.aborted && bytes < 100 * 2 ** 20) {
+        try {
+          const r = await fetch(`${tg.url}?nsr=${id}-${Math.random()}`, { cache: 'no-store', signal: ctl.signal, ...(tg.range ? { headers: { Range: tg.range } } : {}) })
+          if (!r.ok && r.status !== 206) throw new Error(String(r.status))
+          const rd = r.body!.getReader()
+          for (;;) { const { done, value } = await rd.read(); if (done) break; bytes += value.length }
+        } catch { if (ctl.signal.aborted) return; await new Promise((r) => setTimeout(r, 200)) }
+      }
+    }
+    const t0 = performance.now()
+    const streams = [0, 200, 400, 600].map((d, i) => stream(d, i)) // ramped start
+    const loadedProbe = (async () => { await new Promise((r) => setTimeout(r, 1500)); for (let i = 0; i < 5 && !ctl.signal.aborted; i++) { try { loaded.push(await rtt()) } catch { /* ignore */ } } })()
+    let lastB = 0, lastT = t0
+    while (performance.now() - t0 < secs * 1000 && bytes < 100 * 2 ** 20 && !scope.aborted) {
+      await new Promise<void>((r) => { const h = setTimeout(r, 500); scope.add(() => { clearTimeout(h); r() }) })
+      const t = performance.now(), mbit = ((bytes - lastB) * 8) / ((t - lastT) / 1000) / 1e6
+      if (t - t0 > 1300) windows.push(mbit) // the first ~1.3 s is ramp-up and is discarded
+      lastB = bytes; lastT = t
+      onProgress({ fraction: 0.2 + Math.min(0.78, ((t - t0) / (secs * 1000)) * 0.78), unit: 'Mbit/s', value: mbit })
+    }
+    bytesTotal = bytes
+    ctl.abort()
+    await Promise.allSettled([...streams, loadedProbe])
+    if (scope.aborted) throw abortError()
+  } catch (e: any) { if (isAbort(e) || scope.aborted) cancelled = true; else flags.push('fallback:net-error') } finally { scope.dispose(); hid.stop() }
+  if (hub) flags.push('fallback:hub-cdn')
+  const jitter = idle.length > 1 ? mean(idle.slice(1).map((x, i) => Math.abs(x - idle[i]))) : 0
+  return build({
+    component: 'net', workload: wl, custom, summary: `${idle.length} latency probes, 4-stream download${hub ? ' (Hub CDN)' : ''}`, samples: windows, unit: 'Mbit/s',
+    env: { where: 'wasm', isolated: caps.isolated }, flags: [...flags, ...baseFlags(caps, hid, cvPct(windows), cancelled, { custom })],
+    extra: { latencyMs: median(idle), latencyP95Ms: percentile(idle, 0.95), jitterMs: jitter, loadedLatencyMs: median(loaded), bufferbloatMs: loaded.length ? median(loaded) - median(idle) : null, p95Mbit: percentile(windows, 0.95), bytes: bytesTotal, hub },
+  })
 }
