@@ -1,5 +1,9 @@
 import { create } from 'zustand'
 import { useStore } from '../store'
+import * as api from '../api'
+import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
+import type { InputCaps } from './nets'
+import { useHW } from '../hw/hwStore'
 import { accuracyAt, applyFx, cnn, FX0, mlp, rnn, SWEEP_LEVELS, timeNet, vit, vlm, type Fx, type Pack, type Speed, type Sweep } from './nets'
 
 /** 'llm' is the real model loaded at the top of the page, run on the shared prompt; the others are the five tiny
@@ -42,7 +46,21 @@ export function reach(net: NetId, t: number, id: string) {
 export type Inspect = { kind: 'block' | 'tensor' | 'token' | 'output'; layer?: number; part?: 'attn' | 'mlp' | 'norm' | 'embed'; name?: string; index?: number } | null
 export type Sel = { kind: string; layer?: string; index: number; extra?: number } | null
 
+/** What the picker and the first-visit card know about one model: its Hub facts, the fit verdict and the download plan. */
+export interface CatRow { id: string; title: string; repo: string; task: Task | null; recorded: boolean; bytes: number | null; plan: DownloadPlan | null; fit: Fit | null; spec: ModelSpec | null; verdict?: Fit['verdict'] }
+
 interface Z {
+  custom: Partial<Record<Task, TaskInput>>
+  remember: (t: Task, i: TaskInput) => void
+  cardOff: boolean
+  setCardOff: (v: boolean) => void
+  caps: (InputCaps & { line: string }) | null
+  loadCaps: () => Promise<void>
+  catalog: Record<string, CatRow>
+  loadCatalog: () => Promise<void>
+  planFor: (spec: ModelSpec, fit: Fit | null) => Promise<DownloadPlan>
+  /** The one primary action: switch to the example if needed, then run (consent and download progress live in the main store). */
+  startLive: (exampleId?: string) => Promise<void>
   net: NetId
   packs: Partial<Record<DigitNet, Pack>>
   digits: { images: number[][]; labels: number[] } | null
@@ -79,7 +97,63 @@ interface Z {
 let raf = 0, last = 0
 const base = () => `${import.meta.env.BASE_URL}zoo/`
 
+
 export const useZoo = create<Z>((set, get) => ({
+  custom: {}, remember: (t, i) => set((s) => ({ custom: { ...s.custom, [t]: i } })),
+  cardOff: false, setCardOff: (cardOff) => set({ cardOff }),
+  caps: null, catalog: {},
+
+  async loadCaps() {
+    if (get().caps) return
+    const hw: any = useHW.getState().caps
+    if (hw) { const mem = hw.deviceMemoryGB ?? null; set({ caps: { deviceMemoryGB: mem, line: `${hw.cores} cores · ${hw.gpu?.available ? (hw.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}` } }); return }
+    let line = '', mem: number | null = (navigator as any).deviceMemory ?? null
+    try {
+      const m: any = await import('../hw/browserBench')
+      const c = await m.probe()
+      mem = c.deviceMemoryGB ?? mem
+      line = `${c.cores} cores · ${c.gpu?.available ? (c.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}`
+    } catch {
+      const gpu = !!(navigator as any).gpu
+      line = `${navigator.hardwareConcurrency || '?'} cores · ${gpu ? 'WebGPU ready' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}`
+    }
+    set({ caps: { line, deviceMemoryGB: mem } })
+  },
+
+  /** The download plan from the models engine; a companion run downloads nothing in the browser. */
+  async planFor(spec, fit) {
+    const dev = fit?.where === 'webgpu' || fit?.where === 'wasm' ? fit.where : undefined
+    if (!dev) return { repo: spec.repo, bytes: null, cached: false, etaSeconds: null, consent: 'none' }
+    return api.planDownload(spec, { device: dev })
+  },
+
+  /** Every example once (Hub facts only, no model files), so the picker can show size, time and fit. */
+  async loadCatalog() {
+    const ex = useStore.getState().examples
+    const budget = await api.deviceBudget().catch(() => null)
+    await Promise.all(ex.map(async (e) => {
+      const row: CatRow = { id: e.id, title: e.title, repo: e.repo, task: e.task ?? 'text-generation', recorded: !!e.file, bytes: null, plan: null, fit: null, spec: null }
+      set((s) => ({ catalog: { ...s.catalog, [e.id]: s.catalog[e.id] ?? row } }))
+      try {
+        const spec = await api.resolveModel(e.repo)
+        const fit = budget ? api.checkFit(spec, budget) : null
+        const plan = await get().planFor(spec, fit)
+        set((s) => ({ catalog: { ...s.catalog, [e.id]: { ...row, spec, fit, plan, bytes: plan.bytes, verdict: fit?.verdict } } }))
+      } catch { /* a row without facts still lists */ }
+    }))
+  },
+
+  async startLive(exampleId) {
+    set({ cardOff: true })
+    const st = useStore.getState()
+    const ex = exampleId ? st.examples.find((e) => e.id === exampleId) : undefined
+    if (ex && st.repo.toLowerCase() !== ex.repo.toLowerCase()) await st.loadExample(ex.id)
+    await useStore.getState().run()
+    // the button showed the size, so the click is the consent for a normal download; a big one waits for its own button
+    const p = useStore.getState().pendingDownload
+    if (p && p.consent === 'size') await useStore.getState().confirmDownload()
+  },
+
   net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, fx: FX0, timing: {}, sweep: null, sweepBusy: null, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
 
   async init() {

@@ -65,6 +65,35 @@ test('vlm writes a grammatical caption with the right digit and parity', () => {
   assert.ok(ok / digits.images.length > 0.85, `exact captions ${ok}/${digits.images.length}`)
 })
 
+// ---- S6 model UI helpers (plain functions; the screens are checked in the browser) ----
+import { checkInput, consentFor, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, smallerSuggestion, startLabel } from '../src/zoo/nets'
+
+test('S6 picker groups follow the fixed order and drop empty groups', () => {
+  const g = groupByTask([{ task: 'fill-mask' }, { task: 'text-generation' }, { task: 'text-generation' }, { task: 'automatic-speech-recognition' }])
+  assert.deepEqual(g.map((x) => [x.label, x.rows.length]), [['Text', 2], ['Fill-mask', 1], ['Speech', 1]])
+})
+test('S6 start label shows size or cached; consent follows section 0.3', () => {
+  assert.equal(startLabel({ bytes: 82 * 1048576, cached: false }), '▶ Start (download 82 MB)')
+  assert.equal(startLabel({ bytes: 82 * 1048576, cached: true }), '▶ Start (cached)')
+  assert.equal(consentFor(10 * 1048576), 'none'); assert.equal(consentFor(80 * 1048576), 'size'); assert.equal(consentFor(200 * 1048576), 'warn'); assert.equal(consentFor(10, true), 'warn')
+  assert.equal(fmtBytes(2 * 1024 ** 3), '2.0 GB'); assert.equal(fmtEta(20), 'about 20 s'); assert.equal(fmtEta(300), 'about 5 min')
+})
+test('S6 input checks: caps, mask, empty, size', () => {
+  assert.match(checkInput('fill-mask', { kind: 'text', text: 'Paris is the capital' })!, /\[MASK\]/)
+  assert.equal(checkInput('fill-mask', { kind: 'text', text: 'Paris is the [MASK] of France.' }), null)
+  assert.match(checkInput('text-generation', { kind: 'text', text: 'a'.repeat(3000) })!, /512/)
+  assert.match(checkInput('text-generation', { kind: 'text', text: 'a'.repeat(1000) }, { deviceMemoryGB: 2 })!, /128/)
+  assert.match(checkInput('text-generation', { kind: 'text', text: '  ' })!, /Type/)
+  assert.match(checkInput('image-classification', { kind: 'image', url: 'x' }, null, { bytes: 11 * 1048576 })!, /10 MB/)
+  assert.match(checkInput('automatic-speech-recognition', { kind: 'audio', url: 'x' }, null, { seconds: 31 })!, /30 s/)
+  assert.equal(readCheck({ ok: true }), null); assert.equal(readCheck('bad'), 'bad'); assert.equal(readCheck({ ok: false, message: 'no' }), 'no')
+})
+test('S6 breadcrumb and smaller-model suggestion', () => {
+  assert.deepEqual(crumbs({ kind: 'block', layer: 11, part: 'attn' }), ['Model', 'Block 12', 'Attention']); assert.deepEqual(crumbs(null), [])
+  const rows = [{ id: 'a', task: 'text-generation', bytes: 900, verdict: 'too-big' }, { id: 'b', task: 'text-generation', bytes: 80, verdict: 'fits' }, { id: 'c', task: 'text-generation', bytes: 300, verdict: 'fits' }]
+  assert.equal(smallerSuggestion(rows[0], rows)!.id, 'c')
+
+})
 /* ===================================================================================== S4 models engine (fenced block) */
 import { describe as s4describe, it as s4it, expect as s4expect, vi as s4vi, beforeEach as s4beforeEach, afterEach as s4afterEach } from 'vitest'
 import * as S4 from '../src/api'
