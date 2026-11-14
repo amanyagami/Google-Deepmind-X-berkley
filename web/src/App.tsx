@@ -85,7 +85,7 @@ function TopBar({ view }: { view: AppView }) {
 function Dock() {
   const s = useStore()
   return (
-    <footer className="dock">
+    <footer className="dock" data-dock>
       <div id="dock-slot">
         <form className="dockform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
           <label className="sr" htmlFor="sharedprompt">Prompt</label>
@@ -185,6 +185,14 @@ export default function App() {
   const flow = useRef<HTMLDivElement>(null)
   const seen = useSections(flow)
   useSheet()
+  // stage and rail are the side-by-side panels: mark them so tests and styles can find them
+  useEffect(() => {
+    const mark = () => document.querySelectorAll('.main > .stage, .main > .rail, .main > .inspector').forEach((e) => e.setAttribute('data-panel', ''))
+    mark()
+    const mo = new MutationObserver(mark)
+    mo.observe(flow.current!, { childList: true, subtree: true })
+    return () => mo.disconnect()
+  }, [])
   // every model opens already run on the shared prompt, so the animations have something real to show
   const autoRan = useRef('')
   useEffect(() => { const s = useStore.getState(); if (canRun(s) && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run({ auto: true }) } }, [probeRes, layers])
