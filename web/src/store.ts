@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { api, checkFit, deviceBudget, parseRepo, resolveModel, streamRun } from './api'
-import type { Fit, ModelSpec, RunStats, Task, TaskInput } from './api'
+import { api, checkFit, deviceBudget, loadSavedInput, parseRepo, planDownload, requestPersist, resolveModel, runInBrowser, saveInput, streamRun } from './api'
+import type { DownloadPlan, Fit, ModelSpec, RunStats, Task, TaskInput } from './api'
 
 export type Tab = 'model' | 'run' | 'layer' | 'calc' | 'edit'
 export interface Edit { type: string; layer?: number; head?: number; index?: number; name?: string; factor?: number; row?: number; col?: number; value?: number }
@@ -10,6 +10,11 @@ export interface ExampleMeta { id: string; title: string; repo: string; prompt?:
 const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 let timer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0
+let dlAbort: AbortController | null = null
+let persistAsked = false
+
+/** Progress of the model download that a run started (bytes, speed, time left). */
+export interface DownloadProgress { done: number; total: number | null; bytesPerSec: number | null; etaSeconds: number | null }
 
 export type AppView = 'model' | 'journey' | 'power' | 'zoo'
 let lockUntil = 0
@@ -53,6 +58,20 @@ interface S {
   input: TaskInput
   setInput: (i: TaskInput) => void
   lastStats: RunStats | null
+  /** size, time and consent level of the model download this model would need (null until known / not a browser model) */
+  plan: DownloadPlan | null
+  /** a live browser run is waiting for the user: show plan.bytes / etaSeconds and a Download button (confirmDownload) or Cancel (declineDownload) */
+  pendingDownload: DownloadPlan | null
+  needsConsent: boolean
+  consent: DownloadPlan['consent'] | null
+  /** set while a model downloads; null otherwise */
+  download: DownloadProgress | null
+  confirmDownload: () => Promise<void>
+  declineDownload: () => void
+  /** stop a running download (the run ends without an error) */
+  cancelDownload: () => void
+  /** machine-readable reason of the last failed run: a BrowserRunError code, or null */
+  runErrCode: string | null
   probe: any | null
   probing: boolean
   probeErr: string | null
@@ -93,7 +112,8 @@ interface S {
   loadModel: (text: string, prompt?: string, input?: TaskInput) => Promise<void>
   loadExample: (id: string) => Promise<void>
   setPrompt: (p: string) => void
-  run: () => Promise<void>
+  /** Start a run. `auto: true` (the page started it, not the user) never downloads a model: it runs only the recorded replay or an already cached model. */
+  run: (opts?: { auto?: boolean }) => Promise<void>
   /** finished runs of the shared prompt (the Journey replays the same prompt on the hardware after each) */
   runSeq: number
   setTab: (t: Tab) => void
@@ -113,7 +133,16 @@ interface S {
 
 const resetRun = {
   tokens: [], embed: null, layers: [], final: null, revealed: 0, running: false, streaming: false,
-  runStatus: null, runErr: null, lastStats: null as RunStats | null, maxes: { attn: 1, mlp: 1, head: 1 },
+  runStatus: null, runErr: null, runErrCode: null as string | null, lastStats: null as RunStats | null, maxes: { attn: 1, mlp: 1, head: 1 },
+}
+
+/** Can the Run button work now? True for a recorded replay, a browser-runnable model, or a model the companion can run. */
+export const canRun = (s: Pick<S, 'mode' | 'pack' | 'fit' | 'probe' | 'running' | 'probing'>): boolean => {
+  if (s.running || s.probing) return false
+  if (s.mode === 'replay') return !!s.pack
+  const w = s.fit?.where
+  if (s.fit?.verdict !== 'too-big' && (w === 'webgpu' || w === 'wasm' || w === 'companion')) return true
+  return !!s.probe?.graph?.runnable
 }
 
 export const useStore = create<S>((set, get) => {
@@ -146,12 +175,49 @@ export const useStore = create<S>((set, get) => {
     } else if (f.type === 'final') set({ final: f })
   }
 
+  /** Run now with what is in the store (consent, when it was needed, has been given). */
+  async function execute() {
+    const s = get()
+    const replay = s.mode === 'replay' && !!s.pack
+    const where = s.fit?.where ?? 'none'
+    const viaBrowser = !replay && (where === 'webgpu' || where === 'wasm')
+    set({ ...resetRun, running: true, streaming: true, tab: 'run', pendingDownload: null, needsConsent: false })
+    startReveal()
+    const t0 = performance.now()
+    try {
+      if (replay) {
+        for (const f of s.pack.run.frames) onFrame(f)
+      } else if (viaBrowser) {
+        const ctl = (dlAbort = new AbortController())
+        let last = { t: performance.now(), done: 0 }
+        let rate: number | null = null
+        const onProgress = (done: number, total: number | null) => {
+          const now = performance.now()
+          if (now - last.t >= 500) { const r = ((done - last.done) * 1000) / (now - last.t); rate = rate == null ? r : rate * 0.6 + r * 0.4; last = { t: now, done } }
+          set({ download: { done, total, bytesPerSec: rate, etaSeconds: total != null && rate && rate > 0 ? Math.max(0, Math.ceil((total - done) / rate)) : null } })
+        }
+        const stats: RunStats = await runInBrowser(s.spec!, s.input, onFrame, { device: where as 'webgpu' | 'wasm', signal: ctl.signal, onProgress })
+        set({ lastStats: stats })
+      } else {
+        await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], onFrame)
+        const totalMs = performance.now() - t0, fin = get().final
+        set({ lastStats: { where: 'companion', repo: s.repo, task: s.spec?.task ?? 'text-generation', loadMs: 0, firstMs: (fin?.seconds ?? totalMs / 1000) * 1000, totalMs, items: 1, unit: 'items', perSec: 1000 / totalMs, memBytes: null, joules: null, estimatedEnergy: false } })
+      }
+    } catch (e: any) {
+      const code: string | null = e?.code ?? null
+      set({ runErr: code === 'aborted' ? null : (e.message ?? String(e)), runErrCode: code, running: false })
+    } finally {
+      dlAbort = null
+      set((st) => ({ streaming: false, download: null, runSeq: st.runSeq + 1 }))
+    }
+  }
+
   return {
     appView: location.hash === '#machine' || location.hash === '#journey' ? 'journey' : location.hash === '#power' ? 'power' : 'model',
     setAppView: (appView: AppView) => set({ appView } as any),
     visible: { model: true }, setVisible: (visible) => set({ visible } as any),
     details: readDetails(), setDetails: (details) => { set({ details } as any); try { localStorage.setItem(DETAILS_KEY, details ? '1' : '0') } catch { /* private mode */ } },
-    backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
+    plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
     prompt: 'The capital of France is', ...resetRun, selLayer: null, selHead: null, qpos: -1, hover: null, tab: 'model',
     runSeq: 0, tensors: {}, tensorErr: null, edits: [], useEdits: true, compare: null, comparing: false, compareErr: null,
     calc: null, calcing: false, calcErr: null,
@@ -159,7 +225,11 @@ export const useStore = create<S>((set, get) => {
 
     setShowImportance: (showImportance) => set({ showImportance }),
 
-    setInput: (input) => set(input.kind === 'text' ? { input, prompt: input.text } : { input }),
+    setInput: (input) => {
+      const t = get().spec?.task
+      if (t) saveInput(t, input)
+      set(input.kind === 'text' ? { input, prompt: input.text } : { input })
+    },
 
     async runScan() {
       const s = get()
@@ -188,7 +258,7 @@ export const useStore = create<S>((set, get) => {
       if (timer) { clearInterval(timer); timer = null }
       const mySeq = ++loadSeq
       const prevTask = get().spec?.task
-      set({ repo, spec: null, fit: null, probing: true, probeErr: null, probe: null, ...resetRun, selLayer: null, selHead: null, tensors: {}, edits: [], compare: null, calc: null, scan: null, showImportance: false, tab: 'model', ...(prompt ? { prompt, input: { kind: 'text', text: prompt } as TaskInput } : {}) })
+      set({ repo, spec: null, fit: null, plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, probing: true, probeErr: null, probe: null, ...resetRun, selLayer: null, selHead: null, tensors: {}, edits: [], compare: null, calc: null, scan: null, showImportance: false, tab: 'model', ...(prompt ? { prompt, input: { kind: 'text', text: prompt } as TaskInput } : {}) })
       // what the Hub says and whether it fits here (needs no companion)
       let spec: ModelSpec | null = null, fit: Fit | null = null, specErr: string | null = null
       try {
@@ -198,8 +268,12 @@ export const useStore = create<S>((set, get) => {
       if (mySeq !== loadSeq) return
       if (spec) {
         const keep = !prompt && !input && prevTask === spec.task && get().input.kind === 'text'
-        const inp: TaskInput = input ?? (prompt ? { kind: 'text', text: prompt } : keep ? get().input : spec.defaultInput)
+        const inp: TaskInput = input ?? (prompt ? { kind: 'text', text: prompt } : keep ? get().input : (spec.task && loadSavedInput(spec.task)) || spec.defaultInput)
         set({ spec, fit, input: inp, ...(inp.kind === 'text' ? { prompt: inp.text } : {}) })
+        // size and time are shown before anything downloads (metadata only: no model file is requested)
+        if (fit && (fit.where === 'webgpu' || fit.where === 'wasm')) {
+          planDownload(spec, { device: fit.where }).then((plan) => { if (mySeq === loadSeq) set({ plan }) }, () => { /* the size is optional */ })
+        }
       }
       const browserOk = !!fit && (fit.where === 'webgpu' || fit.where === 'wasm')
       try {
@@ -232,9 +306,13 @@ export const useStore = create<S>((set, get) => {
       if (meta) await get().loadModel(meta.repo, meta.prompt, meta.input)
     },
 
-    setPrompt: (prompt) => set({ prompt, input: { kind: 'text', text: prompt } }),
+    setPrompt: (prompt) => {
+      const t = get().spec?.task
+      if (t) saveInput(t, { kind: 'text', text: prompt })
+      set({ prompt, input: { kind: 'text', text: prompt } })
+    },
 
-    async run() {
+    async run(opts) {
       const s = get()
       if (!s.probe && !s.spec) return
       const replay = s.mode === 'replay' && !!s.pack
@@ -249,31 +327,32 @@ export const useStore = create<S>((set, get) => {
       // the companion path, also for repos the probe can read but the fit rules do not list (kept from before)
       const viaCompanion = !replay && !viaBrowser && s.mode === 'live' && !!s.probe
       if (!replay && !viaBrowser && !viaCompanion) {
+        if (opts?.auto) return
         set({ ...resetRun, tab: 'run', runErr: s.fit?.reason ?? 'This model cannot run on this computer.' })
         return
       }
-      set({ ...resetRun, running: true, streaming: true, tab: 'run' })
-      startReveal()
-      const t0 = performance.now()
-      try {
-        if (replay) {
-          for (const f of s.pack.run.frames) onFrame(f)
-        } else if (viaBrowser) {
-          const eng: any = await import('./api')
-          if (typeof eng.runInBrowser !== 'function') throw new Error('The in-browser engine is not available in this build.')
-          const stats: RunStats = await eng.runInBrowser(s.spec, s.input, onFrame, { device: where })
-          set({ lastStats: stats })
-        } else {
-          await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], onFrame)
-          const totalMs = performance.now() - t0, fin = get().final
-          set({ lastStats: { where: 'companion', repo: s.repo, task: s.spec?.task ?? 'text-generation', loadMs: 0, firstMs: (fin?.seconds ?? totalMs / 1000) * 1000, totalMs, items: 1, unit: 'items', perSec: 1000 / totalMs, memBytes: null, joules: null, estimatedEnergy: false } })
-        }
-      } catch (e: any) {
-        set({ runErr: e.message ?? String(e), running: false })
-      } finally {
-        set((st) => ({ streaming: false, runSeq: st.runSeq + 1 }))
+      if (viaBrowser) {
+        // a user click may ask the browser to keep the model; the page itself never downloads anything on its own
+        if (!opts?.auto && !persistAsked) { persistAsked = true; void requestPersist() }
+        let plan: DownloadPlan
+        try { plan = await planDownload(s.spec!, { device: where }) } catch (e: any) { set({ ...resetRun, tab: 'run', runErr: e.message ?? String(e) }); return }
+        set({ plan })
+        if (opts?.auto && !plan.cached) return
+        if (!plan.cached && plan.consent !== 'none') { set({ pendingDownload: plan, needsConsent: true, consent: plan.consent, tab: 'run' }); return }
       }
+      await execute()
     },
+
+    async confirmDownload() {
+      if (!get().pendingDownload) return
+      void requestPersist()   // this runs inside the user's click
+      set({ pendingDownload: null, needsConsent: false })
+      await execute()
+    },
+
+    declineDownload() { set({ pendingDownload: null, needsConsent: false, consent: null }) },
+
+    cancelDownload() { dlAbort?.abort() },
 
     setTab: (tab) => set({ tab }),
     selectLayer: (i) => set({ selLayer: i, selHead: null, calc: null, ...(i !== null ? { tab: 'layer' as Tab } : {}) }),
