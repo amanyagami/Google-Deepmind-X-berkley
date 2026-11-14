@@ -460,5 +460,5 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
   .dock .btn, .dock button { min-height: 44px; }
 }
 /* amber buttons: the ring goes inside, in ink, so it stays visible on the amber fill */
-.btn:focus-visible, .pri:focus-visible, .primary:focus-visible { outline: 2px solid #0a0e19 !important; outline-offset: -4px; box-shadow: 0 0 0 2px var(--fg); }
+.btn:focus-visible, .pri:focus-visible, .primary:focus-visible, .s6go:focus-visible, [data-primary]:focus-visible { outline: 2px solid #0a0e19 !important; outline-offset: -4px; box-shadow: 0 0 0 2px var(--fg); }
 #dock-slot input, #dock-slot button, #dock-slot select { min-height: 44px; }
