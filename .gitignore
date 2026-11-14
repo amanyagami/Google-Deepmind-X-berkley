@@ -1,11 +1,16 @@
+# dependencies and builds (recreated by npm install / pip install / npm run build)
 node_modules/
 web/dist/
 server/.venv/
 __pycache__/
 *.pyc
-*.log
-*.err.log
-server/hw_err.txt
-server/hw_out.txt
-web/tsconfig.tsbuildinfo
 .pytest_cache/
+*.tsbuildinfo
+# logs, scratch output and screenshots from test runs
+*.log
+server/hw_*.txt
+examples/
+*.png
+!web/public/**/*.png
+# editor and agent settings
+.vscode/

@@ -1,7 +1,10 @@
-"""Record replay packs: the real probe, trace, tensors, scan, A/B edits and per-head calculations
-for each demo model. The web app plays these back when no backend is running.
+"""Record the replay packs the web app plays when no companion is running.
 
-Usage: python make_examples.py [id ...]
+Model packs: the real probe, trace, tensors, scan, A/B edits and per-head calculations for each demo model.
+Machine pack ("machine"): hardware info, the full benchmark with its power trace, one instrumented journey
+through SmolLM2-135M and one real dot product for the core microscope (writes machine.json).
+
+Usage: python make_examples.py [id ... | machine]
 """
 import json
 import sys
@@ -84,14 +87,44 @@ def record(ex):
     print(f" wrote {path.name}: {path.stat().st_size / 1e3:.0f} KB in {time.perf_counter() - t0:.0f}s", flush=True)
 
 
+def record_machine(repo="HuggingFaceTB/SmolLM2-135M", prompt="The capital of France is"):
+    from app import hw
+    events = []
+    t = time.time()
+    hw.bench_run(events.append)  # no browser here, so no GPU stage
+    bench = {m["name"]: m["data"] for m in events if m["type"] == "result" and m["name"] != "power"}
+    power = next((m["data"] for m in events if m["type"] == "result" and m["name"] == "power"), None)
+    print(f"bench {time.time() - t:.0f} s, power samples {len(power['samples']) if power else 0}")
+
+    h = runner.get_holder(repo)
+    pk = {"gflops": bench["matmul_n"]["gflops"], "gbps": bench["dram"]["copy_gbps"]}
+    journey = hw.journey(h, prompt, 24, pk)
+    micro = hw.microscope(h, prompt, 0, 0)
+    info = dict(hw.info())
+    pack = {"recorded": time.strftime("%Y-%m-%d"), "note": "Recorded on the test PC by server/make_examples.py machine",
+            "info": info, "bench": bench, "power": power, "journey": journey, "micro": micro}
+    out = OUT / "machine.json"
+    out.write_text(json.dumps(pack, separators=(",", ":")), encoding="utf-8")
+    print(f"wrote {out} ({out.stat().st_size / 1e6:.2f} MB) · decode {journey['decode']['tps']} tok/s · micro err {micro['match_err']:.2e}")
+
+
 if __name__ == "__main__":
     want = set(sys.argv[1:])
-    done = []
+    if "machine" in want:
+        want.discard("machine")
+        record_machine()
+        if not want:
+            sys.exit(0)
     for ex in EXAMPLES:
         if want and ex["id"] not in want:
             continue
         record(ex)
-        done.append(ex)
-    index = [{k: e[k] for k in ("id", "title", "repo", "prompt")} | {"file": f"{e['id']}.json"} for e in EXAMPLES if (OUT / f"{e['id']}.json").exists()]
-    (OUT / "index.json").write_text(json.dumps(index, indent=1), encoding="utf-8")
+    # keep the per-task default models (entries without a recorded pack) that index.json also lists
+    path = OUT / "index.json"
+    old = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    recorded = [{k: e[k] for k in ("id", "title", "repo", "prompt")} | {"file": f"{e['id']}.json", "task": "text-generation"}
+                for e in EXAMPLES if (OUT / f"{e['id']}.json").exists()]
+    ids = {e["id"] for e in recorded}
+    index = recorded + [e for e in old if e.get("id") not in ids and not e.get("file")]
+    path.write_text(json.dumps(index, indent=1), encoding="utf-8")
     print("\nindex:", [e["id"] for e in index])

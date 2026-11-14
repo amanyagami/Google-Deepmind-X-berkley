@@ -80,7 +80,7 @@ only the row of section links stays on screen.
 | `server/app/hw.py` | hardware discovery, telemetry, benchmarks with power recording, per-operation timing |
 | `server/app/power.py` | RAPL package and per-core power, effective clock, thermal zone (Windows performance counters) |
 | `server/train_zoo.py` | trains and exports the five zoo networks |
-| `server/make_examples.py`, `make_machine_pack.py` | record the replay packs the web app plays without a companion |
+| `server/make_examples.py` | records the replay packs the web app plays without a companion (`python make_examples.py machine` for the Machine pack) |
 | `web/src/hw` | machine view: timeline, scenes, score, power, browser benchmarks (`wasmKernel.ts`: hand-written WASM SIMD) |
 | `web/src/zoo` | network zoo: forward passes and stress tests (`nets.ts`), state (`zooStore.ts`), 3D scene, UI (`ZooUI.tsx`, including the comparison and robustness cards) |
 | `web/tests`, `server/tests` | unit tests (`npm test`, `pytest`); `web/tests/e2e` drives the real app in Edge |
