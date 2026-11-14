@@ -11,6 +11,12 @@ import { useZoo } from './zoo/zooStore'
 ;(window as any).__hw = useHW
 ;(window as any).__zoo = useZoo
 
+// Run the ONNX engine from our own files (/ort/), not a CDN. Set before the first model loads.
+import('@huggingface/transformers').then((tf: any) => {
+  const root = new URL('ort/', document.baseURI).href
+  tf.env.backends.onnx.wasm.wasmPaths = { mjs: root + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: root + 'ort-wasm-simd-threaded.asyncify.wasm' }
+}).catch(() => { /* the engine then uses its default location */ })
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
