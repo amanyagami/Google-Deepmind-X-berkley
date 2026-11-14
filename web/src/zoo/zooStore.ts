@@ -148,6 +148,8 @@ export const useZoo = create<Z>((set, get) => ({
     const st = useStore.getState()
     const ex = exampleId ? st.examples.find((e) => e.id === exampleId) : undefined
     if (ex && st.repo.toLowerCase() !== ex.repo.toLowerCase()) await st.loadExample(ex.id)
+    const cur = useStore.getState()
+    if (cur.probeErr || (!cur.spec && !cur.probe)) { useStore.setState({ runErr: cur.probeErr ?? 'This model could not be read. Pick another model.', runErrCode: 'unsupported' }); return }
     await useStore.getState().run()
     // the button showed the size, so the click is the consent for a normal download; a big one waits for its own button
     const p = useStore.getState().pendingDownload
