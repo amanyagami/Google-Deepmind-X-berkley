@@ -1,0 +1,12 @@
+fastapi>=0.115
+uvicorn>=0.30
+websockets>=12
+safetensors>=0.4
+huggingface_hub>=0.25
+transformers>=4.45
+numpy
+requests
+torch
+psutil
+scikit-learn
+pytest

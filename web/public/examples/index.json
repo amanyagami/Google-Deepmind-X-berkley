@@ -1,0 +1,23 @@
+[
+ {
+  "id": "smollm2",
+  "title": "SmolLM2-135M",
+  "repo": "HuggingFaceTB/SmolLM2-135M",
+  "prompt": "The Eiffel Tower is located in the city of",
+  "file": "smollm2.json"
+ },
+ {
+  "id": "gpt2",
+  "title": "GPT-2",
+  "repo": "openai-community/gpt2",
+  "prompt": "The Eiffel Tower is located in the city of",
+  "file": "gpt2.json"
+ },
+ {
+  "id": "qwen25",
+  "title": "Qwen2.5-0.5B",
+  "repo": "Qwen/Qwen2.5-0.5B",
+  "prompt": "The Eiffel Tower is located in the city of",
+  "file": "qwen25.json"
+ }
+]

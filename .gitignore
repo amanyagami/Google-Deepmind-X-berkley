@@ -1,0 +1,11 @@
+node_modules/
+web/dist/
+server/.venv/
+__pycache__/
+*.pyc
+*.log
+*.err.log
+server/hw_err.txt
+server/hw_out.txt
+web/tsconfig.tsbuildinfo
+.pytest_cache/

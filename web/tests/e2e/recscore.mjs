@@ -1,0 +1,10 @@
+import { chromium } from 'playwright-core'
+const browser = await chromium.launch({ executablePath: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', headless: true, args: ['--headless=new', '--enable-gpu', '--use-angle=d3d11'] })
+const page = await browser.newPage({ viewport: { width: 1480, height: 900 } })
+await page.goto('http://127.0.0.1:5180/?browser#machine')
+await page.waitForFunction(() => window.__hw?.getState().info, null, { timeout: 30000, polling: 300 })
+await page.click('.startcard button:has-text("Play a recorded journey")')
+await page.waitForFunction(() => window.__hw.getState().journey, null, { timeout: 30000, polling: 300 })
+await page.waitForTimeout(800)
+console.log('score after recorded journey:', (await page.locator('.hero-score').innerText()).replace(/\s+/g, ' ').slice(0, 40))
+await browser.close()
