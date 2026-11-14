@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { buildTimeline, locate, type Timeline, type Peaks } from './timeline'
+import { activityAt, buildTimeline, locate, type Timeline, type Peaks } from './timeline'
 import { gpuBench } from './gpuBench'
 import { apiUrl, detectBackend, wsUrl } from '../base'
 
@@ -31,9 +31,8 @@ interface HW {
   // electricity
   powerLive: PowerSample[]
   power: PowerRun | null
-  view: 'journey' | 'power'
   pHead: number
-  pMode: 'live' | 'replay'   // electricity view: the sensors right now, or a recorded run
+  pMode: 'live' | 'replay' | 'journey'   // what the machine shows: the sensors now, a recorded test, or the prompt's journey
   pPlaying: boolean
   pSpeed: number
   tdp: number
@@ -72,7 +71,7 @@ interface HW {
   dive: (path: string[]) => void
   back: () => void
   setHover: (h: string | null) => void
-  setView: (v: 'journey' | 'power') => void
+  showJourney: () => void
   setPHead: (t: number) => void
   pPlay: () => void
   pPause: () => void
@@ -87,7 +86,7 @@ const pDuration = (p: PowerRun | null) => (p && p.samples.length ? p.samples[p.s
 
 export const useHW = create<HW>((set, get) => ({
   source: null, info: null, infoErr: null, telemetry: [], latest: null, bench: {}, benchRunning: false, benchErr: null, benchStage: null, benchLive: null, benchNote: null,
-  powerLive: [], power: null, view: 'journey', pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: true, recorded: false, recordedPack: null,
+  powerLive: [], power: null, pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: true, recorded: false, recordedPack: null,
   journey: null, journeyBusy: null, journeyErr: null, micro: null,
   tl: buildTimeline(30, false), playhead: 0, playing: false, speed: 1, follow: true, expanded: false, path: [], hover: null,
 
@@ -120,7 +119,7 @@ export const useHW = create<HW>((set, get) => ({
   runBench() {
     if (get().benchRunning) return Promise.resolve()
     get().pPause()
-    set({ benchRunning: true, benchErr: null, bench: {}, benchStage: 'idle', benchLive: null, benchNote: null, powerLive: [], power: null, view: 'power', pHead: 0, pMode: 'live' })
+    set({ benchRunning: true, benchErr: null, bench: {}, benchStage: 'idle', benchLive: null, benchNote: null, powerLive: [], power: null, pHead: 0, pMode: 'live' })
     const handle = (m: any) => {
       if (m.type === 'stage') set({ benchStage: m.name, benchLive: null })
       if (m.type === 'progress' && performance.now() - lastProg > 250) { lastProg = performance.now(); set({ benchLive: { name: m.name, value: m.value, best: m.best, unit: m.unit, extra: m.extra } }) }
@@ -166,27 +165,19 @@ export const useHW = create<HW>((set, get) => ({
     })
   },
 
-  peaks() {
-    const { recorded, recordedPack } = get()
-    // a recorded journey is judged against the machine it was recorded on
-    const { bench, info } = recorded && recordedPack ? recordedPack : get()
-    return {
-      gflops: bench.matmul_n?.gflops ?? info?.cpu?.peak_gflops_est ?? 100,
-      gbps: bench.dram?.copy_gbps ?? info?.ram?.peak_gbps_est ?? 20,
-    }
-  },
+  peaks() { return peaksOf(get()) },
 
   async runJourney(repo, prompt) {
     if (get().source === 'browser') { await get().loadRecorded(); return }
-    set({ journeyErr: null, journeyBusy: 'Preparing…', playing: false, view: 'journey' })
+    set({ journeyErr: null, journeyBusy: 'Preparing…', playing: false })
     try {
-      if (!get().bench.dram) { set({ journeyBusy: 'Measuring this machine first (about 30 s)…' }); await get().runBench(); get().pPause(); set({ view: 'journey' }) }
+      if (!get().bench.dram) { set({ journeyBusy: 'Measuring this machine first (about 30 s)…' }); await get().runBench(); get().pPause() }
       set({ journeyBusy: 'Running the model with a stopwatch on every operation…' })
       const pk = get().peaks()
       const r = await fetch(apiUrl('/api/hw/journey'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo, prompt, new_tokens: 24, peak_gflops: pk.gflops, peak_gbps: pk.gbps }) })
       const j = await r.json()
       if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
-      set({ journey: j, recorded: false, recordedPack: null, tl: buildTimeline(j.L, get().expanded), playhead: 0, path: [], micro: null, journeyBusy: null, view: 'journey' })
+      set({ journey: j, recorded: false, recordedPack: null, tl: buildTimeline(j.L, get().expanded), playhead: 0, path: [], micro: null, journeyBusy: null })
       get().play()
     } catch (e: any) { set({ journeyErr: e.message ?? String(e), journeyBusy: null }) }
   },
@@ -198,7 +189,7 @@ export const useHW = create<HW>((set, get) => ({
       const r = await fetch(`${import.meta.env.BASE_URL}examples/machine.json`)
       if (!r.ok) throw new Error('No recorded journey is bundled with this build.')
       const pack = await r.json()
-      set({ journey: pack.journey, micro: pack.micro, recorded: true, recordedPack: { info: pack.info, bench: pack.bench }, tl: buildTimeline(pack.journey.L, get().expanded), playhead: 0, path: [], journeyBusy: null, view: 'journey' })
+      set({ journey: pack.journey, micro: pack.micro, recorded: true, recordedPack: { info: pack.info, bench: pack.bench }, tl: buildTimeline(pack.journey.L, get().expanded), playhead: 0, path: [], journeyBusy: null })
       get().play()
       return true
     } catch (e: any) { set({ journeyErr: e.message ?? String(e), journeyBusy: null }); return false }
@@ -211,7 +202,7 @@ export const useHW = create<HW>((set, get) => ({
       if (!r.ok) throw new Error('No recorded run is bundled with this build.')
       const pack = await r.json()
       get().pPause()
-      set({ power: { ...pack.power, source: `recorded on the test PC (${pack.info.cpu.name}), ${pack.power.source}`, reference: { recorded: pack.recorded, cpu: pack.info.cpu.name, bench: pack.bench } }, view: 'power', pHead: 0, pMode: 'replay' })
+      set({ power: { ...pack.power, source: `recorded on the test PC (${pack.info.cpu.name}), ${pack.power.source}`, reference: { recorded: pack.recorded, cpu: pack.info.cpu.name, bench: pack.bench } }, pHead: 0, pMode: 'replay' })
       get().pPlay()
     } catch (e: any) { set({ benchErr: e.message ?? String(e) }) }
   },
@@ -229,7 +220,7 @@ export const useHW = create<HW>((set, get) => ({
   play() {
     if (get().playing) return
     if (get().playhead >= get().tl.total - 0.02) set({ playhead: 0 })
-    set({ playing: true }); last = performance.now()
+    get().pPause(); set({ playing: true, pMode: 'journey' }); last = performance.now()
     const loop = () => {
       raf = requestAnimationFrame((now) => {
         const s = get()
@@ -263,14 +254,14 @@ export const useHW = create<HW>((set, get) => ({
   back() { const p = get().path; set({ path: p.slice(0, -1), follow: p.length <= 1 }) },
   setHover(hover) { set({ hover }) },
 
-  setView(view) { if (view === 'journey') get().pPause(); else get().pause(); set({ view, path: [] }) },
+  showJourney() { get().pPause(); set({ pMode: 'journey' }) },
   setPHead(t) { set({ pHead: Math.max(0, Math.min(pDuration(get().power), t)), pMode: get().power ? 'replay' : 'live' }) },
-  goLive() { get().pPause(); set({ pMode: 'live' }) },
-  replay() { get().pPause(); set({ pHead: 0, pMode: 'replay' }); get().pPlay() },
+  goLive() { get().pPause(); get().pause(); set({ pMode: 'live' }) },
+  replay() { get().pPause(); get().pause(); set({ pHead: 0, pMode: 'replay' }); get().pPlay() },
   pPlay() {
     const s0 = get()
     if (s0.pPlaying || !s0.power) return
-    set({ pMode: 'replay' })
+    get().pause(); set({ pMode: 'replay' })
     if (s0.pHead >= pDuration(s0.power) - 0.05) set({ pHead: 0 })
     set({ pPlaying: true }); plast = performance.now()
     const loop = () => {
@@ -292,7 +283,7 @@ export const useHW = create<HW>((set, get) => ({
   setAiInBrowser(aiInBrowser) { set({ aiInBrowser }) },
 }))
 
-export type PowerMode = 'recording' | 'replay' | 'live' | 'none'
+export type PowerMode = 'recording' | 'replay' | 'live' | 'journey' | 'none'
 
 /** Power from the live telemetry stream (companion, 10 Hz), averaged over the last 0.4 s. */
 export function telemetryPower(telemetry: any[]): PowerSample | null {
@@ -307,9 +298,31 @@ export function telemetryPower(telemetry: any[]): PowerSample | null {
   }
 }
 
-/** What the electricity view shows now: the test being recorded, the sensors right now, or a recorded run. */
-export function powerNow(h: Pick<HW, 'benchRunning' | 'powerLive' | 'power' | 'pHead' | 'pMode' | 'telemetry'>): { s: PowerSample | null; mode: PowerMode } {
+/** Peak speeds of the machine a journey is judged against (the test PC for a recorded journey). */
+export function peaksOf(h: Pick<HW, 'recorded' | 'recordedPack' | 'bench' | 'info'>): Peaks {
+  const { bench, info } = h.recorded && h.recordedPack ? h.recordedPack : h
+  return { gflops: bench.matmul_n?.gflops ?? info?.cpu?.peak_gflops_est ?? 100, gbps: bench.dram?.copy_gbps ?? info?.ram?.peak_gbps_est ?? 20 }
+}
+
+type JourneyState = Pick<HW, 'journey' | 'tl' | 'info' | 'power' | 'recorded' | 'recordedPack' | 'bench'>
+/** Watts for the prompt's journey at visual time t. The journey is a recording of work, not of power, so the watts are
+ *  modelled: each core idles near 0.2 W and rises to the per-core watts a full-load test measured here (or 6 W), and the
+ *  rest of the chip (caches, memory controller) follows the cache activity. Labelled "modelled" wherever it is shown. */
+export function journeyPowerAt(h: JourneyState, t: number): PowerSample | null {
+  if (!h.journey) return null
+  const nc = h.info?.cpu?.logical_only ? Math.max(1, Math.round((h.info?.cpu?.cores ?? 8) / 2)) : (h.info?.cpu?.cores ?? 8)
+  const a = activityAt(h.journey, h.tl, t, peaksOf(h), nc)
+  const S = h.power?.summary
+  const peak = S?.matmul_n?.avg_w && S?.idle?.avg_w ? Math.min(10, Math.max(2.5, ((S.matmul_n.avg_w - S.idle.avg_w) / nc) * 1.1)) : 6
+  const core_w = a.cores.map((v) => 0.2 + v * peak)
+  const pkg_w = core_w.reduce((x, y) => x + y, 0) + 2 + 5 * a.l3 + 2 * a.ram
+  return { t, stage: a.stage, pkg_w, core_w, mhz: null, util: [], estimated: true }
+}
+
+/** What the machine shows now: the test being recorded, the prompt's journey, the sensors right now, or a recorded run. */
+export function powerNow(h: Pick<HW, 'benchRunning' | 'powerLive' | 'power' | 'pHead' | 'pMode' | 'telemetry'> & Partial<JourneyState> & { playhead?: number }): { s: PowerSample | null; mode: PowerMode } {
   if (h.benchRunning && h.powerLive.length) return { s: powerAt(h.powerLive, h.powerLive[h.powerLive.length - 1].t - 0.2), mode: 'recording' }
+  if (h.pMode === 'journey' && h.journey) { const s = journeyPowerAt(h as JourneyState, h.playhead ?? 0); if (s) return { s, mode: 'journey' } }
   if (h.pMode === 'replay' && h.power?.samples.length) return { s: powerAt(h.power.samples, h.pHead), mode: 'replay' }
   const live = telemetryPower(h.telemetry)
   if (live) return { s: live, mode: 'live' }

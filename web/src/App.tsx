@@ -1,18 +1,16 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { jumpLocked, jumpTo, useStore, type AppView, type Tab } from './store'
 // Each view loads its own code on first use, so the first page needs only what it shows.
-const JourneyView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.JourneyView })))
-const PowerView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.PowerView })))
+const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
 const SECTIONS: { id: AppView; label: string; tip: string }[] = [
   { id: 'model', label: 'Model', tip: 'The model on your prompt, and five small networks beside it' },
-  { id: 'journey', label: 'Journey', tip: "Follow one prompt through this PC's hardware" },
-  { id: 'power', label: 'Electricity', tip: 'The electricity in this PC, live' },
+  { id: 'power', label: 'Machine', tip: "This PC's hardware: live watts, and one prompt's journey through it" },
 ]
 const Loading = () => <div className="scene empty"><p className="hint">Loading…</p></div>
 
 
-/** One prompt, one Run: the model runs it (Model section), then the Journey replays it on the hardware. */
+/** One prompt, one Run: the model runs it (Model section), then the Machine replays it on the hardware. */
 const runAll = () => useStore.getState().run()
 
 function Header({ view }: { view: AppView }) {
@@ -95,16 +93,15 @@ export default function App() {
   const autoRan = useRef('')
   useEffect(() => { const s = useStore.getState(); if (probe?.graph?.runnable && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run() } }, [probe, layers])
   useEffect(() => { init() }, [init])
-  // a link such as /#power opens at that section
-  useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first, false)) }, [])
+  // a link such as /#power opens at that section (the old #journey link opens the merged Machine section)
+  useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first === 'journey' ? 'power' : first, false)) }, [])
   useEffect(() => { try { history.replaceState(null, '', view === 'model' ? location.pathname + location.search : `${location.search}#${view}`) } catch { /* ignore */ } }, [view])
   return (
     <div className="app">
       <Header view={view} />
       <div className="flow" ref={flow}>
         <Sect id="model" label="The model on your prompt">{seen.model ? <Suspense fallback={<Loading />}><ZooView /></Suspense> : <Loading />}</Sect>
-        <Sect id="journey" label="Journey of a prompt through the hardware">{seen.journey ? <Suspense fallback={<Loading />}><JourneyView /></Suspense> : <Loading />}</Sect>
-        <Sect id="power" label="Electricity, live">{seen.power ? <Suspense fallback={<Loading />}><PowerView /></Suspense> : <Loading />}</Sect>
+        <Sect id="power" label="The machine: live electricity and the journey of a prompt">{seen.power ? <Suspense fallback={<Loading />}><MachineView /></Suspense> : <Loading />}</Sect>
       </div>
     </div>
   )

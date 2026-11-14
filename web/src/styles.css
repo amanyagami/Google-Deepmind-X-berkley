@@ -192,9 +192,6 @@ textarea:disabled { opacity: 0.7; }
 .benchov { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 12px; background: color-mix(in srgb, var(--bg) 82%, transparent); border: 1px solid var(--pos); border-radius: 14px; padding: 10px 18px; backdrop-filter: blur(10px); box-shadow: 0 0 30px color-mix(in srgb, var(--pos) 25%, transparent); }
 .benchov .big { font-size: 22px; color: var(--pos-ink); } .benchov small { font-size: 12px; color: var(--muted); }
 
-.startcard { position: absolute; left: 14px; bottom: 14px; width: min(420px, calc(100% - 28px)); z-index: 5; background: color-mix(in srgb, var(--panel) 86%, transparent); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 20px 50px #0008; }
-.startcard h2 { margin: 0; font: 700 1.15rem/1.2 var(--display); letter-spacing: -0.01em; } .startcard p { margin: 0; } .startcard textarea { resize: none; }
-.startcard .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; } .startcard p { color: var(--muted); }
 .busy { display: flex; align-items: center; gap: 10px; }
 
 .stagebottom { position: absolute; left: 14px; right: 14px; bottom: 12px; z-index: 4; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
@@ -221,8 +218,6 @@ textarea:disabled { opacity: 0.7; }
 .mlabel { font: 500 11px var(--body); color: var(--fg); text-align: center; background: color-mix(in srgb, #060913 72%, transparent); border: 1px solid var(--line); border-radius: 9px; padding: 3px 9px; white-space: nowrap; backdrop-filter: blur(4px); }
 .mlabel b { display: block; font-size: 12px; } .mlabel span { color: var(--muted); font-size: 10.5px; }
 .mlabel em { font: 600 10px var(--mono); font-style: normal; margin-left: 6px; color: #0a0e19; background: var(--pos); border-radius: 999px; padding: 1px 6px; vertical-align: 1px; }
-.bubble { background: var(--surface); border: 1px solid var(--pos); border-radius: 10px; padding: 8px 12px; font-size: 13px; width: 300px; white-space: normal; color: var(--fg); box-shadow: 0 0 24px color-mix(in srgb, var(--pos) 30%, transparent); }
-.screen { width: 300px; padding: 10px 12px; font-size: 12px; line-height: 1.5; color: #d9e6ff; text-align: left; white-space: pre-wrap; max-height: 150px; overflow: hidden; }
 .caret { display: inline-block; width: 7px; height: 1em; background: var(--pos); margin-left: 2px; vertical-align: -2px; animation: blink 1s steps(2) infinite; } @keyframes blink { 50% { opacity: 0; } }
 
 .gauge { position: relative; flex: none; } .gnum { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 6px; }
@@ -255,7 +250,6 @@ textarea:disabled { opacity: 0.7; }
 .prow { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 4px 0 6px; }
 .prow div { display: flex; flex-direction: column; } .prow span { font: 400 10.5px var(--body); color: var(--faint); } .prow b { font-size: 14px; }
 .btn.sm { padding: 6px 12px; font-size: 12.5px; align-self: flex-start; }
-.ptl { background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 16px; padding: 10px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
 .pchart { position: relative; cursor: ew-resize; touch-action: none; user-select: none; }
 .pchart svg { display: block; overflow: visible; }
 .pbl { font: 500 9.5px var(--mono); fill: var(--faint); }
@@ -270,7 +264,7 @@ input[type=range] { width: 100%; accent-color: var(--pos); }
 /* While measuring: no CSS animation and no backdrop blur. In a software compositor both repaint large areas every
    frame, and that work would show up in the power and speed being measured. */
 .measuring .pulse, .measuring .pbadge i, .measuring .caret { animation: none !important; }
-.measuring .phud, .measuring .ptl, .measuring .benchov, .measuring .vswitch, .measuring .caption, .measuring .tlbar, .measuring .crumbs { backdrop-filter: none !important; background: #0a0e19f2 !important; }
+.measuring .phud, .measuring .mtl, .measuring .iostrip, .measuring .benchov, .measuring .vswitch, .measuring .caption, .measuring .tlbar, .measuring .crumbs { backdrop-filter: none !important; background: #0a0e19f2 !important; }
 .livedot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); margin-left: 6px; vertical-align: middle; }
 .livetag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ok); text-transform: uppercase; letter-spacing: 0.06em; }
 .livetag .livedot { margin-left: 0; }
@@ -278,7 +272,6 @@ input[type=range] { width: 100%; accent-color: var(--pos); }
 .machine .phud, .machine .vswitch, .machine .benchov { z-index: 8; }
 /* electricity view: the power panel is top-left, so the test progress sits top-right under the view switch */
 .stage.powerview .benchov { left: auto; right: 14px; top: 60px; transform: none; }
-@media (max-width: 900px) { .stage.powerview .benchov { top: auto; bottom: 150px; left: 14px; right: 14px; } }
 .machine .stagebottom { z-index: 8; }
 
 /* ---- network zoo ----------------------------------------------------------------------------- */
@@ -358,3 +351,54 @@ input[type=range] { width: 100%; accent-color: var(--pos); }
 .hintbtn:hover, .hintbtn[aria-expanded="true"] { opacity: 1; transform: scale(1.12); border-color: var(--pos); }
 .hintpop { --shift: 0px; position: absolute; z-index: 60; top: calc(100% + 8px); left: 50%; transform: translateX(calc(-50% + var(--shift))); width: max-content; max-width: min(300px, 80vw); padding: 10px 13px; border-radius: 12px; border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 94%, #000); box-shadow: 0 16px 40px #000a; font: 400 12.5px/1.5 var(--body); color: var(--fg); text-transform: none; letter-spacing: 0; white-space: normal; text-align: left; animation: hintin .14s ease-out; }
 @keyframes hintin { from { opacity: 0; margin-top: -4px; } to { opacity: 1; margin-top: 0; } }
+
+/* ===================================================================== merged Machine section
+   One scene (the electricity board with the prompt's journey played on it), one card column on the left, the dive or
+   stage card and ONE timeline bar at the bottom. Amber = power and compute, blue = data. */
+.mcol { position: absolute; left: 14px; top: 12px; z-index: 8; width: 290px; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.mcol > * { pointer-events: auto; }
+.mcol .phud, .mcol .crumbs { position: static; width: auto; }
+.mcol .crumbs { border-radius: 12px; }
+.pbadge i.journey { background: var(--neg); box-shadow: 0 0 10px var(--neg); }
+.pbadge .hintwrap { margin-left: 4px; }
+.phud .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.iostrip { display: flex; flex-direction: column; gap: 6px; background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 14px; padding: 9px 12px; box-shadow: 0 14px 50px #0008; }
+.iostrip > div { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.iostrip span { font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--pos-ink); }
+.iostrip > div:last-child span { color: var(--neg-ink); }
+.iostrip b { font-weight: 500; font-size: 12px; line-height: 1.4; color: var(--fg); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.mtl { background: color-mix(in srgb, var(--bg) 82%, transparent); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 16px; padding: 8px 14px 8px; display: flex; flex-direction: column; gap: 6px; }
+.mtl .tlctl { gap: 8px; min-height: 34px; }
+.mtl .tlctl .chk { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; }
+.mtl .tlctl .busy { font-size: 11.5px; color: var(--muted); }
+.mtl .hintwrap { margin-left: auto; }
+.mtl .seg.sm { margin: 0; }
+.mtl .pchart.empty { height: 84px; display: grid; place-items: center; font-size: 12px; color: var(--faint); cursor: default; }
+.livetag.rec { color: var(--bad); }
+.mtl .err { padding: 5px 10px; font-size: 12px; }
+.caption { padding: 10px 14px; gap: 6px; max-width: 640px; }
+.caption .ctitle { flex-wrap: wrap; row-gap: 4px; }
+.caption .ctitle h3 { font-size: 1rem; margin: 0; }
+.caption .btn2.sm { align-self: flex-start; padding: 5px 11px; font-size: 12.5px; }
+.caption .hintwrap { margin-left: 0; }
+.caption.dive .ctitle .hintwrap, .caption.dive > .hintwrap { margin-left: 0; }
+.caption.dive { max-height: 46vh; overflow: auto; }
+.caption.dive .micro .runchart { max-width: 360px; }
+.caption .hint.small, .caption p.small { margin: 0; }
+.hint .hintwrap { margin-left: 5px; }
+h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
+.facts b .hintwrap { margin-left: 5px; }
+.machine .stage.powerview { overflow: visible; }
+.machine .stage.powerview .scenewrap { overflow: hidden; }
+@media (max-width: 900px) {
+  .mcol { right: 14px; width: auto; top: 56px; }
+  .mcol .phud { padding: 8px 12px 10px; gap: 4px; }
+  .mcol .phud .pbig { font-size: 30px; }
+  .mcol .phud .psub { display: none; }
+  .mcol .phud .prow { grid-template-columns: repeat(4, auto); gap: 4px 14px; margin: 0; justify-content: start; }
+  .mcol .phud .row { position: absolute; right: 12px; top: 34px; }
+  .iostrip { padding: 6px 10px; gap: 3px; } .iostrip b { -webkit-line-clamp: 2; line-clamp: 2; }
+  .machine .stage { height: 86vh; min-height: 640px; }
+  .caption { padding: 8px 12px; } .caption .cnums { gap: 2px 14px; } .caption .cnums b { font-size: 12.5px; }
+  .mtl { padding: 6px 10px; }
+}
