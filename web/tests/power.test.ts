@@ -47,7 +47,7 @@ test('the browser power estimate rises with busy cores and stays below the power
 import { REF, REF_BROWSER, scoreRun } from '../src/hw/score'
 import type { Fit, RunStats } from '../src/api'
 
-const rs = (o: Partial<RunStats> = {}): RunStats => ({ where: 'companion', repo: 'a/smol', task: 'text-generation', loadMs: 1000, firstMs: 300, totalMs: 3000, items: 60, unit: 'tokens', perSec: 20, memBytes: null, joules: null, estimatedEnergy: false, ...o })
+const rs = (o: Partial<RunStats> = {}): RunStats => ({ where: 'companion', repo: 'a/smol', task: 'text-generation', loadMs: 1000, firstMs: 300, totalMs: 3250, items: 60, unit: 'tokens', perSec: 20, memBytes: null, joules: null, estimatedEnergy: false, ...o })
 const fitOk = (o: Partial<Fit> = {}): Fit => ({ verdict: 'fits', needBytes: 5e8, haveBytes: 1e9, where: 'companion', reason: '', ...o })
 const part = (r: ReturnType<typeof scoreRun>, id: string) => r.parts.find((p) => p.id === id)!
 
@@ -64,8 +64,8 @@ test('scoreRun: same tokens/s on a bigger model means more work; browser runtime
   const small = part(scoreRun(rs(), null, { params: 135e6, info: null }), 'speed').score!
   const big = part(scoreRun(rs(), null, { params: 270e6, info: null }), 'speed').score!
   expect(big).toBe(2 * small)
-  const gpu = part(scoreRun(rs({ where: 'webgpu', perSec: REF_BROWSER.ai }), null, { params: 135e6, info: null }), 'speed').score!
-  const wasm = part(scoreRun(rs({ where: 'wasm', perSec: REF_BROWSER.ai_wasm }), null, { params: 135e6, info: null }), 'speed').score!
+  const gpu = part(scoreRun(rs({ where: 'webgpu', perSec: REF_BROWSER.ai, totalMs: 300 + (59 / REF_BROWSER.ai) * 1000 }), null, { params: 135e6, info: null }), 'speed').score!
+  const wasm = part(scoreRun(rs({ where: 'wasm', perSec: REF_BROWSER.ai_wasm, totalMs: 300 + (59 / REF_BROWSER.ai_wasm) * 1000 }), null, { params: 135e6, info: null }), 'speed').score!
   expect(gpu).toBe(1000); expect(wasm).toBe(1000)
   expect(part(scoreRun(rs({ perSec: REF.ai }), null, { params: 135e6, info: null }), 'speed').score).toBe(1000)
 })
@@ -80,18 +80,18 @@ test('scoreRun: missing energy, params or fit leave that part null; the overall 
   expect(part(est, 'headroom').score).toBeNull()
 })
 
-test('scoreRun: a too-big model drags the overall down through headroom', () => {
+test('scoreRun: a too-big model does not change the score; the fit verdict is returned apart', () => {
   const ok = scoreRun(rs(), fitOk(), { params: 135e6, info: null })
   const big = scoreRun(rs(), fitOk({ verdict: 'too-big', needBytes: 2e9 }), { params: 135e6, info: null })
   expect(part(big, 'headroom').score).toBe(50)
-  expect(big.overall).toBeLessThan(ok.overall * 0.6)
+  expect(big.overall).toBe(ok.overall); expect(big.fit!.score).toBe(50); expect(big.fit!.value).toMatch(/too-big/)
   expect(part(scoreRun(rs(), fitOk({ verdict: 'tight', needBytes: 9e8 }), { params: 135e6, info: null }), 'headroom').score!).toBeLessThan(250)
 })
 
-test('scoreRun: overall is the weighted geometric mean of the parts; response is inverse-linear and capped', () => {
+test('scoreRun: overall is the weighted geometric mean of speed and response only; response is inverse-linear and capped', () => {
   const r = scoreRun(rs({ joules: 60 }), fitOk({ needBytes: 3e8 }), { params: 100e6, info: null })
-  const W: Record<string, number> = { speed: 0.4, response: 0.2, efficiency: 0.2, headroom: 0.2 }
-  const g = Math.exp(r.parts.reduce((s, p) => s + W[p.id] * Math.log(p.score!), 0))
+  const W: Record<string, number> = { speed: 0.65, response: 0.35 }
+  const g = Math.exp(r.parts.filter((p) => W[p.id]).reduce((s, p) => s + W[p.id] * Math.log(p.score!), 0))
   expect(Math.abs(r.overall - g)).toBeLessThanOrEqual(1)
   expect(part(scoreRun(rs({ firstMs: 600 }), null, { params: 1, info: null }), 'response').score).toBe(500)
   expect(part(scoreRun(rs({ firstMs: 1 }), null, { params: 1, info: null }), 'response').score).toBe(2000)

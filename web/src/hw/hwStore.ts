@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { activityAt, buildTimeline, locate, type Timeline, type Peaks } from './timeline'
 import { apiUrl, detectBackend, wsUrl } from '../base'
+import type { Capabilities } from './browserBench'
+import { fromBench, resultKey } from './score'
 
 let raf = 0
 let last = 0
@@ -32,7 +34,11 @@ export interface TestResult {
   energy?: { joules: number; estimated: boolean }
   at: string                                                   // ISO time
 }
-export interface InputSchema { type: 'number' | 'text' | 'file' | 'url'; label: string; unit?: string; min?: number; max?: number; step?: number; default: number | string; cap?: string }
+export interface InputSchema {
+  type: 'number' | 'text' | 'file' | 'url'; label: string; unit?: string; min?: number; max?: number; step?: number; default: number | string; cap?: string
+  /** Added by S3: the hard cap on this device. Returns the effective limits for the probed capabilities. */
+  capFn?: (caps: Capabilities) => { min?: number; max?: number }
+}
 export type Progress = (p: { value?: number; unit?: string; fraction?: number; note?: string }) => void
 /** One row per component. The UI, the scorer and the companion read this table; adding a component = adding a row. */
 export interface RegistryRow {
@@ -42,8 +48,100 @@ export interface RegistryRow {
   run(input: number | string | null, signal: AbortSignal, onProgress: Progress): Promise<TestResult>
   ref: Partial<Record<Scale, Record<number, number>>>          // reference value per scale and workload version
 }
-export const REGISTRY: RegistryRow[] = []                       // S3 fills this in; S2 supplies the runners
+export const REGISTRY: RegistryRow[] = []                       // filled below (S3); S2 supplies the runners
 /* ================================================================== */
+
+/* ------------------------------------------------------------------ registry (S3)
+ * REF v1 = the earlier placeholder references (score.ts REF / REF_BROWSER) rescaled from "best of n" to MEDIANS using
+ * the spreads recorded on the test PC (median/max: 1-core 0.94, all-core 0.85, RAM 0.97). It is NOT frozen yet:
+ * REF v1 is frozen later, on the reference device (5 sessions per engine, raw medians). Until then 1000 is a
+ * placeholder, and a REF change re-scores stored results because results keep raw samples and medians. */
+export const REF_V1: Record<Scale, Record<string, number>> = {
+  native: { cpu1: 94, cpun: 340, cache: 100, ram: 39, storage: 2, gpu: 500 },
+  browser: { cpu1: 28, cpun: 113, cache: 160, ram: 53, storage: 0.8, gpu: 500 },
+}
+/** Language-model decode reference (tokens/s of the 135M reference model) per runtime. */
+export const MODEL_REF: Record<'companion' | 'webgpu' | 'wasm', number> = { companion: 20, webgpu: 63, wasm: 31 }
+const refOf = (k: string): RegistryRow['ref'] => ({ native: { 1: REF_V1.native[k] }, browser: { 1: REF_V1.browser[k] } })
+const lazy = (name: string): RegistryRow['run'] => (...a) => import('./browserBench').then((m) => (m as any)[name](...a))
+const MB = 1024 * 1024
+const memMB = (c: Capabilities) => (c.deviceMemoryGB ? c.deviceMemoryGB * 1024 : 4096)
+const num = (label: string, unit: string, min: number, max: number, step: number, def: number, cap?: string, capFn?: InputSchema['capFn']): InputSchema => ({ type: 'number', label, unit, min, max, step, default: def, cap, capFn })
+const notRunnable = (why: string): RegistryRow['run'] => async () => { throw new Error(why) }
+
+REGISTRY.push(
+  { id: 'cpu1', label: 'CPU, one core', pillar: 'compute', weight: 0.4, ref: refOf('cpu1'), run: lazy('run_cpu1'),
+    input: num('Matrix size', 'n', 128, 1024, 128, 256, '128 to 1024, at most 5% of memory', (c) => ({ max: Math.max(128, Math.min(1024, Math.floor(Math.sqrt((memMB(c) * MB * 0.05) / 12) / 128) * 128)) })) },
+  { id: 'cpun', label: 'CPU, all cores', pillar: 'compute', weight: 0.6, ref: refOf('cpun'), run: lazy('run_cpun'),
+    input: num('Threads', 'threads', 1, 64, 1, 8, '1 to the number of cores', (c) => ({ max: Math.max(1, c.cores) })) },
+  { id: 'cache', label: 'Cache', pillar: 'memory', weight: 0.4, ref: refOf('cache'), run: lazy('run_cache'),
+    input: num('Largest size', 'MB', 1, 256, 1, 256, 'at most 25% of the memory budget (32 MB in lite mode)', (c) => ({ max: c.profile === 'lite' ? 32 : Math.max(1, Math.min(256, Math.floor(memMB(c) * 0.25))) })) },
+  { id: 'ram', label: 'RAM', pillar: 'memory', weight: 0.6, ref: refOf('ram'), run: lazy('run_ram'),
+    input: num('Array per worker', 'MB', 16, 128, 16, 64, '16 to 128 MB per worker, at most 12% of memory in total', (c) => ({ max: Math.max(16, Math.min(128, Math.floor((memMB(c) * 0.12) / Math.max(1, Math.min(8, c.cores))))) })) },
+  { id: 'storage', label: 'File storage', pillar: 'storage', weight: 1, ref: refOf('storage'), run: lazy('run_storage'),
+    input: num('File size', 'MB', 16, 512, 16, 128, '16 to 512 MB, at most 10% of the free quota', (c) => ({ max: Math.max(16, Math.min(512, Math.floor(((c.opfs.quotaBytes ?? 4096 * MB) * 0.1) / MB))) })) },
+  { id: 'gpu', label: 'GPU', pillar: 'gpu', weight: 1, ref: refOf('gpu'), run: lazy('run_gpu'),
+    input: num('Matrix size', 'N', 512, 4096, 512, 1024, 'buffers at most the smaller of 256 MB and the device limit', (c) => ({ max: Math.max(512, Math.min(4096, Math.floor(Math.sqrt(Math.min(256 * MB, c.gpu.maxBuffer ?? 256 * MB) / 4) / 512) * 512)) })) },
+  { id: 'net', label: 'Connection', pillar: null, weight: 0, ref: {}, run: lazy('run_net'),
+    input: { type: 'url', label: 'Test URL', default: '', cap: 'https with CORS, at most 100 MB or 15 s' } },
+  { id: 'energy', label: 'Energy', pillar: null, weight: 0, ref: {}, input: null, run: notRunnable('Energy is measured during the other tests') },
+)
+/** `model:<task>` helper. Model rows are built on demand, one per task; S4 supplies the runner. */
+export function modelRow(task: string, run?: RegistryRow['run']): RegistryRow {
+  return { id: `model:${task}`, label: `Model, ${task}`, pillar: 'model', weight: 1, ref: {}, input: null, run: run ?? notRunnable('Models run from the model panel') }
+}
+export const rowFor = (id: string): RegistryRow | null => REGISTRY.find((r) => r.id === id) ?? (id.startsWith('model:') ? modelRow(id.slice(6)) : null)
+/** Effective {min,max} of a row's input on this device, hard caps applied. */
+export function inputLimits(row: RegistryRow, caps: Capabilities | null): { min: number; max: number } | null {
+  const s = row.input
+  if (!s || s.type !== 'number') return null
+  const c = caps && s.capFn ? s.capFn(caps) : {}
+  const min = Math.max(s.min ?? -Infinity, c.min ?? -Infinity), max = Math.min(s.max ?? Infinity, c.max ?? Infinity)
+  return { min, max: Math.max(min, max) }
+}
+/** null/undefined input = the default, clamped to this device's caps. Anything else must be inside the caps. */
+export function validateInput(row: RegistryRow, v: number | string | null | undefined, caps: Capabilities | null): { ok: true; value: number | string | null } | { ok: false; error: string } {
+  const s = row.input
+  if (!s) return v == null ? { ok: true, value: null } : { ok: false, error: `${row.label} takes no input` }
+  const lim = inputLimits(row, caps)
+  if (v == null && lim && typeof s.default === 'number') return { ok: true, value: Math.min(lim.max, Math.max(lim.min, s.default)) }
+  const x = v ?? s.default
+  if (s.type !== 'number') {
+    if (typeof x !== 'string') return { ok: false, error: `${s.label} must be text` }
+    if (s.type === 'url' && x !== '' && !/^https:\/\//i.test(x)) return { ok: false, error: `${s.label} must start with https://` }
+    return { ok: true, value: x }
+  }
+  const n = typeof x === 'number' ? x : Number(x)
+  if (!Number.isFinite(n)) return { ok: false, error: `${s.label} must be a number` }
+  if (n < lim!.min || n > lim!.max) return { ok: false, error: `${s.label} must be between ${lim!.min} and ${lim!.max}${s.unit ? ' ' + s.unit : ''}` }
+  return { ok: true, value: n }
+}
+
+/* ------------------------------------------------------------------ results store (S3) */
+export const RESULTS_KEY = 'ns.results.v1'
+export const RESULTS_VERSION = 1
+export const RUN_ALL_ORDER: ComponentId[] = ['cpu1', 'cpun', 'cache', 'ram', 'storage', 'gpu']   // never net, energy or downloads
+export interface Snapshot { at: string; scale: Scale | null; results: Record<string, TestResult> }
+const HISTORY_MAX = 10
+const validResult = (r: any): r is TestResult => !!r && r.v === 1 && typeof r.component === 'string' && Array.isArray(r.samples) && typeof r.value === 'number' && !!r.input && !!r.workload
+/** Reads the stored results. Unknown versions, bad JSON and missing storage all give an empty store. */
+export function loadStored(): { results: Record<string, TestResult>; history: Snapshot[] } {
+  const empty = { results: {}, history: [] as Snapshot[] }
+  try {
+    const raw = localStorage.getItem(RESULTS_KEY)
+    if (!raw) return empty
+    const d = JSON.parse(raw)
+    if (!d || d.v !== RESULTS_VERSION) { try { localStorage.removeItem(RESULTS_KEY) } catch { /* ignore */ } return empty }
+    const clean = (o: any) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([, r]) => validResult(r))) as Record<string, TestResult>
+    const history = (Array.isArray(d.history) ? d.history : []).filter((h: any) => h && typeof h.at === 'string').map((h: any) => ({ at: h.at, scale: h.scale ?? null, results: clean(h.results) })).slice(-HISTORY_MAX)
+    return { results: clean(d.results), history }
+  } catch { return empty }
+}
+function storeResults(results: Record<string, TestResult>, history: Snapshot[]) {
+  try { localStorage.setItem(RESULTS_KEY, JSON.stringify({ v: RESULTS_VERSION, results, history: history.slice(-HISTORY_MAX) })) } catch { /* private mode or full: keep going */ }
+}
+let current: AbortController | null = null
+let cancelled = false
 
 export type Source = 'companion' | 'browser'
 export type PowerSample = { t: number; stage: string; pkg_w: number; core_w: number[]; mhz: number | null; util: number[]; estimated?: boolean }
@@ -61,6 +159,20 @@ interface HW {
   benchStage: string | null
   benchLive: { name: string; value: number; best: number; unit: string; extra?: number[] } | null
   benchNote: string | null
+  // results (S3)
+  results: Record<string, TestResult>
+  history: Snapshot[]
+  running: ComponentId | null
+  progress: { value?: number; unit?: string; fraction?: number; note?: string } | null
+  testErrors: Record<string, string>
+  caps: Capabilities | null
+  setCaps: (c: Capabilities | null) => void
+  addResult: (r: TestResult | null) => void
+  snapshot: () => void
+  clearResults: () => void
+  runComponent: (id: ComponentId, input?: number | string | null) => Promise<TestResult | null>
+  runAll: () => Promise<void>
+  cancel: () => void
   // electricity
   powerLive: PowerSample[]
   power: PowerRun | null
@@ -119,6 +231,7 @@ const pDuration = (p: PowerRun | null) => (p && p.samples.length ? p.samples[p.s
 
 export const useHW = create<HW>((set, get) => ({
   source: null, info: null, infoErr: null, telemetry: [], latest: null, bench: {}, benchRunning: false, benchErr: null, benchStage: null, benchLive: null, benchNote: null,
+  ...(() => { const st = loadStored(); return { results: st.results, history: st.history } })(), running: null, progress: null, testErrors: {}, caps: null,
   powerLive: [], power: null, pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: true, recorded: false, recordedPack: null,
   journey: null, journeyBusy: null, journeyErr: null, micro: null,
   tl: buildTimeline(30, false), playhead: 0, playing: false, speed: 1, follow: true, expanded: false, path: [], hover: null,
@@ -165,6 +278,7 @@ export const useHW = create<HW>((set, get) => ({
       if (m.type === 'result') {
         if (m.name === 'power') { pbuf.length = 0; set({ power: m.data }) }
         else set((s) => ({ bench: { ...s.bench, [m.name]: m.data } }))
+        try { get().addResult(fromBench(m.name, m.data, { scale: get().source === 'browser' ? 'browser' : 'native' })) } catch { /* the legacy bench view keeps working */ }
       }
       if (m.type === 'error') set({ benchErr: m.message })
     }
@@ -173,6 +287,7 @@ export const useHW = create<HW>((set, get) => ({
       // after the test the view stays live (sensors right now); the recorded run is one click away.
       // Without live sensors (browser-only mode) it shows the run that was just recorded instead.
       const liveSensors = get().source === 'companion'
+      get().snapshot()
       set({ benchRunning: false, benchStage: null, benchLive: null, pMode: liveSensors ? 'live' : 'replay', pHead: p?.samples.length ? p.samples[p.samples.length - 1].t : 0 })
     }
     if (get().source === 'browser') {
@@ -198,6 +313,61 @@ export const useHW = create<HW>((set, get) => ({
       ws.onerror = () => { set({ benchRunning: false, benchStage: null, benchErr: 'Benchmark connection failed.' }); resolve() }
     })
   },
+
+  setCaps(caps) { set({ caps }) },
+  addResult(r) {
+    if (!r) return
+    set((s) => { const results = { ...s.results, [resultKey(r)]: r }; storeResults(results, s.history); return { results } })
+  },
+  snapshot() {
+    set((s) => {
+      const first = Object.values(s.results)[0]
+      if (!first) return {}
+      const history = [...s.history, { at: new Date().toISOString(), scale: first.scale, results: s.results }].slice(-HISTORY_MAX)
+      storeResults(s.results, history)
+      return { history }
+    })
+  },
+  clearResults() { set({ results: {}, history: [], testErrors: {} }); storeResults({}, []) },
+
+  async runComponent(id, input) {
+    if (current) return null                                        // one test at a time
+    const row = rowFor(id)
+    if (!row) { set({ testErrors: { ...get().testErrors, [id]: `Unknown test ${id}` } }); return null }
+    const v = validateInput(row, input, get().caps)
+    if (!v.ok) { set({ testErrors: { ...get().testErrors, [id]: v.error } }); return null }
+    const ctrl = new AbortController()
+    current = ctrl
+    set((s) => ({ running: id, progress: null, testErrors: Object.fromEntries(Object.entries(s.testErrors).filter(([k]) => k !== id)) }))
+    try {
+      let r = await row.run(v.value, ctrl.signal, (p) => { if (current === ctrl) set({ progress: p }) })
+      if (ctrl.signal.aborted) return null
+      // a custom input never overwrites the standard result: it is stored apart and never scored
+      if (input != null && row.input && input !== row.input.default && r.input.kind !== 'custom')
+        r = { ...r, input: { ...r.input, kind: 'custom' }, score: null, flags: r.flags.includes('custom') ? r.flags : [...r.flags, 'custom'] }
+      get().addResult(r)
+      return r
+    } catch (e: any) {
+      if (!ctrl.signal.aborted) set((s) => ({ testErrors: { ...s.testErrors, [id]: e?.message ?? String(e) } }))
+      return null
+    } finally { current = null; set({ running: null, progress: null }) }
+  },
+
+  /** Every scored component with its default input, in a fixed order. No downloads, never `net`. */
+  async runAll() {
+    if (current) return
+    cancelled = false
+    let ran = 0
+    for (const id of RUN_ALL_ORDER) {
+      const r = await get().runComponent(id, null)
+      if (r) ran++
+      if (cancelled) break
+    }
+    cancelled = false
+    if (ran) get().snapshot()
+  },
+
+  cancel() { if (current) { cancelled = true; current.abort() } },
 
   peaks() { return peaksOf(get()) },
 
