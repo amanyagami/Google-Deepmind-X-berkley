@@ -33,6 +33,11 @@ if (typeof document !== 'undefined' && !document.getElementById('ns-stage-css'))
   const s = document.createElement('style'); s.id = 'ns-stage-css'; s.textContent = CSS; document.head.appendChild(s)
 }
 
+/** Test hooks (S10): the DPR cap in force and whether a camera move is in flight. */
+export const SCENE: { dprCap: number; camera: { tweening: boolean } } = { dprCap: 2, camera: { tweening: false } }
+if (typeof window !== 'undefined') (window as any).__scene = SCENE
+let tweenT = 0
+export function markTween(ms: number) { SCENE.camera.tweening = true; window.clearTimeout(tweenT); tweenT = window.setTimeout(() => { SCENE.camera.tweening = false }, ms) }
 export const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 
 /* ------------------------------------------------------------------------------------- lite mode */
@@ -67,7 +72,12 @@ export function useStage(shown = true) {
     const io = new IntersectionObserver((e) => { for (const x of e) setOn(x.isIntersecting) }); io.observe(el)
     return () => io.disconnect()
   }, [])
-  const dpr = slow || lite ? 1 : Math.min(typeof devicePixelRatio === 'number' ? devicePixelRatio : 1, phone ? 1.5 : 2)
+  const cap = slow || lite ? 1 : phone ? 1.5 : 2
+  SCENE.dprCap = cap
+  // while the window is being dragged the buffers render at DPR 1 (cheap), then settle at the capped DPR
+  const [rz, setRz] = useState(false)
+  useEffect(() => { let t = 0; const f = () => { setRz(true); window.clearTimeout(t); t = window.setTimeout(() => setRz(false), 250) }; window.addEventListener('resize', f); return () => { window.removeEventListener('resize', f); window.clearTimeout(t) } }, [])
+  const dpr = rz ? 1 : Math.min(typeof devicePixelRatio === 'number' ? devicePixelRatio : 1, cap)
   const onSlow = useCallback(() => setSlow(true), [])
   return { wrap, run: shown && vis && onScreen, dpr, lite, onSlow }
 }
@@ -176,7 +186,7 @@ function layout(reg: Reg, cv: HTMLElement, top: number) {
       if (ld) { if (far) { ld.style.display = 'block'; ld.style.width = `${Math.hypot(dx, dy)}px`; ld.style.transform = `rotate(${(Math.atan2(-dy, -dx) * 180 / Math.PI).toFixed(1)}deg)` } else ld.style.display = 'none' }
     }
   }
-  for (const b of words) { const v = b.it.show ? 'visible' : 'hidden'; if (b.it.el.style.visibility !== v) b.it.el.style.visibility = v }
+  for (const b of words) { const v = b.it.show ? '' : 'hidden'; if (b.it.el.style.visibility !== v) b.it.el.style.visibility = v }
 }
 
 /** Wrap everything inside the <Canvas> in this. It runs the chip layout ~30 times a second. */
@@ -218,9 +228,9 @@ export function Chip(p: ChipProps) {
   return (
     <Html position={p.pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
       {p.onClick
-        ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
-            onClick={p.onClick} onKeyDown={p.onKey} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
-        : <div ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1}>{inner}</div>}
+        ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label data-block={p.name} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
+            onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={p.onKey} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
+        : <div ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label>{inner}</div>}
     </Html>
   )
 }
@@ -238,7 +248,7 @@ export function Word({ pos, elRef, hidden, prio = 1, children }: { pos: [number,
   }, [reg])
   return (
     <Html position={pos} center zIndexRange={[4, 0]} style={{ pointerEvents: 'none' }}>
-      <div ref={setRef} className="nsw" data-prio={prio} style={{ display: hidden ? 'none' : undefined }}>{children}</div>
+      <div ref={setRef} className="nsw" data-label data-prio={prio} style={{ display: hidden ? 'none' : undefined }}>{children}</div>
     </Html>
   )
 }

@@ -10,7 +10,8 @@ import * as THREE from 'three'
 import { create } from 'zustand'
 import { reach, useZoo, type Inspect, type NetId } from './zooStore'
 import { useStore } from '../store'
-import { Chip, fitBox, KitProvider, LiteCtx, reduceMotion, SlowWatch, useStage, useStageKeys, Word } from '../stageKit'
+import { InspectTip, isInspectOn, useInspectOn } from '../ui/charts'
+import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, SlowWatch, useStage, useStageKeys, Word } from '../stageKit'
 
 const AMBER = new THREE.Color('#ffa94d')
 const BLUE = new THREE.Color('#55a8ff')
@@ -68,14 +69,13 @@ const SEL = { on: false, lit: (_l: string, _i: number): boolean => true }
 const dimOf = (layer: string, i: number) => (SEL.on && !SEL.lit(layer, i) ? 0.25 : 1)
 const linkDim = () => (SEL.on ? 0.3 : 1)
 
-const useUI = create<{ hover: Pick | null }>(() => ({ hover: null }))
-let tipEl: HTMLDivElement | null = null
+const useUI = create<{ hover: Pick | null; x: number; y: number }>(() => ({ hover: null, x: 0, y: 0 }))
 const setCursor = (on: boolean) => { try { document.body.style.cursor = on ? 'pointer' : '' } catch { /* ignore */ } }
 function hoverPick(p: Pick | null, e?: ThreeEvent<PointerEvent>) {
   if (useUI.getState().hover?.key !== p?.key) { useUI.setState({ hover: p }); setCursor(!!p) }
-  if (p && e && tipEl) {
-    const ne = e.nativeEvent as PointerEvent, w = tipEl.parentElement?.clientWidth ?? 9999
-    tipEl.style.transform = `translate(${Math.max(8, Math.min(w - (tipEl.offsetWidth || 160) - 8, ne.offsetX + 14))}px,${Math.max(52, ne.offsetY + 16)}px)`
+  if (p && e) {
+    const ne = e.nativeEvent as PointerEvent, u = useUI.getState()
+    if (Math.abs(ne.offsetX - u.x) > 6 || Math.abs(ne.offsetY - u.y) > 6) useUI.setState({ x: ne.offsetX, y: ne.offsetY })
   }
 }
 /** Pointer handlers for an instanced mesh whose instances map to inspectable things. */
@@ -123,8 +123,8 @@ function Plate({ g, def }: { g: Group; def?: SceneDef }) {
   } : {}
   return (
     <group position={[cx, 0, cz]}>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={0.08} depthWrite={false} toneMapped={false} /></mesh>
-      <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={0.4} toneMapped={false} /></lineSegments>
+      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={0.1} depthWrite={false} toneMapped={false} /></mesh>
+      <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></lineSegments>
       {extra && <lineSegments geometry={extra} position-y={0.01}><lineBasicMaterial color={t.tint} transparent opacity={g.type === 'conv' ? 0.3 : 0.55} toneMapped={false} /></lineSegments>}
       {g.type === 'recurrent' && <mesh rotation-x={-Math.PI / 2} position-y={0.05} scale={[w / 2 - 0.2, d / 2 - 0.1, 1]}><torusGeometry args={[1, 0.018, 6, 64]} /><meshBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></mesh>}
     </group>
@@ -553,7 +553,7 @@ function llmDef(T: number, L: number, nh: number): SceneDef {
   const box = (x0: number, x1: number, z0: number, z1: number, h = 1.1) => new THREE.Box3(V(x0, 0, z0), V(x1, h, z1))
   const blockBox = (k: number, part?: string) => part === 'attn' ? box(colX(k) - hw, colX(k) + hw, zH0, zHead + 0.3) : part === 'mlp' ? box(colX(k) - hw, colX(k) + hw, zT0, zT1) : box(colX(k) - hw, colX(k) + hw, zH0, zT1)
   const PN: Record<string, string> = { attn: 'Attention', mlp: 'MLP', norm: 'Norm' }
-  const tokText = (t: number) => { const s: string = Z().out?.tokens?.[t] ?? ''; return s.replace(/\n/g, '⏎').trim() || '·' }
+  const tokText = (t: number) => { const v = Z().net === 'llm' ? Z().out?.tokens?.[t] : ''; return (typeof v === 'string' ? v : '').replace(/\n/g, '⏎').trim() || '·' }
   const blockPick = (k: number, part: 'attn' | 'mlp' | 'norm', index?: number): Pick => ({
     key: `b${k}${part}`, inspect: { kind: 'block', layer: k, part, ...(index !== undefined ? { index } : {}) },
     text: `Block ${k + 1} · ${PN[part]}${part === 'attn' ? ` · ${nh} heads` : part === 'mlp' ? ` · ${T} tokens` : ''}`, box: blockBox(k, part),
@@ -724,6 +724,7 @@ function Rig() {
       const animate = !reduceMotion && kind !== 'resize'
       window.clearTimeout(L.tid)
       if (kind === 'select') { c.smoothTime = 0.12; L.tid = window.setTimeout(() => { if (ctl.current) ctl.current.smoothTime = 0.7 }, 700) } else c.smoothTime = 0.7
+      if (animate) markTween(kind === 'select' ? 450 : 900)
       c.setLookAt(f.pos.x, f.pos.y, f.pos.z, f.target.x, f.target.y, f.target.z, animate)
     })
     return () => cancelAnimationFrame(id)
@@ -745,7 +746,7 @@ function Outlines() {
   const key = useZoo((s) => (s.out ? `${s.out.T}x${s.out.L}x${s.out.nh}` : ''))
   const selBox = useMemo(() => (inspect ? DEFS[net]?.boxOf(inspect) ?? null : null), [inspect, net, key])
   const put = (o: THREE.LineSegments, b: THREE.Box3 | null | undefined) => { o.visible = !!b; if (b) { b.getCenter(o.position); b.getSize(o.scale); o.scale.addScalar(0.06) } }
-  useFrame(() => { put(hov.current, useUI.getState().hover?.box); put(sel.current, selBox) })
+  useFrame(() => { put(hov.current, isInspectOn() ? useUI.getState().hover?.box : null); put(sel.current, selBox) })
   return (
     <>
       <lineSegments ref={hov} geometry={UNIT} visible={false} renderOrder={5}><lineBasicMaterial color="#ffffff" transparent opacity={0.7} depthTest={false} toneMapped={false} /></lineSegments>
@@ -755,8 +756,9 @@ function Outlines() {
 }
 
 function Tip() {
-  const h = useUI((s) => s.hover)
-  return <div ref={(el) => { tipEl = el }} className="nstip" style={{ display: h ? 'block' : 'none' }}>{h?.text}</div>
+  const h = useUI((s) => s.hover), x = useUI((s) => s.x), y = useUI((s) => s.y), on = useInspectOn()
+  if (!h || !on) return null
+  return <InspectTip label={h.text} x={Math.max(8, x + 14)} y={Math.max(52, y + 16)} />
 }
 
 export function ZooScene() {
@@ -774,8 +776,8 @@ export function ZooScene() {
   useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true })
   useEffect(() => { Z().setInspect(null); useUI.setState({ hover: null }); setCursor(false) }, [net])
   return (
-    <div ref={st.wrap} style={{ position: 'absolute', inset: 0 }}>
-      <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: 0, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false }}
+    <div ref={st.wrap} data-stage style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
+      <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false }}
         onPointerMissed={(e) => { if (e.type === 'dblclick') Z().select(null); else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
@@ -787,7 +789,7 @@ export function ZooScene() {
             <Environment resolution={64} environmentIntensity={0.5}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
             </Environment>
-            <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.12, 0.3]}><meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} /></RoundedBox>
+            <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}><meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} /></RoundedBox>
             <Stage />
             <Outlines />
             <Rig />
