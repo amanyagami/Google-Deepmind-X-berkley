@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 export const AMBER = '255,169,77'
 export const BLUE = '85,168,255'
@@ -79,5 +79,28 @@ export function TopBars({ items, ghost, max = 1, color = 'var(--neg)' }: {
         </div>
       ))}
     </div>
+  )
+}
+
+/** An explanation tucked behind a 💡 button. Click (or Enter) opens it; moving the mouse away, Escape or leaving the
+ *  button closes it. Use it instead of a paragraph of text: the page shows the numbers, this explains them. */
+export function Hint({ children, label = 'More info' }: { children: React.ReactNode; label?: string }) {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  const pop = useRef<HTMLSpanElement>(null)
+  // keep the bubble on screen: slide it back if it would run past either edge of the window
+  useLayoutEffect(() => {
+    const el = pop.current
+    if (!open || !el) return
+    el.style.setProperty('--shift', '0px')
+    const r = el.getBoundingClientRect()
+    const over = r.right > innerWidth - 8 ? innerWidth - 8 - r.right : r.left < 8 ? 8 - r.left : 0
+    el.style.setProperty('--shift', `${over}px`)
+  }, [open])
+  return (
+    <span className="hintwrap" onMouseLeave={() => setOpen(false)} onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false) }}>
+      <button type="button" className="hintbtn" aria-label={label} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => setOpen((o) => !o)} onBlur={() => setOpen(false)}>💡</button>
+      {open && <span ref={pop} id={id} role="tooltip" className="hintpop">{children}</span>}
+    </span>
   )
 }
