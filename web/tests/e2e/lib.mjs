@@ -25,6 +25,12 @@ const ONNX = Buffer.alloc(1 << 20, 7)   // 1 MB stand-in per .onnx file: enough 
 const SMALL = { 'config.json': '{"model_type":"gpt2","hidden_size":64,"num_hidden_layers":2}', 'tokenizer.json': '{"version":"1.0","model":{"type":"BPE","vocab":{"a":0,"b":1},"merges":[]},"added_tokens":[],"normalizer":null,"pre_tokenizer":null,"post_processor":null,"decoder":null}', 'tokenizer_config.json': '{}', 'generation_config.json': '{}' }
 const DT = ['', '_fp16', '_quantized', '_q4', '_q4f16', '_int8', '_uint8', '_bnb4']
 const FILES = { 'model.safetensors': safetensors(), ...Object.fromEntries(Object.entries(SMALL).map(([k, v]) => [k, Buffer.from(v)])), ...Object.fromEntries(DT.map((d) => [`onnx/model${d}.onnx`, ONNX])) }
+const kindOf = (path) => { const r = path.toLowerCase()
+  return /whisper|wav2vec|speech/.test(r) ? { pipeline_tag: 'automatic-speech-recognition', config: { model_type: 'whisper' } }
+    : /vit|resnet|convnext/.test(r) ? { pipeline_tag: 'image-classification', config: { model_type: 'vit' } }
+    : /sst-2|sentiment|finetuned/.test(r) ? { pipeline_tag: 'text-classification', config: { model_type: 'distilbert' } }
+    : /bert|roberta/.test(r) ? { pipeline_tag: 'fill-mask', config: { model_type: 'distilbert' } }
+    : { pipeline_tag: 'text-generation', config: { model_type: 'gpt2' } } }
 const HOST = /(^|\.)(huggingface\.co|hf\.co)$/
 
 /** In-page device profile: any of nogpu mem saveData cellular battery quota mic oom phone. */
@@ -98,7 +104,7 @@ export function makeEnv(browser, base, widths, query) {
         if (P.hub.delay) await new Promise((r) => setTimeout(r, P.hub.delay))
         const h = { 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'accept-ranges': 'bytes', 'content-type': 'application/octet-stream' }
         if (/\/tree\//.test(u.pathname)) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify(Object.entries(FILES).filter(([f]) => f.startsWith('onnx/')).map(([f, b]) => ({ type: 'file', path: f, size: b.length }))) })
-        if (u.pathname.startsWith('/api/')) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify({ id: 'mock/tiny', sha: '0'.repeat(40), siblings: Object.entries(FILES).map(([f, b]) => ({ rfilename: f, size: b.length, lfs: { size: b.length } })), safetensors: { total: 4096 }, pipeline_tag: 'text-generation', config: { model_type: 'gpt2' }, library_name: 'transformers.js' }) })
+        if (u.pathname.startsWith('/api/')) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify({ id: 'mock/tiny', sha: '0'.repeat(40), siblings: Object.entries(FILES).map(([f, b]) => ({ rfilename: f, size: b.length, lfs: { size: b.length } })), safetensors: { total: 4096 }, ...kindOf(u.pathname), library_name: 'transformers.js' }) })
         const f = FILES[decodeURIComponent(u.pathname.replace(/^.*\/resolve\/[^/]+\//, ''))]; if (!f) return route.fulfill({ status: 404, body: 'nope' })
         const m = /bytes=(\d+)-(\d*)/.exec(route.request().headers().range ?? '')
         if (m) { const a = +m[1], b = m[2] ? +m[2] : f.length - 1; return route.fulfill({ status: 206, body: f.subarray(a, b + 1), headers: { ...h, 'content-range': `bytes ${a}-${b}/${f.length}` } }) }
