@@ -15,6 +15,7 @@ import os
 import platform
 import statistics
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -140,6 +141,16 @@ def _power_caps(cores: int) -> dict:
 
 # ------------------------------------------------------------------------------------ telemetry
 _prev: dict = {}
+_PROC: psutil.Process | None = None
+
+
+def _proc() -> psutil.Process:
+    """One cached Process object: cpu_percent() measures since the previous call on the same object."""
+    global _PROC
+    if _PROC is None:
+        _PROC = psutil.Process(os.getpid())
+        _PROC.cpu_percent(None)
+    return _PROC
 
 
 def telemetry() -> dict:
@@ -147,7 +158,7 @@ def telemetry() -> dict:
     now = time.time()
     per = psutil.cpu_percent(percpu=True)
     vm = psutil.virtual_memory()
-    pr = psutil.Process(os.getpid())
+    pr = _proc()
     dio, nio = psutil.disk_io_counters(), psutil.net_io_counters()
     f = psutil.cpu_freq()
     out = {"t": now, "cpu": per, "cpu_avg": round(sum(per) / len(per), 1), "mhz": f.current if f else None,
@@ -223,28 +234,69 @@ class PowerRecorder:
 
 
 # ------------------------------------------------------------------------------- microbenchmarks
+class Cancelled(Exception):
+    """Raised at the next safe point after the client asked to stop."""
+
+
+def _chk(cancel) -> None:
+    if cancel is not None and cancel.is_set():
+        raise Cancelled()
+
+
+def _stats(xs: list[float], discard: int = 0) -> dict:
+    """Median, a distribution-free 95% CI of the median, and spread, after discarding warm-up samples."""
+    raw = list(xs)
+    kept = raw[discard:] if len(raw) - discard >= 5 else raw
+    s = sorted(kept)
+    n = len(s)
+    k = max(0, int(n / 2 - 0.98 * math.sqrt(n)))
+    mean = statistics.mean(s)
+    return {"n": n, "warmup_discarded": len(raw) - n, "min": round(s[0], 2), "median": round(statistics.median(s), 2), "max": round(s[-1], 2),
+            "ci95": [round(s[k], 2), round(s[n - 1 - k], 2)],
+            "cv_pct": round(100 * statistics.pstdev(s) / mean, 1) if n > 1 and mean else 0.0}
+
+
 def _spread(xs: list[float]) -> dict:
-    xs = sorted(xs)
-    return {"n": len(xs), "min": round(xs[0], 2), "median": round(statistics.median(xs), 2), "max": round(xs[-1], 2),
-            "cv_pct": round(100 * statistics.pstdev(xs) / statistics.mean(xs), 1) if len(xs) > 1 and statistics.mean(xs) else 0.0}
+    return _stats(xs, 0)
 
 
-def _matmul(nthreads: int, n: int, cb=None) -> dict:
+def _loop(op, per_op: float, seconds: float, cancel, cb=None, min_samples: int = 5, warmup: int = 1) -> tuple[list[float], int]:
+    """Run `op` until there are warmup + min_samples samples and `seconds` have passed. Each op is short (<= ~50 ms),
+    and `cancel` is checked between ops. Returns (rates in G-units/s, ops run)."""
+    xs: list[float] = []
+    t_all = time.perf_counter()
+    best = 0.0
+    while True:
+        _chk(cancel)
+        t = time.perf_counter()
+        op()
+        v = per_op / max(1e-9, time.perf_counter() - t) / 1e9
+        xs.append(v)
+        best = max(best, v)
+        if cb:
+            cb(v, best)
+        el = time.perf_counter() - t_all
+        if (len(xs) >= warmup + min_samples and el >= seconds) or len(xs) >= 400 or el > 3 * seconds + 2:
+            return xs, len(xs)
+
+
+def _matmul(nthreads: int, n: int, cb=None, seconds: float = 2.0, cancel=None, min_samples: int = 5) -> dict:
     old = torch.get_num_threads()
     torch.set_num_threads(nthreads)
     try:
         a, b = torch.randn(n, n), torch.randn(n, n)
-        torch.mm(a, b)
-        best, xs = 0.0, []
-        for _ in range(12):
+        while True:  # keep one multiply under ~50 ms so a cancel lands quickly
+            _chk(cancel)
             t = time.perf_counter()
             torch.mm(a, b)
-            v = 2 * n**3 / (time.perf_counter() - t) / 1e9
-            xs.append(v)
-            best = max(best, v)
-            if cb:
-                cb(v, best)
-        return {"gflops": round(best, 1), "threads": nthreads, "n": n, "spread": _spread(xs)}
+            if time.perf_counter() - t <= 0.05 or n <= 128:
+                break
+            n = max(128, (n * 3 // 4) // 64 * 64)
+            a, b = torch.randn(n, n), torch.randn(n, n)
+        xs, ops = _loop(lambda: torch.mm(a, b), 2 * n**3, seconds, cancel, cb, min_samples)
+        st = _stats(xs, 1)
+        return {"gflops": round(max(xs), 1), "median": st["median"], "ci95": st["ci95"], "threads": nthreads, "n": n, "spread": st,
+                "work": {"amount": round(2 * n**3 * (ops + 1) / 1e9, 2), "unit": "GFLOP"}}
     finally:
         torch.set_num_threads(old)
 
@@ -260,7 +312,7 @@ def _ai_holder(repo: str = AI_REPO):
         return None
 
 
-def _ai(h, cb=None, n: int = 32) -> dict | None:
+def _ai(h, cb=None, n: int = 32, cancel=None) -> dict | None:
     """Tokens per second for a real small language model (greedy decoding with the KV cache)."""
     if h is None:
         return None
@@ -271,6 +323,7 @@ def _ai(h, cb=None, n: int = 32) -> dict | None:
         pkv, nxt = out.past_key_values, out.logits[0, -1].argmax().view(1, 1)
         times = []
         for _ in range(n):
+            _chk(cancel)
             t = time.perf_counter()
             o = h.model(input_ids=nxt, past_key_values=pkv, use_cache=True)
             dt = time.perf_counter() - t
@@ -278,35 +331,43 @@ def _ai(h, cb=None, n: int = 32) -> dict | None:
             times.append(dt)
             if cb:
                 cb(1 / dt, 1 / min(times))
-    steps = times[2:] or times
-    tps = [1 / x for x in steps]
-    return {"tps": round(statistics.median(tps), 1), "model": repo, "tokens": n, "spread": _spread(tps)}
+    tps = [1 / x for x in times]
+    st = _stats(tps, 2)
+    return {"tps": st["median"], "ci95": st["ci95"], "model": repo, "tokens": n, "spread": st, "work": {"amount": n, "unit": "tokens"}}
 
 
-def _dram(cb=None) -> dict:
-    n = 40_000_000 if psutil.virtual_memory().available > 3 * 2**30 else 8_000_000
+def _dram(cb=None, ram_mb: int = 480, seconds: float = 2.0, cancel=None, min_samples: int = 5) -> dict:
+    n = max(1_000_000, int(ram_mb * 2**20 // 12))          # three float32 arrays
     a, b, c = torch.ones(n), torch.ones(n), torch.empty(n)
     c.fill_(0)
-    best_rw = best_r = 0.0
-    xs = []
-    for _ in range(12):
+    xs, reads = [], []
+    t_all = time.perf_counter()
+    best = 0.0
+    while True:
+        _chk(cancel)
         t = time.perf_counter()
         torch.add(a, b, out=c)
         v = 12 * n / (time.perf_counter() - t) / 1e9
         xs.append(v)
-        best_rw = max(best_rw, v)
+        best = max(best, v)
         if cb:
-            cb(v, best_rw)
+            cb(v, best)
         t = time.perf_counter()
         a.sum()
-        best_r = max(best_r, 4 * n / (time.perf_counter() - t) / 1e9)
-    return {"copy_gbps": round(best_rw, 1), "read_gbps": round(best_r, 1), "array_mb": round(4 * n / 1e6), "spread": _spread(xs)}
+        reads.append(4 * n / (time.perf_counter() - t) / 1e9)
+        el = time.perf_counter() - t_all
+        if (len(xs) >= 1 + min_samples and el >= seconds) or len(xs) >= 400 or el > 3 * seconds + 2:
+            break
+    st = _stats(xs, 1)
+    return {"copy_gbps": round(max(xs), 1), "read_gbps": round(max(reads), 1), "median": st["median"], "ci95": st["ci95"],
+            "array_mb": round(4 * n / 1e6), "spread": st, "work": {"amount": round(16 * n * len(xs) / 1e9, 2), "unit": "GB"}}
 
 
-def _cache_curve(cb=None) -> list[dict]:
+def _cache_curve(cb=None, max_kb: int = 262144, cancel=None, min_samples: int = 5) -> list[dict]:
     """Single-thread streaming bandwidth vs working-set size: plateaus show L1, L2, L3, then DRAM."""
     out = []
-    for kb in [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144]:
+    for kb in [s for s in [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144] if s <= max_kb]:
+        _chk(cancel)
         m = kb * 1024 // 12
         a, b, c = np.ones(m, np.float32), np.ones(m, np.float32), np.empty(m, np.float32)
         np.add(a, b, out=c)
@@ -314,32 +375,81 @@ def _cache_curve(cb=None) -> list[dict]:
         np.add(a, b, out=c)
         one = max(time.perf_counter() - t, 1e-7)
         reps = max(2, int(0.04 / one))
-        best = 0.0
-        for _ in range(3):
+        xs = []
+        for _ in range(1 + min_samples):
             t = time.perf_counter()
             for _ in range(reps):
+                _chk(cancel)
                 np.add(a, b, out=c)
-            best = max(best, 12 * m * reps / (time.perf_counter() - t) / 1e9)
-        out.append({"kb": kb, "gbps": round(best, 1)})
+            xs.append(12 * m * reps / (time.perf_counter() - t) / 1e9)
+        st = _stats(xs, 1)
+        out.append({"kb": kb, "gbps": st["median"], "best": round(max(xs), 1), "ci95": st["ci95"], "n": st["n"],
+                    "work_gb": round(12 * m * reps * len(xs) / 1e9, 3)})
         if cb:
-            cb(best, max(o["gbps"] for o in out), kb)
+            cb(st["median"], max(o["gbps"] for o in out), kb)
     return out
 
 
-def _disk_read(path: str, limit: int = 768 * 2**20, cb=None) -> dict | None:
-    """Sequential read straight from the device (no OS cache on Windows)."""
+# ---- storage: a private temp file, unbuffered I/O, always deleted
+_TMP_NAME = "neural-studio-bench"
+CHUNK = 4 * 2**20
+
+
+def temp_dir() -> str:
+    """The private directory for benchmark files. Refused when it is a symlink/junction or owned by someone else."""
+    import stat
+    d = os.path.join(tempfile.gettempdir(), _TMP_NAME)
+    if os.path.lexists(d):
+        st = os.lstat(d)
+        if stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0) & 0x400) or not stat.S_ISDIR(st.st_mode):
+            raise RuntimeError("The benchmark temp directory is a link. Refusing to write there.")
+        if hasattr(os, "getuid") and st.st_uid != os.getuid():
+            raise RuntimeError("The benchmark temp directory belongs to another user. Refusing to write there.")
+    else:
+        os.mkdir(d, 0o700)
+    return d
+
+
+def sweep_temp() -> int:
+    """Delete leftovers of an earlier crashed run. Never follows links."""
+    try:
+        d = temp_dir()
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for name in os.listdir(d):
+        p = os.path.join(d, name)
+        try:
+            if os.path.isdir(p) and not os.path.islink(p):
+                continue
+            os.unlink(p)
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
+def _disk_read(path: str, limit: int = 768 * 2**20, cb=None, cancel=None) -> dict | None:
+    """Sequential read straight from the device (no OS cache on Windows). Per-chunk rates are the samples."""
     if not path or not os.path.exists(path):
         return None
     size = min(os.path.getsize(path), limit)
-    chunk = 8 * 2**20
+    chunk = CHUNK
+    rates: list[float] = []
     if not IS_WIN:
-        t = time.perf_counter()
         done = 0
         with open(path, "rb", buffering=0) as f:
             while done < size:
-                done += len(f.read(chunk))
-        dt = time.perf_counter() - t
-        return {"gbps": round(done / dt / 1e9, 2), "mb": round(done / 1e6), "cached": True, "file": os.path.basename(path)}
+                _chk(cancel)
+                t = time.perf_counter()
+                got = len(f.read(chunk))
+                if not got:
+                    break
+                done += got
+                rates.append(got / max(1e-9, time.perf_counter() - t) / 1e9)
+                if cb:
+                    cb(rates[-1], max(rates))
+        return _disk_out(rates, done, True, path)
     from ctypes import wintypes
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateFileW.restype = wintypes.HANDLE
@@ -354,98 +464,113 @@ def _disk_read(path: str, limit: int = 768 * 2**20, cb=None) -> dict | None:
         return None
     buf = k32.VirtualAlloc(None, chunk, 0x3000, 4)
     got, total = wintypes.DWORD(0), 0
-    t = time.perf_counter()
     try:
         while total < size:
+            _chk(cancel)
+            t = time.perf_counter()
             if not k32.ReadFile(h, buf, chunk, ctypes.byref(got), None) or got.value == 0:
                 break
             total += got.value
+            rates.append(got.value / max(1e-9, time.perf_counter() - t) / 1e9)
             if cb:
-                cb(total / max(1e-6, time.perf_counter() - t) / 1e9, total / max(1e-6, time.perf_counter() - t) / 1e9)
+                cb(rates[-1], max(rates))
     finally:
-        dt = time.perf_counter() - t
         k32.CloseHandle(h)
         k32.VirtualFree(buf, 0, 0x8000)
-    return {"gbps": round(total / dt / 1e9, 2), "mb": round(total / 1e6), "cached": False, "file": os.path.basename(path)}
+    return _disk_out(rates, total, False, path)
 
 
-def _largest_cached_weights() -> str | None:
-    try:
-        from huggingface_hub import constants
-        files = glob.glob(os.path.join(constants.HF_HUB_CACHE, "models--*", "snapshots", "*", "*.safetensors"))
-        return max(files, key=lambda p: os.path.getsize(os.path.realpath(p))) if files else None
-    except Exception:  # noqa: BLE001
+def _disk_out(rates: list[float], total: int, cached: bool, path: str) -> dict | None:
+    if not rates:
         return None
+    st = _stats(rates, 1)
+    return {"gbps": st["median"], "ci95": st["ci95"], "peak_gbps": round(max(rates), 2), "mb": round(total / 1e6), "cached": cached,
+            "spread": st, "file": os.path.basename(path)}
 
 
-def _network(cb=None) -> dict | None:
+def _disk_bench(mb: int = 256, cb=None, cancel=None) -> dict | None:
+    """Write then read a private temp file. The file is deleted in every outcome (done, error, cancel)."""
+    d = temp_dir()
+    path = os.path.join(d, f"bench-{os.getpid()}-{int(time.time() * 1000)}.bin")
+    size = mb * 2**20
+    block = os.urandom(CHUNK)
+    wr: list[float] = []
+    fd = None
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "wb", buffering=0) as f:
+            fd = None
+            done = 0
+            while done < size:
+                _chk(cancel)
+                t = time.perf_counter()
+                f.write(block)
+                os.fsync(f.fileno())
+                wr.append(CHUNK / max(1e-9, time.perf_counter() - t) / 1e9)
+                done += CHUNK
+                if cb:
+                    cb(wr[-1], max(wr))
+        rd = _disk_read(path, size, cb, cancel)
+        if rd is None:
+            return None
+        w = _stats(wr, 1)
+        rd.update(write_gbps=w["median"], write_ci95=w["ci95"], write_spread=w,
+                  work={"amount": round(2 * size / 1e9, 3), "unit": "GB"})
+        return rd
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def _network(cb=None, seconds: float = 3.0, cancel=None) -> dict | None:
+    """Download from a fixed host in 0.2 s windows (the samples). Connect and read time out after 5 s each."""
     url = "https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors"
+    cap = 64 * 2**20
     try:
         t0 = time.perf_counter()
-        r = requests.get(url, headers={"Range": "bytes=0-25165823", "User-Agent": "neural-studio/0.1"}, stream=True, timeout=30)
+        r = requests.get(url, headers={"Range": f"bytes=0-{cap - 1}", "User-Agent": "neural-studio/0.1"}, stream=True, timeout=(5, 5))
         ttfb = time.perf_counter() - t0
-        got = 0
-        t1 = time.perf_counter()
-        for chunk in r.iter_content(262144):
-            got += len(chunk)
-            if cb:
-                cb(got / max(1e-6, time.perf_counter() - t1) / 1e6 * 8, got / max(1e-6, time.perf_counter() - t1) / 1e6 * 8)
-            if got >= 24 * 2**20:
-                break
-        r.close()
+        got, w_got = 0, 0
+        t1 = w_t = time.perf_counter()
+        wins: list[float] = []
+        try:
+            for chunk in r.iter_content(131072):
+                _chk(cancel)
+                got += len(chunk)
+                w_got += len(chunk)
+                now = time.perf_counter()
+                if now - w_t >= 0.2:
+                    wins.append(w_got / (now - w_t) / 1e6 * 8)
+                    w_got, w_t = 0, now
+                    if cb:
+                        cb(wins[-1], max(wins))
+                if now - t1 >= seconds or got >= cap:
+                    break
+        finally:
+            r.close()
+        if len(wins) < 3:
+            wins.append(got / max(1e-3, time.perf_counter() - t1) / 1e6 * 8)
+        st = _stats(wins, 1)
         dt = max(1e-3, time.perf_counter() - t1)
-        return {"mbps": round(got / dt / 1e6 * 8), "mbytes_s": round(got / dt / 1e6, 1), "latency_ms": round(ttfb * 1000), "mb": round(got / 1e6)}
+        return {"mbps": round(st["median"]), "ci95": st["ci95"], "mbytes_s": round(got / dt / 1e6, 1), "latency_ms": round(ttfb * 1000), "mb": round(got / 1e6),
+                "spread": st, "work": {"amount": round(got / 1e6, 1), "unit": "MB"}}
+    except Cancelled:
+        raise
     except Exception:  # noqa: BLE001
         return None
 
 
-def bench_run(emit, client=None):
-    """Run every microbenchmark. `emit` receives live {"type":"progress"} values and a {"type":"result"} per test.
-    `client(name)`, if given, asks the browser to run a test only it can run (WebGPU) and blocks until it reports,
-    so that test's electricity is recorded too."""
-    def prog(name, unit, scale=1.0):
-        def cb(v, best, *extra):
-            emit({"type": "progress", "name": name, "value": round(v * scale, 2), "best": round(best * scale, 2), "unit": unit, "extra": list(extra)})
-        return cb
-
-    def done(name, data):
-        emit({"type": "result", "name": name, "data": data})
-
-    with _LOCK, PowerRecorder(emit) as rec:
-        def stage(name):
-            rec.stage = name
-            emit({"type": "stage", "name": name})
-
-        stage("idle")
-        time.sleep(1.5)  # a baseline, so each test's power can be read against idle
-        if client:
-            # the page pauses its live 3D view during "idle" and draws it from here on, so this window minus the
-            # idle one is what the live view itself costs
-            stage("draw")
-            time.sleep(1.5)
-        stage("matmul_1")
-        done("matmul_1", _matmul(1, 1024, prog("matmul_1", "GFLOP/s")))
-        stage("matmul_n")
-        done("matmul_n", _matmul(torch.get_num_threads(), 2048, prog("matmul_n", "GFLOP/s")))
-        stage("dram")
-        done("dram", _dram(prog("dram", "GB/s")))
-        stage("cache")
-        done("cache", _cache_curve(prog("cache", "GB/s")))
-        stage("disk")
-        done("disk", _disk_read(_largest_cached_weights(), cb=prog("disk", "GB/s")))
-        stage("net")
-        done("net", _network(prog("net", "Mbit/s")))
-        if client:
-            stage("gpu")
-            done("gpu", client("gpu"))
-        stage("ai_load")
-        h = _ai_holder()
-        stage("ai")
-        done("ai", _ai(h, prog("ai", "tokens/s")))
-        stage("cool")
-        time.sleep(0.8)
-    if rec.samples:
-        done("power", {"summary": rec.summary(), "samples": rec.samples, "source": rec.power.sample(rec.n).get("source")})
+def bench_run(emit, client=None, plan=None, cancel=None):
+    """Run the microbenchmarks (all of them by default). See bench.py for the plan and the orchestration."""
+    from . import bench
+    bench.run(emit, client, plan or bench.default_plan(client is not None), cancel)
 
 
 def bench_steps():
