@@ -347,3 +347,7 @@ input[type=range] { width: 100%; accent-color: var(--pos); }
 .rchart text { font: 10px var(--mono); fill: var(--faint); } .rchart .grid { stroke: var(--line); stroke-width: 1; opacity: .6; } .rchart .cross { stroke: var(--muted); stroke-dasharray: 3 3; }
 .rtip { position: absolute; top: 4px; transform: translateX(-50%); pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; white-space: nowrap; box-shadow: 0 8px 24px #0008; z-index: 2; }
 .rtip span { display: flex; align-items: center; } .rtip em { margin-left: auto; padding-left: 12px; font-style: normal; }
+
+/* the shared prompt sits next to the model link; the real model leads the network picker */
+.promptform { flex: 1 1 300px; max-width: 520px; }
+.zoonets .real { color: var(--pos-ink); font-weight: 600; }

@@ -85,6 +85,8 @@ interface S {
   loadExample: (id: string) => Promise<void>
   setPrompt: (p: string) => void
   run: () => Promise<void>
+  /** finished runs of the shared prompt (the Journey replays the same prompt on the hardware after each) */
+  runSeq: number
   setTab: (t: Tab) => void
   selectLayer: (i: number | null) => void
   selectHead: (h: number | null) => void
@@ -136,13 +138,13 @@ export const useStore = create<S>((set, get) => {
   }
 
   return {
-    appView: location.hash === '#machine' || location.hash === '#journey' ? 'journey' : location.hash === '#power' ? 'power' : location.hash === '#zoo' ? 'zoo' : 'model',
+    appView: location.hash === '#machine' || location.hash === '#journey' ? 'journey' : location.hash === '#power' ? 'power' : 'model',
     setAppView: (appView: AppView) => set({ appView } as any),
     visible: { model: true }, setVisible: (visible) => set({ visible } as any),
     details: readDetails(), setDetails: (details) => { set({ details } as any); try { localStorage.setItem(DETAILS_KEY, details ? '1' : '0') } catch { /* private mode */ } },
     backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', probe: null, probing: false, probeErr: null,
     prompt: 'The capital of France is', ...resetRun, selLayer: null, selHead: null, qpos: -1, hover: null, tab: 'model',
-    tensors: {}, tensorErr: null, edits: [], useEdits: true, compare: null, comparing: false, compareErr: null,
+    runSeq: 0, tensors: {}, tensorErr: null, edits: [], useEdits: true, compare: null, comparing: false, compareErr: null,
     calc: null, calcing: false, calcErr: null,
     scan: null, scanning: false, scanErr: null, scanMax: 1, showImportance: false,
 
@@ -212,7 +214,7 @@ export const useStore = create<S>((set, get) => {
       } catch (e: any) {
         set({ runErr: e.message ?? String(e), running: false })
       } finally {
-        set({ streaming: false })
+        set((st) => ({ streaming: false, runSeq: st.runSeq + 1 }))
       }
     },
 

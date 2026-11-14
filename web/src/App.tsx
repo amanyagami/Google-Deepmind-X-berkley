@@ -1,22 +1,19 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { jumpLocked, jumpTo, useStore, type AppView, type Tab } from './store'
-import { CalcPanel, EditPanel, LayerPanel, ModelPanel, RunPanel } from './ui/panels'
 // Each view loads its own code on first use, so the first page needs only what it shows.
-const ModelScene = lazy(() => import('./scene/ModelScene').then((m) => ({ default: m.ModelScene })))
 const JourneyView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.JourneyView })))
 const PowerView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.PowerView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
 const SECTIONS: { id: AppView; label: string; tip: string }[] = [
-  { id: 'model', label: 'Model', tip: "The model's structure, run live" },
+  { id: 'model', label: 'Model', tip: 'The model on your prompt, and five small networks beside it' },
   { id: 'journey', label: 'Journey', tip: "Follow one prompt through this PC's hardware" },
   { id: 'power', label: 'Electricity', tip: 'The electricity in this PC, live' },
-  { id: 'zoo', label: 'Network zoo', tip: 'Five kinds of neural network, side by side' },
 ]
 const Loading = () => <div className="scene empty"><p className="hint">Loading…</p></div>
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'model', label: 'Model' }, { id: 'run', label: 'Run' }, { id: 'layer', label: 'Layer' }, { id: 'calc', label: 'Calculate' }, { id: 'edit', label: 'Edit & compare' },
-]
+
+/** One prompt, one Run: the model runs it (Model section), then the Journey replays it on the hardware. */
+const runAll = () => useStore.getState().run()
 
 function Header({ view }: { view: AppView }) {
   const s = useStore()
@@ -37,6 +34,12 @@ function Header({ view }: { view: AppView }) {
         <span className="host">huggingface.co/</span>
         <input id="repo" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} placeholder="org/model" />
         <button className="btn" type="submit" disabled={s.probing}>{s.probing ? 'Reading…' : 'Load'}</button>
+      </form>
+      <form className="urlform promptform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
+        <label className="sr" htmlFor="sharedprompt">Prompt</label>
+        <span className="host">prompt</span>
+        <input id="sharedprompt" value={s.prompt} onChange={(e) => s.setPrompt(e.target.value)} spellCheck={false} disabled={s.mode === 'replay'} title={s.mode === 'replay' ? 'Recorded run: start the companion to type your own prompt' : 'The same prompt drives the model and the machine'} />
+        <button className="btn" type="submit" disabled={s.running || !s.probe?.graph?.runnable}>{s.running ? 'Running…' : 'Run'}</button>
       </form>
       <div className="chips" role="group" aria-label="Examples">
         {s.examples.map((e) => (
@@ -83,14 +86,14 @@ const Sect = ({ id, label, children }: { id: AppView; label: string; children: R
 
 export default function App() {
   const init = useStore((s) => s.init)
-  const tab = useStore((s) => s.tab)
-  const setTab = useStore((s) => s.setTab)
   const probe = useStore((s) => s.probe)
+  const layers = useStore((s) => s.layers.length)
   const view = useStore((s) => s.appView)
   const flow = useRef<HTMLDivElement>(null)
   const seen = useSections(flow)
-  const [hadProbe, setHadProbe] = useState(false)
-  useEffect(() => { if (probe) setHadProbe(true) }, [probe])
+  // every model opens already run on the shared prompt, so the animations have something real to show
+  const autoRan = useRef('')
+  useEffect(() => { const s = useStore.getState(); if (probe?.graph?.runnable && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run() } }, [probe, layers])
   useEffect(() => { init() }, [init])
   // a link such as /#power opens at that section
   useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first, false)) }, [])
@@ -99,30 +102,9 @@ export default function App() {
     <div className="app">
       <Header view={view} />
       <div className="flow" ref={flow}>
-        <Sect id="model" label="Model">
-          <main className="main">
-            <section className="stage" aria-label="3D model">
-              {probe || hadProbe ? <Suspense fallback={<Loading />}><ModelScene /></Suspense> : <div className="scene empty"><p className="hint">Paste a model link to build its 3D structure.</p></div>}
-            </section>
-            <aside className="inspector" aria-label="Inspector">
-              <div className="tabs" role="tablist">
-                {TABS.map((t) => (
-                  <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? 'on' : ''} onClick={() => setTab(t.id)}>{t.label}</button>
-                ))}
-              </div>
-              <div className="pane" role="tabpanel">
-                {tab === 'model' && <ModelPanel />}
-                {tab === 'run' && <RunPanel />}
-                {tab === 'layer' && <LayerPanel />}
-                {tab === 'calc' && <CalcPanel />}
-                {tab === 'edit' && <EditPanel />}
-              </div>
-            </aside>
-          </main>
-        </Sect>
+        <Sect id="model" label="The model on your prompt">{seen.model ? <Suspense fallback={<Loading />}><ZooView /></Suspense> : <Loading />}</Sect>
         <Sect id="journey" label="Journey of a prompt through the hardware">{seen.journey ? <Suspense fallback={<Loading />}><JourneyView /></Suspense> : <Loading />}</Sect>
         <Sect id="power" label="Electricity, live">{seen.power ? <Suspense fallback={<Loading />}><PowerView /></Suspense> : <Loading />}</Sect>
-        <Sect id="zoo" label="Network zoo">{seen.zoo ? <Suspense fallback={<Loading />}><ZooView /></Suspense> : <Loading />}</Sect>
       </div>
     </div>
   )

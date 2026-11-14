@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
 import { FLOPS, isNeutral, readDigit } from './nets'
-import { locateZ, NETS, STAGES, totalZ, useZoo, type NetId } from './zooStore'
+import { locateZ, NETS, STAGES, totalZ, useZoo, type DigitNet, type NetId } from './zooStore'
+import { useStore } from '../store'
+import { CalcPanel, EditPanel, LayerPanel, ModelPanel, RunPanel } from '../ui/panels'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
@@ -207,8 +209,8 @@ function ZooTimeline() {
 }
 
 /** One fixed colour per network (validated categorical palette, dark surface), used everywhere a network is identified. */
-export const NET_COLOR: Record<NetId, string> = { mlp: '#3987e5', cnn: '#d95926', rnn: '#199e70', vit: '#c98500', vlm: '#d55181' }
-const NAME: Record<NetId, string> = { mlp: 'MLP', cnn: 'CNN', rnn: 'RNN (GRU)', vit: 'ViT', vlm: 'VLM' }
+export const NET_COLOR: Record<DigitNet, string> = { mlp: '#3987e5', cnn: '#d95926', rnn: '#199e70', vit: '#c98500', vlm: '#d55181' }
+const NAME: Record<DigitNet, string> = { mlp: 'MLP', cnn: 'CNN', rnn: 'RNN (GRU)', vit: 'ViT', vlm: 'VLM' }
 const fmtUs = (us: number) => (us >= 1000 ? `${(us / 1000).toFixed(1)} ms` : `${Math.round(us)} µs`)
 
 /* ------------------------------------------------------------------- all five, side by side */
@@ -330,27 +332,30 @@ export function ZooView() {
   const { net, packs, err } = useZoo(useShallow((s) => ({ net: s.net, packs: s.packs, err: s.err })))
   const [loaded, setLoaded] = useState(false)
   useEffect(() => { useZoo.getState().init().then(() => setLoaded(true)) }, [])
-  const p = packs[net]
+  const p = net === 'llm' ? undefined : packs[net]
+  const repo = useStore((s) => s.repo)
+  const short = repo ? repo.split('/').pop()! : 'This model'
   return (
     <main className="main machine zoo">
       <section className="stage" aria-label={`3D view of a ${p?.title ?? 'network'}`}>
         <ZooScene />
         <div className="vswitch seg zoonets" role="group" aria-label="Network">
-          {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} onClick={() => useZoo.getState().setNet(n.id as NetId)}>{n.short}</button>)}
+          <button className={`real ${net === 'llm' ? 'on' : ''}`} onClick={() => useZoo.getState().setNet('llm')} title="The model loaded at the top, on your prompt">{short}</button>
+          {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} onClick={() => useZoo.getState().setNet(n.id as NetId)} title="A tiny network that reads 8×8 handwritten digits">{n.short}</button>)}
         </div>
         {p && (
           <div className="phud zoohud">
             <p className="eyebrow">{p.title}</p>
             <p className="small">{p.blurb}</p>
             <div className="prow mono"><div><span>parameters</span><b>{p.params.toLocaleString()}</b></div><div><span>{p.accuracy_note ?? 'test accuracy'}</span><b>{(p.accuracy * 100).toFixed(1)}%</b></div></div>
-            <p className="hint small">Work per image: {FLOPS[net]}. Computed in this page, on this device.</p>
+            <p className="hint small">Work per image: {FLOPS[net as DigitNet]}. Computed in this page, on this device.</p>
           </div>
         )}
         <div className="stagebottom"><ZooTimeline /></div>
         {err && <div className="err">{err}</div>}
       </section>
       <aside className="inspector" aria-label="Network input and output">
-        <div className="pane">
+        {net === 'llm' ? <ModelTools /> : <div className="pane">
           <div className="stack">
             {!loaded && <p className="hint">Loading the networks…</p>}
             <DrawPad />
@@ -362,9 +367,24 @@ export function ZooView() {
             <RobustCard />
             <p className="hint small">All five were trained on the same 1,500 handwritten digits (scikit-learn's 8×8 set) by server/train_zoo.py, so you can compare how each kind of network solves the same problem. The browser's arithmetic is checked against PyTorch's by tests/zoo.test.ts.</p>
           </div>
-        </div>
+        </div>}
       </aside>
     </main>
   )
 }
 
+
+const TOOLS = [['model', 'Model'], ['run', 'Run'], ['layer', 'Layer'], ['calc', 'Calculate'], ['edit', 'Edit & compare']] as const
+/** The real model's tools: its structure, the run on the shared prompt, one layer, one calculation, and edits. */
+function ModelTools() {
+  const tab = useStore((s) => s.tab)
+  const setTab = useStore((s) => s.setTab)
+  return (
+    <>
+      <div className="tabs" role="tablist">{TOOLS.map(([id, l]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{l}</button>)}</div>
+      <div className="pane" role="tabpanel">
+        {tab === 'model' && <ModelPanel />}{tab === 'run' && <RunPanel />}{tab === 'layer' && <LayerPanel />}{tab === 'calc' && <CalcPanel />}{tab === 'edit' && <EditPanel />}
+      </div>
+    </>
+  )
+}

@@ -489,7 +489,8 @@ function StartCard() {
   const hw = useHW(useShallow((s) => ({ journey: s.journey, journeyBusy: s.journeyBusy, journeyErr: s.journeyErr, info: s.info, infoErr: s.infoErr, source: s.source, benchRunning: s.benchRunning, runJourney: s.runJourney, loadRecorded: s.loadRecorded, runBench: s.runBench })))
   const repo = useStore((s) => s.repo)
   const prompt = useStore((s) => s.prompt)
-  const [p, setP] = useState(prompt)
+  const setP = useStore((s) => s.setPrompt)
+  const p = prompt
   const busy = hw.journeyBusy
   if (hw.journey) return null
   return (
@@ -541,6 +542,14 @@ function DetailsButton() {
 /** The machine as a 3D board: one prompt travels through it, and every part shows its live numbers. */
 export function JourneyView() {
   useMachineBoot()
+  // the same prompt the model just ran is replayed on the hardware (needs the companion: PyTorch on this PC)
+  const runSeq = useStore((s) => s.runSeq)
+  const first = useRef(runSeq)
+  useEffect(() => {
+    if (runSeq === first.current) return
+    const h = useHW.getState(), st = useStore.getState()
+    if (h.source === 'companion' && !h.journeyBusy && !h.benchRunning && st.repo) h.runJourney(st.repo, st.prompt)
+  }, [runSeq])
   const details = useStore((s) => s.details)
   const shown = useStore((s) => !!s.visible.journey)
   const measuring = useHW((s) => s.benchRunning || (!!s.journeyBusy && s.source === 'companion'))
