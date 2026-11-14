@@ -375,7 +375,7 @@ const CSS = `
 @media (max-width:900px){.tlctl .ib,.tlctl select{min-height:40px!important;min-width:40px!important}}
 .s6inrow{flex-wrap:nowrap}
 @media (max-width:600px){.s6inrow{flex-wrap:wrap}.s6in{flex:1 1 100%!important}.s6dock.compact .s6go{white-space:normal;max-width:122px;line-height:1.15;padding:6px 10px;font-size:14px}}
-.s6link{min-height:44px;display:inline-flex;align-items:center;margin:6px 0 10px}
+.s6link{min-height:44px;display:inline-flex;align-items:center;margin:6px 0 10px;width:auto!important;max-width:max-content;align-self:flex-start}
 .s6dock button,.s6dock input,.s6dock select{min-height:44px}
 .s6dock .btn2.sm,.s6err .btn2{min-height:44px}
 .s6err{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
