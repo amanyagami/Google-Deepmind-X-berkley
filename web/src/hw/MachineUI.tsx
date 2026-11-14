@@ -426,6 +426,14 @@ const T5_CSS = `
 .t5-dock{}
 #dock-slot>.t5-dock{display:flex!important;flex:none}
 @media (pointer:coarse),(max-width:600px){.main.machine .detbtn,.main.machine .mtl button,.main.machine .mtl select,.main.machine .tabs button,.main.machine .crumbs button,.main.machine .startj,.main.machine .ib,.main.machine .btn,.main.machine .btn2{min-height:44px;min-width:44px}}
+.t5-dock .t5-btn.big{padding:0 12px}
+@media (max-width:900px){
+.main.machine .mcol .phud .row{position:static}
+.main.machine .stage.powerview{display:flex;flex-direction:column;min-height:0}
+.main.machine .stage.powerview .scenewrap{position:relative;inset:auto;flex:1 1 auto;min-height:320px;order:1}
+.main.machine .stage.powerview .stagebottom{position:static;order:2;margin:8px 14px 12px;flex:none}
+}
+@media (max-width:600px){.main.machine .mcol{top:106px}}
 .t5-err{display:grid;gap:6px;justify-items:start}
 .t5-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .t5-head h4{margin:0;flex:1;font-size:14px;display:flex;align-items:center;gap:4px}
