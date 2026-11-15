@@ -35,7 +35,8 @@ onmessage = () => {
 }`
 
 /** Starts the sampler. `push` receives each sample and the last 15 s. Returns a function that stops everything. */
-export function startBrowserLiveSampler(push: (s: BrowserLive, history: BrowserLive[]) => void): () => void {
+/** `paused()` true (Test all is running): no CPU-probe job in the worker and no store update, so the sampler neither competes with the tests for a core nor re-renders the page. */
+export function startBrowserLiveSampler(push: (s: BrowserLive, history: BrowserLive[]) => void, paused: () => boolean = () => false): () => void {
   if (typeof window === 'undefined') return () => {}
   const t0 = performance.now()
   const hist: BrowserLive[] = []
@@ -87,7 +88,7 @@ export function startBrowserLiveSampler(push: (s: BrowserLive, history: BrowserL
   // --- one sample every 500 ms
   let lastT = performance.now(), lastBytes = 0
   const loop = window.setInterval(() => {
-    if (document.hidden) { lastT = performance.now(); frames = 0; return }
+    if (document.hidden || paused()) { lastT = performance.now(); frames = 0; lastBytes = bytes; return }
     worker?.postMessage(0)
     const now = performance.now(), dt = Math.max(0.05, (now - lastT) / 1000)
     const conn = (navigator as any).connection

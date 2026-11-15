@@ -272,7 +272,7 @@ export const useHW = create<HW>((set, get) => ({
   bl: null, blHist: [],
   startBrowserLive() {
     if (stopBrowserLive || get().source !== 'browser') return
-    stopBrowserLive = startBrowserLiveSampler((s, h) => set({ bl: s, blHist: h }))
+    stopBrowserLive = startBrowserLiveSampler((s, h) => set({ bl: s, blHist: h }), () => get().benchRunning)
   },
 
   startTelemetry() {
