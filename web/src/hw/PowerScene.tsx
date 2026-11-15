@@ -13,7 +13,7 @@ import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { peaksOf, powerNow, useHW, useHWThrottled, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
-import { Chip, FirstFrame, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
+import { Backdrop, Chip, FirstFrame, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
@@ -605,7 +605,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   const summary = useHWThrottled((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`, 1000)
   useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true })
   return (
-    <div ref={st.wrap} data-stage style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
+    <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
       <Canvas frameloop={!st.run || baseline ? 'never' : recording ? 'demand' : 'always'} dpr={recording ? 1 : st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [0.2, 13.6, 15.8], fov: 38 }} gl={{ antialias: false, powerPreference: 'high-performance' }}
         onPointerMissed={(e) => { if (e.type === 'click') { const h = useHW.getState(); let n = h.path.length; while (n-- > 0) useHW.getState().back() } }}>
         <LiteCtx.Provider value={st.lite}>
@@ -613,9 +613,9 @@ export function PowerScene({ active = true }: { active?: boolean }) {
             {st.run && recording && !baseline && <FpsCap fps={30} />}
             <SlowWatch onStep={st.step} />
             <FirstFrame name="machine" />
-            <color attach="background" args={[light ? '#f1f3fb' : '#05080f']} />
+            <Backdrop light={light} size={[34, 22]} />
             <WheelScrollsPage />
-            <fog attach="fog" args={[light ? '#f1f3fb' : '#05080f', 26, 54]} />
+            <fog attach="fog" args={[light ? '#eef0fb' : '#060a1a', 26, 54]} />
             <ambientLight intensity={0.3} />
             <directionalLight position={[6, 12, 8]} intensity={1.3} />
             <Environment resolution={64} environmentIntensity={0.6}>
