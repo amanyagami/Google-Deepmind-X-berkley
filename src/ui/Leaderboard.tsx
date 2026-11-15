@@ -66,7 +66,7 @@ export default function Leaderboard({ onClose }: { onClose: () => void }) {
   if (view.k === 'loading') body = <div className="lb-state" role="status"><p>Loading the leaderboard.</p><button type="button" className="t5-btn" onClick={onClose}>Close</button></div>
   else if (view.k === 'offline') body = <div className="lb-state" data-board-offline><p>Leaderboard is offline on this copy of the app.</p><button type="button" className="t5-btn" onClick={onClose}>Close</button></div>
   else if (view.k === 'error') body = <div className="lb-state" role="alert"><p>Could not load the leaderboard.</p><button type="button" className="t5-btn pri" onClick={() => setTries((n) => n + 1)}>Try again</button></div>
-  else if (!view.rows.length) body = <div className="lb-state"><p>No scores yet. Press Test all to be the first.</p>{testAll ? <button type="button" className="t5-btn pri" onClick={testAll}>Test all</button> : <button type="button" className="t5-btn" onClick={onClose}>Close</button>}</div>
+  else if (!view.rows.length) body = <div className="lb-state"><p>No scores yet. Test your system to be the first.</p>{testAll ? <button type="button" className="t5-btn pri" onClick={testAll}>Test your system</button> : <button type="button" className="t5-btn" onClick={onClose}>Close</button>}</div>
   else body = (
     <table className="lb-table">
       <thead><tr><th className="lb-rank" scope="col">#</th><th scope="col">Name</th><th className="lb-when" scope="col">When</th><th className="lb-parts" scope="col">Parts</th><th className="lb-score" scope="col">Best</th></tr></thead>
@@ -76,7 +76,7 @@ export default function Leaderboard({ onClose }: { onClose: () => void }) {
   )
 
   const line = off ? null : me ? `You are #${fmt(me.rank)} of ${fmt(me.total)}. Best ${fmt(me.best)}, tested ${me.visits} ${me.visits === 1 ? 'time' : 'times'}.`
-    : view.k === 'ok' ? 'Press Test all to get on the board.' : null
+    : view.k === 'ok' ? 'Test your system to get on the board.' : null
 
   return (
     <div className="lb-wall" onPointerDown={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) onClose() }}>

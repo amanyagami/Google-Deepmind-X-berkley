@@ -57,7 +57,7 @@ const HOW: { t: string; d: string; icon: string }[] = [
   { t: 'Get a model', d: 'It comes from Hugging Face and runs on your device.', icon: 'M4 5h16v10H4zM2 19h20M12 2v7M9 6l3 3 3-3' },
   { t: 'Watch it think', d: 'Your prompt flows through the 3D blocks.', icon: 'M3 8l5-3 5 3v6l-5 3-5-3zM11 10l5-3 5 3v6l-5 3-5-3z' },
   { t: 'See the power', d: 'Electricity moves through CPU, GPU and RAM.', icon: 'M13 2L4 14h7l-1 8 9-12h-7z' },
-  { t: 'Get your score', d: 'Test all scores your device.', icon: 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4' },
+  { t: 'Get your score', d: 'Test your system scores your device.', icon: 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4' },
 ]
 function HowItWorks() {
   return (
