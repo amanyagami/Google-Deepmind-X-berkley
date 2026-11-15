@@ -150,8 +150,24 @@ function TopBar({ view }: { view: AppView }) {
 /** Default dock: the prompt and Run. S5 and S6 fill #dock-slot with Test all, progress and Cancel. */
 function Dock() {
   const s = useStore()
+  const ref = useRef<HTMLElement>(null)
+  // measure the dock (it grows with strips and the narrow Details bar) and share the height with the layout
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // only when narrow: wide, the dock keeps its fixed height and strips float above it, so nothing shifts
+    const narrow = matchMedia('(max-width: 999px)')
+    const ro = new ResizeObserver(() => { if (narrow.matches) document.documentElement.style.setProperty('--dock-h', `${Math.ceil(el.getBoundingClientRect().height)}px`); else document.documentElement.style.removeProperty('--dock-h') })
+    narrow.addEventListener('change', () => { ro.disconnect(); ro.observe(el) })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const view = useStore((x) => x.appView)
+  const which = view === 'power' ? 'machine' : 'model'
+  const open = useStore((x) => x.railOpen[which])
   return (
-    <footer className="dock" data-dock>
+    <footer className="dock" data-dock ref={ref}>
+      <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => s.setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>
       <div id="dock-slot">
         <form className="dockform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
           <label className="sr" htmlFor="sharedprompt">Prompt</label>
