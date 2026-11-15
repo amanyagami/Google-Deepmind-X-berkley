@@ -54,6 +54,7 @@ const BOARD_META = '<meta name="kundali-board" content="on" />'
 const httpDate = (ms) => new Date(Math.floor(ms / 1000) * 1000).toUTCString()
 const etagOf = (st) => `"${Math.floor(st.mtimeMs / 1000).toString(16)}-${st.size.toString(16)}"`
 const accepts = (req) => /\bgzip\b/.test(req.headers['accept-encoding'] ?? '')
+const acceptsBr = (req) => /\bbr\b/.test(req.headers['accept-encoding'] ?? '')
 
 function statFile(p) { try { const s = fs.statSync(p); return s.isFile() ? s : s.isDirectory() ? 'dir' : null } catch { return null } }
 
@@ -67,7 +68,7 @@ function createStatic(dist, sec) {
     const raw = fs.readFileSync(f, 'utf8')
     const html = raw.includes('kundali-board') ? raw : raw.replace('</head>', `  ${BOARD_META}\n  </head>`)
     const body = Buffer.from(html)
-    return (index = { mtimeMs: st.mtimeMs, body, gz: zlib.gzipSync(body, { level: 9 }), etag: `"${crypto.createHash('sha1').update(body).digest('hex').slice(0, 16)}"`, mtime: st.mtimeMs })
+    return (index = { mtimeMs: st.mtimeMs, body, gz: zlib.gzipSync(body, { level: 9 }), br: zlib.brotliCompressSync(body), etag: `"${crypto.createHash('sha1').update(body).digest('hex').slice(0, 16)}"`, mtime: st.mtimeMs })
   }
 
   /** Resolve a decoded, normalised path to {file, uri} the way try_files $uri $uri/ /index.html did. */
@@ -108,9 +109,9 @@ function createStatic(dist, sec) {
       try { ix = loadIndex() } catch { return plain(res, sec, 404, 'Not found') }
       Object.assign(h, { 'Content-Type': 'text/html', 'Last-Modified': httpDate(ix.mtime), ETag: ix.etag, Vary: 'Accept-Encoding' })
       if (fresh(req, ix.etag, ix.mtime)) return end(res, 304, h)
-      const gz = accepts(req)
-      if (gz) h['Content-Encoding'] = 'gzip'
-      return end(res, 200, h, gz ? ix.gz : ix.body, req.method === 'HEAD')
+      const br = acceptsBr(req), gz = !br && accepts(req)
+      if (br || gz) h['Content-Encoding'] = br ? 'br' : 'gzip'
+      return end(res, 200, h, br ? ix.br : gz ? ix.gz : ix.body, req.method === 'HEAD')
     }
 
     const type = MIME[path.extname(hit.abs).slice(1).toLowerCase()] ?? DEFAULT_TYPE
@@ -119,6 +120,13 @@ function createStatic(dist, sec) {
     const gzSt = statFile(hit.abs + '.gz')
     const canGzip = (gzSt && gzSt !== 'dir') || (GZIP_TYPES.has(type) && hit.st.size >= GZIP_MIN)
     if (canGzip) h.Vary = 'Accept-Encoding'
+    // a prebuilt .br (the build writes one next to each text file and the wasm) is smaller still: it wins where the browser takes it
+    const brSt = acceptsBr(req) ? statFile(hit.abs + '.br') : null
+    if (brSt && brSt !== 'dir') {
+      Object.assign(h, { Vary: 'Accept-Encoding', 'Content-Encoding': 'br', 'Last-Modified': httpDate(brSt.mtimeMs), ETag: etagOf(brSt) })
+      if (fresh(req, h.ETag, brSt.mtimeMs)) return end(res, 304, h)
+      return sendFile(req, res, h, hit.abs + '.br', brSt)
+    }
     if (accepts(req) && gzSt && gzSt !== 'dir') {
       Object.assign(h, { 'Content-Encoding': 'gzip', 'Last-Modified': httpDate(gzSt.mtimeMs), ETag: etagOf(gzSt) })
       if (fresh(req, h.ETag, gzSt.mtimeMs)) return end(res, 304, h)

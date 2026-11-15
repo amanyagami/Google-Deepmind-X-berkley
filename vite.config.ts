@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { brotliCompressSync, constants as zc, gzipSync } from 'node:zlib'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 
@@ -83,11 +84,34 @@ const stampSw = (): Plugin => ({
   },
 })
 
+// Writes a .br and a .gz next to every text file and the engine's wasm, so any host that serves prebuilt files sends
+// the smallest one. (index.html is left alone: the server adds a tag to it and compresses the result itself.)
+const precompress = (): Plugin => ({
+  name: 'precompress',
+  apply: 'build',
+  enforce: 'post',
+  closeBundle() {
+    const out = resolve(__dirname, 'dist')
+    const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(resolve(d, e.name)) : [resolve(d, e.name)]))
+    let files: string[] = []
+    try { files = walk(out) } catch { return }
+    for (const f of files) {
+      if (!/\.(js|mjs|css|json|svg|wasm|txt)$/.test(f) || f.endsWith('sw.js')) continue
+      const size = statSync(f).size
+      if (size < 1024) continue
+      const buf = readFileSync(f)
+      // the 20 MB wasm at top quality would take minutes; quality 9 is within a few percent of it
+      writeFileSync(f + '.br', brotliCompressSync(buf, { params: { [zc.BROTLI_PARAM_QUALITY]: size > 4e6 ? 9 : 11, [zc.BROTLI_PARAM_SIZE_HINT]: size } }))
+      writeFileSync(f + '.gz', gzipSync(buf, { level: 9 }))
+    }
+  },
+})
+
 export default defineConfig({
   base: './',
   // the app version, sent with a leaderboard score
   define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version) },
-  plugins: [react(), devLeaderboard(), selfHostOrt(), stampSw()],
+  plugins: [react(), devLeaderboard(), selfHostOrt(), stampSw(), precompress()],
   server: {
     host: '0.0.0.0',
     port: 3000,

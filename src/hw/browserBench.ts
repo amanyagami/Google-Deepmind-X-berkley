@@ -256,6 +256,7 @@ export function loadBrowserLM(note: (s: string) => void): Promise<any> {
     try {
       const tf: any = await import('@huggingface/transformers')
       try { tf.env.backends.onnx.logLevel = 'error' } catch { /* older versions */ }
+      try { const root = new URL('ort/', (typeof document !== 'undefined' ? document.baseURI : self.location.href)).href; tf.env.backends.onnx.wasm.wasmPaths = { mjs: root + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: root + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ }
       // Transformers.js 4 fetches the ONNX Runtime WebAssembly files from the CDN by itself
       const webgpu = !!(await (navigator as any).gpu?.requestAdapter?.())
       note(webgpu ? 'Downloading SmolLM2-135M (118 MB, once) to run on the GPU through WebGPU…' : 'Downloading SmolLM2-135M (137 MB, once) to run on the CPU through WebAssembly…')

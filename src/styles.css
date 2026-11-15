@@ -830,12 +830,61 @@ h1, h2, h3, .hero { letter-spacing: -0.015em; }
 @media (max-width: 600px) {
   /* the prompt bar is one row: language, prompt, Run */
   :root .s6dock.compact .s6inrow { flex-wrap: nowrap; gap: 6px; }
-  :root .s6dock.compact .s6in { flex: 1 1 0 !important; min-width: 0; }
+  :root .s6dock.compact .s6in { flex: 1 1 0 !important; min-width: 96px; }
   :root .s6dock.compact .s6ex { display: none; }
-  :root .s6dock.compact .s6lang { max-width: 92px; padding: 4px 2px 4px 6px; }
-  :root .s6dock.compact .s6go { white-space: nowrap; max-width: none; padding: 6px 13px; }
+  :root .s6dock.compact .s6lang { max-width: 84px; padding: 4px 2px 4px 6px; }
   /* leaderboard: a sheet from the bottom, full width */
   :root .lb-wall { place-items: end stretch; padding: 0; }
   :root .lb { width: 100%; max-height: 88dvh; border-radius: 22px 22px 0 0; border-bottom: 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
   :root .lb-scroll { min-height: 38dvh; }
 }
+
+/* ===================================================================== premium pass: hero name card, device entry points, sheen */
+.namewall {
+  overflow: hidden;
+  background:
+    radial-gradient(52vmax circle at 8% 0%, color-mix(in srgb, #7c5cff 30%, transparent), transparent 62%),
+    radial-gradient(48vmax circle at 96% 22%, color-mix(in srgb, #22d3ee 17%, transparent), transparent 60%),
+    radial-gradient(54vmax circle at 46% 112%, color-mix(in srgb, #ff7ab6 17%, transparent), transparent 62%),
+    color-mix(in srgb, var(--bg) 90%, transparent);
+}
+.namecard {
+  position: relative; z-index: 1; padding: 34px; border-radius: 26px; gap: var(--s6);
+  border: 1px solid transparent;
+  background: linear-gradient(var(--glass-heavy), var(--glass-heavy)) padding-box,
+    linear-gradient(135deg, color-mix(in srgb, var(--brand-1) 85%, transparent), color-mix(in srgb, var(--brand-2) 45%, transparent) 40%, color-mix(in srgb, var(--line) 80%, transparent) 62%, color-mix(in srgb, var(--brand-3) 70%, transparent)) border-box;
+  box-shadow: var(--sh-2), 0 0 120px -30px var(--glow), inset 0 1px 0 var(--rim);
+}
+.namefields { display: grid; gap: var(--s3); align-content: center; }
+.namebrand { gap: 12px; margin-bottom: 0; }
+.namebrand svg.logo { width: 44px; height: 44px; }
+.namebrand span { font: 780 34px/1 var(--display); letter-spacing: -0.04em; }
+.nametag { font-size: 15px; line-height: 1.5; max-width: 32ch; color: color-mix(in srgb, var(--fg) 78%, var(--muted)); }
+.namecard h2, .namecard h3 { font: 600 14px/1.3 var(--body); letter-spacing: 0; color: var(--muted); margin-top: var(--s2); }
+.namecard .dockprompt { min-height: 48px; border-radius: 14px; font-size: 16px; }
+.namecard .btn.primary { min-height: 48px; border-radius: 14px; padding: 0 22px; font-weight: 650; }
+.howto li { border-radius: 16px; background: linear-gradient(180deg, color-mix(in srgb, var(--brand-1) 7%, var(--panel)), color-mix(in srgb, var(--panel) 92%, transparent)); }
+@media (max-width: 720px) { .namecard { padding: 22px 18px; border-radius: 22px; gap: var(--s4); } .namebrand span { font-size: 28px; } .namebrand svg.logo { width: 38px; height: 38px; } }
+
+/* a slow sheen across the one action that starts everything */
+:root .t5-btn.pri[data-testall]:not(:disabled) { position: relative; overflow: hidden; }
+:root .t5-btn.pri[data-testall]:not(:disabled)::after { content: ''; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 38%, rgba(255, 255, 255, 0.55) 50%, transparent 62%); transform: translateX(-120%); animation: sheen 5.5s var(--ease) infinite; pointer-events: none; }
+@keyframes sheen { 0%, 70% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+
+/* device entry points */
+.devbtn .ico { color: var(--brand-2); }
+.profdev { display: grid; gap: 4px; width: 100%; text-align: left; padding: 10px 12px; border-radius: 12px; cursor: pointer; color: var(--fg); border: 1px solid color-mix(in srgb, var(--brand-2) 28%, var(--line)); background: linear-gradient(135deg, color-mix(in srgb, var(--brand-1) 12%, var(--panel)), color-mix(in srgb, var(--brand-2) 7%, var(--panel))); transition: border-color var(--d1) var(--ease), transform var(--d1) var(--ease); }
+.profdev:hover { border-color: var(--brand-2); transform: translateY(-1px); }
+.profdev span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.profdev b { font-size: 13px; color: var(--neg-ink); }
+.prowbtn { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button.devdock { width: 100%; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.devgo { margin-left: auto; flex: none; font-size: 22px; line-height: 1; color: var(--muted); padding: 0 4px; }
+@media (max-width: 999px) { .topbar .devbtn { display: none; } }
+
+/* leaderboard: the podium rows glow in their rank colour */
+:root .lb-table tr.top1 td { background: linear-gradient(90deg, color-mix(in srgb, var(--pos) 13%, transparent), transparent 70%); }
+:root .lb-table tr.top2 td { background: linear-gradient(90deg, color-mix(in srgb, var(--neg) 10%, transparent), transparent 70%); }
+:root .lb-table tr.top3 td { background: linear-gradient(90deg, color-mix(in srgb, var(--est) 9%, transparent), transparent 70%); }
+:root .lb-table tr.top1 .lb-rank, :root .lb-table tr.top2 .lb-rank, :root .lb-table tr.top3 .lb-rank { font-size: 16px; }
+@media (prefers-reduced-motion: reduce) { :root .t5-btn.pri[data-testall]:not(:disabled)::after { animation: none; } }

@@ -171,7 +171,7 @@ function ProfileMenu() {
             <button className="btn2" type="submit" disabled={!v.trim() || v.trim() === name}>Save</button>
           </form>
           <div className="profrow"><span className="lbl">Theme</span><ThemeToggle /></div>
-          <p className="profline mono">{device}</p>
+          <button type="button" className="profdev" data-open-device onClick={() => { setOpen(false); openDeviceReport() }}><span className="mono">{device}</span><b>Full device report ›</b></button>
           <p className="profline"><Ico d={SHIELD} /> Models run on your device. Only your name and score go on the leaderboard. <SavedLine /></p>
           <BoardOptOut />
         </div>
@@ -194,6 +194,7 @@ function TopBar({ view }: { view: AppView }) {
         ))}
       </nav>
       <span className="grow" />
+      <button className="btn2 boardbtn devbtn" data-open-device onClick={openDeviceReport} title="Everything this page can read and measure about your device"><Ico d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M7 5h10a2 2 0 012 2v10a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2zM9.5 9.5h5v5h-5z" /><span className="boardtxt">Your device</span></button>
       <button className="btn2 boardbtn" data-board aria-label="Leaderboard" onClick={openLeaderboard}><Ico d={CUP} /><span className="boardtxt">Leaderboard</span></button>
       <ProfileMenu />
     </header>
@@ -212,6 +213,15 @@ function DetailsBar() {
   return <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>
 }
 
+/** The full device report (lazy): opened from the profile menu, the Machine view and the phone bottom bar. */
+const DeviceReport = lazy(() => import('./ui/DeviceReport'))
+export const openDeviceReport = () => window.dispatchEvent(new CustomEvent('ns-open-device'))
+function DeviceHost() {
+  const [open, setOpen] = useState(false)
+  useEffect(() => { const f = () => setOpen(true); addEventListener('ns-open-device', f); return () => removeEventListener('ns-open-device', f) }, [])
+  return open ? <Suspense fallback={null}><DeviceReport onClose={() => setOpen(false)} /></Suspense> : null
+}
+
 /** Phones, Machine view: the bottom bar names the real device (the prompt belongs to the Model view). */
 function DeviceDock() {
   // the device probe starts only once the Machine view is on screen, so the first paint of the Model view pays nothing for it
@@ -224,10 +234,11 @@ function DeviceDockLine() {
   const device = useDevice()
   const [name, ...rest] = device.split(' · ')
   return (
-    <div className="devdock" data-device-dock>
+    <button type="button" className="devdock" data-device-dock data-open-device onClick={openDeviceReport} aria-label={`${device}. Open the full device report`}>
       <span className="devico" aria-hidden><Ico d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M7 5h10a2 2 0 012 2v10a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2zM9.5 9.5h5v5h-5z" /></span>
       <span className="devtxt"><b>{name}</b><span className="mono">{rest.join(' · ')}</span></span>
-    </div>
+      <span className="devgo" aria-hidden>›</span>
+    </button>
   )
 }
 
@@ -424,6 +435,7 @@ export default function App() {
       <Dock />
       <NameCard />
       <BoardHost />
+      <DeviceHost />
     </div>
   )
 }

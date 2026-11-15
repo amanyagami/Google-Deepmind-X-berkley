@@ -691,6 +691,8 @@ export function classifyError(e: any, device = 'webgpu'): BrowserRunError {
 /* one pipeline at a time: loading another disposes the previous one first */
 const pool = new Map<string, { key: string; p: Promise<Loaded> }>()   // one pipeline per task kind: the language model and a small image model can both stay warm
 let ortRoot = ''   // where the page serves the ONNX runtime from (/ort/); a worker is told by the page
+/** The page serves the engine's WebAssembly files itself (/ort/), never a CDN: a worker is told the address, the page derives it. */
+export const ortBase = (): string => ortRoot || (typeof document !== 'undefined' ? new URL('ort/', document.baseURI).href : '')
 export const livePipelineKey = () => pool.get('text-generation')?.key ?? [...pool.values()][0]?.key ?? null
 export async function disposeAll(): Promise<void> {
   if (worker && !IN_WORKER) { try { await callWorker(worker, { type: 'dispose' }, {}) } catch { /* no worker to free */ } }
@@ -720,7 +722,7 @@ export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 
     if (prev) { try { await (await prev.p).pipe?.dispose?.() } catch { /* previous failed to load */ } }
     const tf: any = await import('@huggingface/transformers')
     try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
-    if (IN_WORKER && ortRoot) { try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: ortRoot + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: ortRoot + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
+    { const root = ortBase(); if (root) try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: root + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: root + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
     return { pipe: await tf.pipeline(task, repo, { device, dtype }), tf, repo }
   })()
   pool.set(task, { key, p })
@@ -1348,7 +1350,7 @@ async function vlmAnswer(q: { image: string; question: string; device: 'webgpu' 
     vlmLoaded = { key, p: (async () => {
       const tf: any = await import('@huggingface/transformers')
       try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
-      if (IN_WORKER && ortRoot) { try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: ortRoot + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: ortRoot + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
+      { const root = ortBase(); if (root) try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: root + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: root + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
       const processor = await tf.AutoProcessor.from_pretrained(VLM_REPO, { progress_callback })
       const model = await tf.AutoModelForVision2Seq.from_pretrained(VLM_REPO, { dtype: VLM_DTYPE(q.device), device: q.device, progress_callback })
       return { processor, model, tf }

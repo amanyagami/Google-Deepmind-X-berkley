@@ -79,7 +79,10 @@ export function PowerHUD() {
             {browser && !busy && <> Testing your system adds a power estimate.</>}
             <Hint label="About these numbers">A web page cannot read the CPU's power sensor. Everything here is what the browser lets this page see, sampled twice a second.</Hint>
           </p>
-          {browser && !busy && !power && <button type="button" className="btn sm" data-test-system onClick={askTestAll}>Test your system</button>}
+          <div className="prowbtn">
+            {browser && !busy && !power && <button type="button" className="btn sm" data-test-system onClick={askTestAll}>Test your system</button>}
+            <button type="button" className="btn2 sm" data-open-device onClick={() => window.dispatchEvent(new CustomEvent('ns-open-device'))}>Full device report</button>
+          </div>
         </>} />
       </div>
     )

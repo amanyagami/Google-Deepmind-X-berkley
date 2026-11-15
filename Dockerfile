@@ -7,9 +7,8 @@ COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 COPY . ./
 # dist/_headers stays: the server reads its security headers from it (and never serves it)
-RUN npx vite build \
- && find dist -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.json' -o -name '*.wasm' -o -name '*.svg' \) \
-      -size +1k -exec gzip -9 -k {} \;
+# the build itself writes a .br and a .gz next to each file (vite.config.ts, precompress)
+RUN npx vite build
 
 # Stage 2: the server's production dependencies only (@google-cloud/firestore).
 FROM node:22-alpine AS deps
