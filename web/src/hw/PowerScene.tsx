@@ -11,9 +11,9 @@ import { aspectFit, FpsCap, useTheme, WheelScrollsPage } from '../aspect'
 import { CameraControls, Environment, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
-import { peaksOf, powerNow, useHW, type PowerMode, type PowerSample } from './hwStore'
+import { peaksOf, powerNow, useHW, useHWThrottled, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
-import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
+import { Chip, FirstFrame, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
@@ -46,7 +46,7 @@ export function LiveLine({ k }: { k: LiveKey }) {
 
 /** The same live readout without its own wrapper, for use inside a label chip. */
 function LiveBare({ k }: { k: LiveKey }) {
-  const t = useHW((s) => liveText(k, s.latest))
+  const t = useHWThrottled((s) => liveText(k, s.latest), 250)
   return t ? <><span className="livedot" aria-hidden />{t}</> : null
 }
 
@@ -601,7 +601,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   const st = useStage(active)
   const light = useTheme() === 'light'
   PT.light = light
-  const summary = useHW((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`)
+  const summary = useHWThrottled((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`, 1000)
   useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true })
   return (
     <div ref={st.wrap} data-stage style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
@@ -611,6 +611,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
           <KitProvider>
             {st.run && recording && !baseline && <FpsCap fps={30} />}
             <SlowWatch onStep={st.step} />
+            <FirstFrame name="machine" />
             <color attach="background" args={[light ? '#eef0fb' : '#05080f']} />
             <WheelScrollsPage />
             <fog attach="fog" args={[light ? '#eef0fb' : '#05080f', 26, 54]} />

@@ -116,6 +116,13 @@ export function useStage(shown = true) {
 
 /** Adaptive quality: 10 frames over 28 ms in a row steps down (DPR 1, then no bloom); 6 s of frames under 20 ms steps
  *  back up one level. Ignores the first second and tab switches. */
+/** Marks the first drawn 3D frame of a scene (performance.mark 'ns:first-frame' and 'ns:first-frame:<name>'). */
+export function FirstFrame({ name }: { name: string }) {
+  const done = useRef(false)
+  useFrame(() => { if (done.current) return; done.current = true; try { performance.mark('ns:first-frame', { detail: name }); performance.mark(`ns:first-frame:${name}`) } catch { /* ignore */ } })
+  return null
+}
+
 export function SlowWatch({ onStep }: { onStep: (d: 1 | -1) => void }) {
   const slow = useRef(0), good = useRef(0), age = useRef(0)
   useFrame((_, dt) => {
@@ -1066,6 +1073,7 @@ export function ZooScene() {
             <WheelScrollsPage />
             <fog attach="fog" args={[light ? '#eef0fb' : '#060913', 30, 56]} />
             <SlowWatch onStep={st.step} />
+            <FirstFrame name="model" />
             <ambientLight intensity={0.4} />
             <Environment resolution={64} environmentIntensity={0.5}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
