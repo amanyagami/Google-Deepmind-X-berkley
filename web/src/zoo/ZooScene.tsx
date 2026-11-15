@@ -8,6 +8,7 @@ import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@rea
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { create } from 'zustand'
+import { createGuide, type Guide } from '../ui/camera'
 import { reach, useZoo, type Inspect, type NetId } from './zooStore'
 import { useStore } from '../store'
 import { InspectTip, isInspectOn, useInspectOn } from '../ui/charts'
@@ -75,7 +76,7 @@ function FloorGrid({ light }: { light: boolean }) {
 
 /** Light theme flag for the drawing loops (set by the stage each render). In light mode values read as deeper amber/blue on a pale ground, no glow. */
 const TH = { light: false }
-const L_INK = new THREE.Color('#d5daf0'), L_AMBER = new THREE.Color('#f08a00'), L_BLUE = new THREE.Color('#2f7be6')
+const L_INK = new THREE.Color('#aeb7dc'), L_AMBER = new THREE.Color('#e07800'), L_BLUE = new THREE.Color('#1f66d1')
 function valueColor(v: number, max: number, out: THREE.Color, lit = 1) {
   const x = Math.max(-1, Math.min(1, v / (max || 1)))
   if (TH.light) return out.copy(L_INK).lerp(x >= 0 ? L_AMBER : L_BLUE, Math.min(1, Math.abs(x) * 1.15) * lit)
@@ -119,6 +120,8 @@ const CSS = `
 .nsc .lead::after{content:"";position:absolute;right:-2px;top:-3px;width:5px;height:5px;border-radius:50%;background:#9aa5c7}
 .nsw{font:500 11.5px var(--mono,ui-monospace,monospace);color:var(--fg,#e8ecf8);background:color-mix(in srgb,var(--bg,#060913) 94%,transparent);border-radius:6px;padding:0 5px;white-space:nowrap;pointer-events:none}
 .nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 11.5px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
+.nsreset{position:absolute;right:12px;top:60px;animation:ns-pop .2s ease both;z-index:6;width:40px;height:40px;display:grid;place-items:center;border-radius:12px;border:1px solid var(--line,#27314f);background:color-mix(in srgb,var(--panel,#0f1526) 88%,transparent);color:var(--fg,#e8ecf8);font:600 18px/1 var(--body,system-ui);cursor:pointer;box-shadow:var(--sh-1,none);backdrop-filter:blur(6px)}
+.nsreset:hover{border-color:color-mix(in srgb,var(--brand-1,#7c5cff) 55%,var(--line,#27314f))}
 .nssr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 `
 if (typeof document !== 'undefined' && !document.getElementById('ns-stage-css')) {
@@ -126,7 +129,7 @@ if (typeof document !== 'undefined' && !document.getElementById('ns-stage-css'))
 }
 
 /** Test hooks (S10): the DPR cap in force and whether a camera move is in flight. */
-export const SCENE: { dprCap: number; camera: { tweening: boolean } } = { dprCap: 2, camera: { tweening: false } }
+export const SCENE: { dprCap: number; camera: { tweening: boolean }; cams: Record<string, Guide | undefined> } = { dprCap: 2, camera: { tweening: false }, cams: {} }
 if (typeof window !== 'undefined') (window as any).__scene = SCENE
 let tweenT = 0
 export function markTween(ms: number) { SCENE.camera.tweening = true; window.clearTimeout(tweenT); tweenT = window.setTimeout(() => { SCENE.camera.tweening = false }, ms) }
@@ -197,17 +200,51 @@ export function SlowWatch({ onStep }: { onStep: (d: 1 | -1) => void }) {
 }
 
 /** Esc (or any callback) only while the pointer or focus is inside the stage, so it never fights the page's own Esc. */
-export function useStageKeys(wrap: React.RefObject<HTMLElement | null>, onEsc: () => boolean) {
+export function useStageKeys(wrap: React.RefObject<HTMLElement | null>, onEsc: () => boolean, onHome?: () => void) {
   const cb = useRef(onEsc); cb.current = onEsc
+  const hb = useRef(onHome); hb.current = onHome
   useEffect(() => {
     const el = wrap.current; if (!el) return
     let inside = false
     const enter = () => { inside = true }, leave = () => { inside = el.contains(document.activeElement) }
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && inside && cb.current()) e.preventDefault() }
+    const key = (e: KeyboardEvent) => {
+      if (!inside && !el.matches(':hover') && !el.contains(document.activeElement)) return
+      const t = e.target as HTMLElement | null
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
+      if (e.key === 'Escape' && cb.current()) e.preventDefault()
+      else if (e.key === 'Home' && hb.current) { e.preventDefault(); hb.current() }
+    }
     el.addEventListener('pointerenter', enter); el.addEventListener('pointerleave', leave); el.addEventListener('focusin', enter); el.addEventListener('focusout', leave)
     document.addEventListener('keydown', key)
     return () => { el.removeEventListener('pointerenter', enter); el.removeEventListener('pointerleave', leave); el.removeEventListener('focusin', enter); el.removeEventListener('focusout', leave); document.removeEventListener('keydown', key) }
   }, [wrap])
+}
+
+/** Reset view: the same icon button in the same place in both scenes (bottom right, above the timeline or the bottom
+ *  card), shown only when the camera is not at home. Home key and a double click on empty space do the same. */
+export function ResetView({ scene, onReset }: { scene: 'model' | 'machine'; onReset: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  const [show, setShow] = useState(false)
+  useEffect(() => {
+    const tick = () => {
+      const g = SCENE.cams[scene], b = ref.current, w = b?.parentElement
+      setShow(!!g && !g.atHome())
+      if (!b || !w) return
+      // sit above whatever covers the bottom-right corner of the stage (timeline, cards, bulbs): walk up from the bottom
+      // until both ends of the button's column are free (only the scene itself, or this button, under them)
+      // (and left of an open drawer): first free spot scanning right-to-left, bottom-to-top
+      const W = w.getBoundingClientRect()
+      const free = (x: number, y: number) => { const e = document.elementFromPoint(x, y); return !!e && (e === b || b.contains(e) || w.contains(e)) && !e.closest('.nsc') }
+      let spot: [number, number] | null = null
+      for (let x = W.right - 32; x > W.left + 32 && !spot; x -= 48)
+        for (let y = W.bottom - 12; y > W.top + 96; y -= 8) if (free(x, y) && free(x, y - 40) && free(x - 18, y - 20) && free(x + 18, y - 20)) { spot = [x, y - 40]; break }
+      const [sx, sy] = spot ?? [W.right - 32, W.top + 56]
+      b.style.top = `${Math.round(sy - W.top)}px`; b.style.left = `${Math.round(sx - 20 - W.left)}px`; b.style.right = 'auto'
+    }
+    tick(); const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [scene])
+  return <button ref={ref} type="button" className="nsreset" aria-label="Reset view (Home)" title="Reset view (Home)" data-reset-view={scene} style={{ display: show ? undefined : 'none' }} onClick={onReset}><span aria-hidden>⟲</span></button>
 }
 
 /* -------------------------------------------------------------------------------------- camera fit */
@@ -324,6 +361,10 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
       if (ld) { if (far) { ld.style.display = 'block'; ld.style.width = `${Math.hypot(dx, dy)}px`; ld.style.transform = `rotate(${(Math.atan2(-dy, -dx) * 180 / Math.PI).toFixed(1)}deg)` } else ld.style.display = 'none' }
     }
   }
+  // roving tabindex: one Tab stop per stage (the focused or last-used chip, else the leftmost), arrows move inside
+  const btns = chips.filter((b) => b.it.el.tagName === 'BUTTON' && b.it.show).sort((a, b) => a.x - b.x || a.y - b.y)
+  const cur = btns.find((b) => b.it.el === document.activeElement) ?? btns.find((b) => b.it.el.dataset.rove === '1') ?? btns[0]
+  for (const b of chips) if (b.it.el.tagName === 'BUTTON') { const ti = b === cur ? '0' : '-1'; if (b.it.el.getAttribute('tabindex') !== ti) b.it.el.setAttribute('tabindex', ti) }
   for (const b of words) { const v = b.it.show ? '' : 'hidden'; if (b.it.el.style.visibility !== v) { b.it.el.style.visibility = v; moved = true } }
   return moved
 }
@@ -348,6 +389,17 @@ export function KitProvider({ children, top = 48 }: { children: ReactNode; top?:
     return () => window.clearInterval(id)
   }, [reg, gl, top])
   return <KitCtx.Provider value={reg}>{children}</KitCtx.Provider>
+}
+
+/** Arrow keys between the label chips of one stage, in left-to-right (then top-to-bottom) order. */
+function rove(reg: Reg | null, from: HTMLElement, dir: 1 | -1) {
+  if (!reg) return
+  const list = [...reg.values()].map((i) => i.el).filter((e) => e.tagName === 'BUTTON' && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden')
+    .map((e) => ({ e, r: e.getBoundingClientRect() })).sort((a, b) => a.r.left - b.r.left || a.r.top - b.r.top).map((x) => x.e)
+  const i = list.indexOf(from); if (i < 0 || !list.length) return
+  const next = list[(i + dir + list.length) % list.length]
+  for (const e of list) { e.dataset.rove = e === next ? '1' : ''; e.setAttribute('tabindex', e === next ? '0' : '-1') }
+  next.focus()
 }
 
 export interface ChipProps {
@@ -382,7 +434,7 @@ export function Chip(p: ChipProps) {
     <Html position={p.pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
       {p.onClick
         ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label data-block={p.name} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
-            onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={p.onKey} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
+            onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={(e) => { p.onKey?.(e); if (e.defaultPrevented) return; if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); rove(reg, e.currentTarget, 1) } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); rove(reg, e.currentTarget, -1) } }} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
         : <div ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label>{inner}</div>}
     </Html>
   )
@@ -501,8 +553,8 @@ function Plate({ g, def }: { g: Group; def?: SceneDef }) {
   } : {}
   return (
     <group position={[cx, 0, cz]}>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={0.14} depthWrite={false} toneMapped={false} /></mesh>
-      <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></lineSegments>
+      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={TH.light ? 0.24 : 0.14} depthWrite={false} toneMapped={false} /></mesh>
+      <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={TH.light ? 1 : 0.7} toneMapped={false} /></lineSegments>
       {extra && <lineSegments geometry={extra} position-y={0.01}><lineBasicMaterial color={t.tint} transparent opacity={g.type === 'conv' ? 0.3 : 0.55} toneMapped={false} /></lineSegments>}
       {g.type === 'recurrent' && <mesh rotation-x={-Math.PI / 2} position-y={0.05} scale={[w / 2 - 0.2, d / 2 - 0.1, 1]}><torusGeometry args={[1, 0.018, 6, 64]} /><meshBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></mesh>}
     </group>
@@ -1076,6 +1128,13 @@ function Rig() {
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
   const scene = useThree((s) => s.scene)
   const last = useRef({ w: 0, h: 0, net: '', key: '', ins: null as Inspect, tid: 0 })
+  const guide = useRef<Guide | null>(null)
+  useEffect(() => {
+    const c = ctl.current; if (!c) return
+    const g = createGuide(c, 'model', () => DEFS[Z().net]?.bounds ?? FALLBACK)
+    guide.current = g; SCENE.cams.model = g
+    return () => { g.dispose(); if (SCENE.cams.model === g) SCENE.cams.model = undefined }
+  }, [])
   // dimming rule + outline box follow the selection
   useEffect(() => {
     const def = DEFS[net]
@@ -1096,13 +1155,12 @@ function Rig() {
       const box = sb ?? whole
       const dir = new THREE.Vector3()
       if (kind === 'net' || !Number.isFinite(c.distance) || c.distance < 1e-3) { const [p0, t0] = CAM[net]; dir.set(p0[0] - t0[0], p0[1] - t0[1], p0[2] - t0[2]) }
-      else { c.getPosition(_v1); c.getTarget(_v2); dir.copy(_v1).sub(_v2); if (dir.lengthSq() < 1e-6) dir.set(0, 0.6, 0.8) }
+      else { const P = guide.current?.pose; if (P) { _v1.fromArray(P.pos); _v2.fromArray(P.target) } else { c.getPosition(_v1); c.getTarget(_v2) } dir.copy(_v1).sub(_v2); if (dir.lengthSq() < 1e-6) dir.set(0, 0.6, 0.8) }
       const f = fitBox(box, dir, camera.fov, size.width, size.height, TOP_SAFE)
       const animate = !reduceMotion && kind !== 'resize'
-      window.clearTimeout(L.tid)
-      if (kind === 'select') { c.smoothTime = 0.12; L.tid = window.setTimeout(() => { if (ctl.current) ctl.current.smoothTime = 0.7 }, 700) } else c.smoothTime = 0.7
       if (animate) markTween(kind === 'select' ? 450 : 900)
-      c.setLookAt(f.pos.x, f.pos.y, f.pos.z, f.target.x, f.target.y, f.target.z, animate)
+      if (guide.current) guide.current.set(f.pos, f.target, animate, !!sb, kind === 'select' ? 0.12 : 0.6)
+      else c.setLookAt(f.pos.x, f.pos.y, f.pos.z, f.target.x, f.target.y, f.target.z, animate)
     })
     return () => cancelAnimationFrame(id)
   }, [net, key, inspect, size.width, size.height, camera])
@@ -1111,7 +1169,7 @@ function Rig() {
     ctl.current.getTarget(_v2); const d = camera.position.distanceTo(_v2)
     f.near = d * 0.97 + 8; f.far = d * 2.0 + 24
   })
-  return <CameraControls ref={ctl} makeDefault smoothTime={0.7} minDistance={2} maxDistance={126} maxPolarAngle={Math.PI * 0.48} />
+  return <CameraControls ref={ctl} makeDefault smoothTime={0.7} />
 }
 
 /** Outline of the hovered thing (white) and of the selected thing (amber): a wire box. */
@@ -1152,12 +1210,13 @@ export function ZooScene() {
     const sel = s.inspect ? ` Selected: ${(s.inspect.kind === 'block' ? `block ${(s.inspect.layer ?? 0) + 1} ${s.inspect.part ?? ''}` : s.inspect.kind === 'token' ? `token ${(s.inspect.index ?? 0) + 1}` : s.inspect.name ?? s.inspect.kind)}.` : ''
     return `${def?.summary() ?? ''}${top}${sel}`
   })
-  useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true })
+  const reset = () => { if (Z().inspect) Z().setInspect(null); else SCENE.cams.model?.home() }
+  useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true }, reset)
   useEffect(() => { Z().setInspect(null); useUI.setState({ hover: null }); setCursor(false) }, [net])
   return (
     <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
       <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false }}
-        onPointerMissed={(e) => { if (e.type === 'dblclick') Z().select(null); else if (e.type === 'click') Z().setInspect(null) }}>
+        onPointerMissed={(e) => { if (e.type === 'dblclick') { Z().select(null); reset() } else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
             <Backdrop light={light} />
@@ -1186,6 +1245,7 @@ export function ZooScene() {
         </LiteCtx.Provider>
       </Canvas>
       <Tip />
+      <ResetView scene="model" onReset={reset} />
       <div className="nssr" role="img" aria-label={summary} />
     </div>
   )
