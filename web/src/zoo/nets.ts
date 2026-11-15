@@ -171,40 +171,10 @@ export const FLOPS: Record<string, string> = {
   vlm: 'vision 16 tokens ≈ 33 k · text ≈ 26 tokens × 3.5 k per word written',
 }
 
-/* ------------------------------------------------------------------------------ stress tests
- * Change the 8x8 image the way real input goes wrong, then see which networks still read it. */
-
-export interface Fx { noise: number; dx: number; dy: number; thick: number; seed: number }
-export const FX0: Fx = { noise: 0, dx: 0, dy: 0, thick: 0, seed: 1 }
-export const isNeutral = (f: Fx) => !f.noise && !f.dx && !f.dy && !f.thick
-
-/** Small deterministic random generator, so the same seed always gives the same noise. */
-function rng(seed: number) {
-  let s = (seed * 2654435761) >>> 0 || 1
-  return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296 }
-}
-
-/** Thicker or thinner strokes, then a shift by whole pixels, then noise blended in (0 = clean, 1 = pure noise). */
-export function applyFx(img: number[], f: Fx): number[] {
-  let a = img.slice(0, 64)
-  const at = (x: number[], c: number, r: number) => (c < 0 || r < 0 || c > 7 || r > 7 ? 0 : x[r * 8 + c])
-  if (f.thick) {
-    const src = a
-    a = src.map((v, i) => {
-      const c = i % 8, r = (i / 8) | 0
-      const nb = [at(src, c - 1, r), at(src, c + 1, r), at(src, c, r - 1), at(src, c, r + 1)]
-      return f.thick > 0 ? Math.max(v, ...nb.map((n) => n * 0.8)) : Math.min(v, nb.reduce((s, n) => s + n, 0) / 4)
-    })
-  }
-  if (f.dx || f.dy) { const src = a; a = src.map((_, i) => at(src, (i % 8) - f.dx, ((i / 8) | 0) - f.dy)) }
-  if (f.noise) { const r = rng(f.seed); a = a.map((v) => Math.min(1, Math.max(0, (1 - f.noise) * v + f.noise * r()))) }
-  return a
-}
-
 const NUM = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
 
 /** Which digit a network reads, and how sure it is. The VLM writes a caption: its digit is the number word in it. */
-export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number | null; conf: number; caption?: string } {
+export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number | null; conf: number; caption?: string; probs?: number[] } {
   if (net === 'vlm') {
     const o = vlm(p.weights, img, p.vocab!)
     const words = o.ids.slice(1).map((i: number) => p.vocab![i])
@@ -217,22 +187,10 @@ export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number |
   const fn = { mlp, cnn, rnn, vit }[net]
   const probs: number[] = fn(p.weights, img).probs
   const d = probs.indexOf(Math.max(...probs))
-  return { digit: d, conf: probs[d] }
+  return { digit: d, conf: probs[d], probs }
 }
 
-export const SWEEP_LEVELS = [0, 0.15, 0.3, 0.45, 0.6, 0.75]
-export interface Sweep { levels: number[]; acc: Partial<Record<NetId, number[]>>; n: number }
 export interface Speed { us: number; n: number }
-
-/** Accuracy of one network on the test digits at each noise level (3 noise draws per image, so it is not one lucky seed). */
-export function accuracyAt(net: NetId, p: Pack, images: number[][], labels: number[], level: number): number {
-  let ok = 0, tot = 0
-  const draws = level ? 3 : 1
-  images.forEach((im, k) => {
-    for (let d = 0; d < draws; d++) { tot++; if (readDigit(net, p, applyFx(im, { ...FX0, noise: level, seed: 1000 * k + d + 7 })).digit === labels[k]) ok++ }
-  })
-  return ok / Math.max(1, tot)
-}
 
 /** Time per image on this device, in microseconds: the full forward pass (for the VLM, writing the whole caption). */
 export function timeNet(net: NetId, p: Pack, images: number[][]): Speed {
@@ -324,4 +282,78 @@ export function readCheck(r: any): string | null {
   if (typeof r === 'string') return r
   if (r.ok === true || r.valid === true) return null
   return String(r.message ?? r.error ?? r.reason ?? 'That input does not work.')
+}
+
+/* ================================================================================ draw pad (R2-12) */
+/**
+ * What the networks see of a drawing. `ink` is an n by n grid of ink amounts (0 to 1). Like MNIST, the digit is cropped
+ * to its ink box, scaled so its longer side is 7 pixels, centred in the 8 by 8 frame, and averaged down (antialiased).
+ * The strongest pixel is 1, as in the training digits. A blank pad gives all zeros.
+ */
+export function inkTo8x8(ink: ArrayLike<number>, n: number): number[] {
+  let x0 = n, y0 = n, x1 = -1, y1 = -1
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (ink[y * n + x] > 0.08) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y }
+  const out = new Array(64).fill(0)
+  if (x1 < 0) return out
+  const w = x1 - x0 + 1, h = y1 - y0 + 1, side = Math.max(w, h), k = side / 7   // source pixels per output pixel
+  const cx = (x0 + x1 + 1) / 2, cy = (y0 + y1 + 1) / 2
+  const S = 4                                                                    // samples per output pixel, each way
+  let mx = 0
+  for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) {
+    let a = 0
+    for (let sy = 0; sy < S; sy++) for (let sx = 0; sx < S; sx++) {
+      const x = Math.floor(cx + (i + (sx + 0.5) / S - 4) * k), y = Math.floor(cy + (j + (sy + 0.5) / S - 4) * k)
+      if (x >= 0 && y >= 0 && x < n && y < n) a += ink[y * n + x]
+    }
+    out[j * 8 + i] = a / (S * S)
+    if (out[j * 8 + i] > mx) mx = out[j * 8 + i]
+  }
+  return mx > 0 ? out.map((v) => Math.min(1, v / mx)) : out
+}
+
+/** Several networks, one answer: the average of their class probabilities (the VLM counts as its digit). */
+export function consensus(reads: { digit: number | null; conf: number; probs?: number[] }[]): { top: number; pct: number; second: number | null; pct2: number } {
+  const agg = new Array(10).fill(0)
+  let n = 0
+  for (const r of reads) {
+    if (r.digit === null) continue
+    n++
+    for (let d = 0; d < 10; d++) agg[d] += r.probs ? r.probs[d] : d === r.digit ? r.conf : (1 - r.conf) / 9
+  }
+  if (!n) return { top: 0, pct: 0, second: null, pct2: 0 }
+  const m = agg.map((v) => v / n), order = [...m.keys()].sort((a, b) => m[b] - m[a])
+  return { top: order[0], pct: m[order[0]], second: order[1], pct2: m[order[1]] }
+}
+
+/* ================================================================================ languages (R2-1) */
+export type LangId = 'en' | 'es' | 'fr' | 'de' | 'hi' | 'zh' | 'ar' | 'pt'
+export const LANGS: { id: LangId; name: string; dir: 'ltr' | 'rtl'; prompt: string; review: string }[] = [
+  { id: 'en', name: 'English', dir: 'ltr', prompt: 'The capital of France is', review: 'I really enjoyed this film, it was wonderful.' },
+  { id: 'es', name: 'Español', dir: 'ltr', prompt: 'La capital de Francia es', review: 'Disfruté mucho esta película, fue maravillosa.' },
+  { id: 'fr', name: 'Français', dir: 'ltr', prompt: 'La capitale de la France est', review: "J'ai vraiment aimé ce film, il était magnifique." },
+  { id: 'de', name: 'Deutsch', dir: 'ltr', prompt: 'Die Hauptstadt von Frankreich ist', review: 'Ich habe diesen Film sehr genossen, er war wunderbar.' },
+  { id: 'hi', name: 'हिन्दी', dir: 'ltr', prompt: 'फ्रांस की राजधानी है', review: 'मुझे यह फिल्म बहुत पसंद आई, यह शानदार थी।' },
+  { id: 'zh', name: '中文', dir: 'ltr', prompt: '法国的首都是', review: '我真的很喜欢这部电影，太精彩了。' },
+  { id: 'ar', name: 'العربية', dir: 'rtl', prompt: 'عاصمة فرنسا هي', review: 'لقد استمتعت حقًا بهذا الفيلم، كان رائعًا.' },
+  { id: 'pt', name: 'Português', dir: 'ltr', prompt: 'A capital da França é', review: 'Gostei muito deste filme, foi maravilhoso.' },
+]
+export const langPrompt = (id: LangId, task: string | null) => { const l = LANGS.find((x) => x.id === id) ?? LANGS[0]; return task === 'text-classification' ? l.review : l.prompt }
+/** Does this model know more than English? A name and architecture check, until the catalog says it outright. */
+export function isMultilingual(m: { repo?: string; arch?: string } | null | undefined): boolean {
+  if (!m) return false
+  const r = `${m.repo ?? ''} ${m.arch ?? ''}`.toLowerCase()
+  if (/\.en\b|-en\b|english/.test(r)) return false
+  return /multiling|xlm|mbert|bloom|qwen|gemma|llama-3|llama3|mt5|mbart|smollm3|aya|whisper|mistral|labse|e5/.test(r)
+}
+/** The language of a text, by script and a few common words: enough to say which picker entry it matches. */
+export function guessLang(text: string): LangId {
+  if (/[ऀ-ॿ]/.test(text)) return 'hi'
+  if (/[一-鿿]/.test(text)) return 'zh'
+  if (/[؀-ۿ]/.test(text)) return 'ar'
+  const t = ` ${text.toLowerCase()} `
+  if (/ (la|el|es|de|los|las|una|capital)\b/.test(t) && /(ñ|ó|í| es | del )/.test(t)) return 'es'
+  if (/ (la|le|les|est|de|des|une)\b/.test(t) && /(é|è|ç|capitale| est )/.test(t)) return 'fr'
+  if (/ (die|der|das|ist|von|und)\b/.test(t)) return 'de'
+  if (/ (da|do|os|as|uma|é)\b/.test(t) && /(ã|ç|õ| é )/.test(t)) return 'pt'
+  return 'en'
 }

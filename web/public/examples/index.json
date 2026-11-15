@@ -24,6 +24,16 @@
   "task": "text-generation"
  },
  {
+  "id": "smollm2-i",
+  "title": "SmolLM2 135M Instruct (browser)",
+  "repo": "HuggingFaceTB/SmolLM2-135M-Instruct",
+  "task": "text-generation",
+  "input": {
+   "kind": "text",
+   "text": "The capital of France is"
+  }
+ },
+ {
   "id": "distilgpt2",
   "title": "DistilGPT-2 (browser)",
   "repo": "Xenova/distilgpt2",
@@ -67,6 +77,26 @@
   "id": "whisper",
   "title": "Whisper tiny (speech)",
   "repo": "Xenova/whisper-tiny.en",
+  "task": "automatic-speech-recognition",
+  "input": {
+   "kind": "audio",
+   "url": "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/jfk.wav"
+  }
+ },
+ {
+  "id": "mobilevit",
+  "title": "MobileViT small (image)",
+  "repo": "Xenova/mobilevit-small",
+  "task": "image-classification",
+  "input": {
+   "kind": "image",
+   "url": "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/tiger.jpg"
+  }
+ },
+ {
+  "id": "whisper-multi",
+  "title": "Whisper tiny (many languages)",
+  "repo": "Xenova/whisper-tiny",
   "task": "automatic-speech-recognition",
   "input": {
    "kind": "audio",

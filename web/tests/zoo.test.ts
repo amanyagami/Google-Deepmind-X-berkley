@@ -94,6 +94,36 @@ test('S6 breadcrumb and smaller-model suggestion', () => {
   assert.equal(smallerSuggestion(rows[0], rows)!.id, 'c')
 
 })
+import { consensus, inkTo8x8, readDigit } from '../src/zoo/nets'
+test('S6 draw pad: an off-centre, rescaled drawing is read as well as the clean digit', () => {
+  const packs = { mlp: load('mlp'), cnn: load('cnn'), rnn: load('rnn'), vit: load('vit') } as const
+  const N = 160
+  let ok = 0, total = 0
+  digits.images.slice(0, 40).forEach((im: number[], k: number) => {
+    const f = 6 + (k % 4) * 2, ox = 8 + ((k * 7) % 40), oy = 6 + ((k * 11) % 40)   // 48 to 72 px digits, anywhere on the pad
+    const ink = new Float32Array(N * N)
+    for (let y = 0; y < 8 * f; y++) for (let x = 0; x < 8 * f; x++) ink[(oy + y) * N + ox + x] = im[Math.floor(y / f) * 8 + Math.floor(x / f)]
+    const img = inkTo8x8(ink, N)
+    assert.equal(img.length, 64); assert.ok(Math.max(...img) === 1)
+    const c = consensus((Object.keys(packs) as (keyof typeof packs)[]).map((n) => readDigit(n, packs[n], img)))
+    total++; if (c.top === digits.labels[k]) ok++
+  })
+  assert.ok(ok / total > 0.8, `centred reads ${ok}/${total}`)
+  assert.deepEqual(inkTo8x8(new Float32Array(N * N), N), new Array(64).fill(0))
+})
+
+import { LANGS, guessLang, isMultilingual, langPrompt } from '../src/zoo/nets'
+test('S6 languages: eight prompts, each in its own script, and the model check', () => {
+  assert.equal(LANGS.length, 8)
+  assert.equal(new Set(LANGS.map((l) => l.prompt)).size, 8)
+  for (const l of LANGS) assert.equal(guessLang(l.prompt), l.id, l.name)
+  assert.equal(langPrompt('es', 'text-generation'), 'La capital de Francia es')
+  assert.notEqual(langPrompt('fr', 'text-classification'), langPrompt('fr', 'text-generation'))
+  assert.equal(isMultilingual({ repo: 'Xenova/distilgpt2', arch: 'gpt2' }), false)
+  assert.equal(isMultilingual({ repo: 'Qwen/Qwen2.5-0.5B', arch: 'qwen2' }), true)
+  assert.equal(isMultilingual({ repo: 'Xenova/whisper-tiny.en', arch: 'whisper' }), false)
+  assert.equal(isMultilingual({ repo: 'Xenova/whisper-tiny', arch: 'whisper' }), true)
+})
 /* ===================================================================================== S4 models engine (fenced block) */
 import { describe as s4describe, it as s4it, expect as s4expect, vi as s4vi, beforeEach as s4beforeEach, afterEach as s4afterEach } from 'vitest'
 import * as S4 from '../src/api'

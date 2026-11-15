@@ -2,64 +2,111 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
-import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, isNeutral, readCheck, readDigit, smallerSuggestion, startLabel } from './nets'
+import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel, consensus, inkTo8x8, LANGS, langPrompt, isMultilingual, type LangId } from './nets'
 import { locateZ, NETS, STAGES, totalZ, useZoo, type CatRow, type DigitNet, type NetId } from './zooStore'
 import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
-import { Hint, Inspector, TopBars, inspectCrumb, inspectParent } from '../ui/charts'
+import { Explainer, Hint, Inspector, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
 /* ------------------------------------------------------------------------------- drawing pad */
-const paintPx = (c: CanvasRenderingContext2D, img: number[], s: number) => {
-  for (let i = 0; i < 64; i++) { const v = img[i]; c.fillStyle = `rgb(${Math.round(20 + 235 * v)},${Math.round(26 + 143 * v)},${Math.round(50 + 27 * v)})`; c.fillRect((i % 8) * s, Math.floor(i / 8) * s, s - 1, s - 1) }
-}
+const GLYPH: Record<DigitNet, string> = { mlp: '●', cnn: '■', rnn: '▲', vit: '◆', vlm: '★' }
+const PAD = 280, BRUSH = 8
+type Pt = { x: number; y: number }
 
+/** One big square pad: thick smooth strokes (mouse, touch, pen), live guesses from all five networks, Clear, Undo, 0 to 9. */
 function DrawPad() {
-  const base = useZoo((s) => s.base)
-  const img = useZoo((s) => s.img)
-  const stressed = useZoo((s) => !isNeutral(s.fx))
-  const ref = useRef<HTMLCanvasElement>(null)
-  const seen = useRef<HTMLCanvasElement>(null)
-  const drawing = useRef(false)
-  useEffect(() => { paintPx(ref.current!.getContext('2d')!, base, 24) }, [base])
-  useEffect(() => { if (seen.current) paintPx(seen.current.getContext('2d')!, img, 12) }, [img, stressed])
-  const paint = (e: React.PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect()
-    const x = ((e.clientX - r.left) / r.width) * 8, y = ((e.clientY - r.top) / r.height) * 8
-    const next = [...useZoo.getState().base]
-    for (let i = 0; i < 64; i++) {
-      const dx = (i % 8) + 0.5 - x, dy = Math.floor(i / 8) + 0.5 - y, d2 = dx * dx + dy * dy
-      if (d2 < 1.6) next[i] = Math.min(1, next[i] + (d2 < 0.35 ? 0.55 : 0.18))
-    }
-    useZoo.getState().setImg(next, null)
+  const { packs, digits, img } = useZoo(useShallow((s) => ({ packs: s.packs, digits: s.digits, img: s.img })))
+  const cv = useRef<HTMLCanvasElement>(null)
+  const strokes = useRef<Pt[][]>([])
+  const live = useRef<Pt[] | null>(null)
+  const sample = useRef<number[] | null>(useZoo.getState().label !== null ? useZoo.getState().base : null)
+  const raf = useRef(0)
+  const [inked, setInked] = useState(!!sample.current)
+  const [nStrokes, setN] = useState(0)
+  const ctx = () => cv.current!.getContext('2d', { willReadFrequently: true })!
+  const line = (c: CanvasRenderingContext2D, pts: Pt[]) => {
+    c.beginPath(); c.moveTo(pts[0].x, pts[0].y)
+    if (pts.length === 1) c.lineTo(pts[0].x + 0.01, pts[0].y)
+    for (let i = 1; i < pts.length; i++) c.quadraticCurveTo(pts[i - 1].x, pts[i - 1].y, (pts[i - 1].x + pts[i].x) / 2, (pts[i - 1].y + pts[i].y) / 2)
+    c.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y); c.stroke()
   }
+  const redraw = () => {
+    const c = ctx(), ink = getComputedStyle(cv.current!).color
+    c.clearRect(0, 0, PAD, PAD); c.fillStyle = ink; c.strokeStyle = ink; c.lineWidth = BRUSH * 2; c.lineCap = 'round'; c.lineJoin = 'round'
+    if (sample.current) { const k = PAD / 8; sample.current.forEach((v, i) => { c.globalAlpha = Math.min(1, v); c.fillRect((i % 8) * k, Math.floor(i / 8) * k, k + 0.5, k + 0.5) }); c.globalAlpha = 1 }
+    for (const st of strokes.current) line(c, st)
+    if (live.current) line(c, live.current)
+  }
+  /** Read the pad, centre it like MNIST, and hand the 8 by 8 picture to the networks: at most once per frame. */
+  const commit = () => {
+    raf.current = 0
+    const d = ctx().getImageData(0, 0, PAD, PAD).data, ink = new Float32Array(PAD * PAD)
+    for (let i = 0; i < ink.length; i++) ink[i] = d[i * 4 + 3] / 255
+    useZoo.getState().setImg(inkTo8x8(ink, PAD), null)
+    setInked(strokes.current.length > 0 || !!live.current || !!sample.current)
+    setN(strokes.current.length)
+  }
+  const later = () => { redraw(); if (!raf.current) raf.current = requestAnimationFrame(commit) }
+  useEffect(() => {
+    redraw()
+    // on a phone the rail is a bottom sheet: open it so the whole pad shows
+    if (matchMedia('(max-width: 959px)').matches) document.querySelector<HTMLElement>('.inspector')?.style.setProperty('--sheet', '84dvh')
+    return () => cancelAnimationFrame(raf.current)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const at = (e: { clientX: number; clientY: number }): Pt => { const r = cv.current!.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * PAD, y: ((e.clientY - r.top) / r.height) * PAD } }
+  const clear = () => { strokes.current = []; live.current = null; sample.current = null; later() }
+  const undo = () => { if (strokes.current.length) { strokes.current.pop(); later() } }
+  const pick = (d: number) => {
+    const k = digits ? digits.labels.findIndex((l) => l === d) : -1
+    if (k < 0 || !digits) return
+    strokes.current = []; live.current = null; sample.current = digits.images[k]; later()
+  }
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (e.metaKey || e.ctrlKey || e.altKey || t?.closest?.('input,textarea,select,[contenteditable]')) return
+      if (e.key === 'c' || e.key === 'C') clear(); else if (e.key === 'z' || e.key === 'Z') undo()
+    }
+    document.addEventListener('keydown', key)
+    return () => document.removeEventListener('keydown', key)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const end = () => { if (live.current) { strokes.current.push(live.current); live.current = null; later() } }
+  const reads = useMemo(() => (NETS.every((n) => packs[n.id]) ? NETS.map((n) => ({ id: n.id, r: readDigit(n.id, packs[n.id]!, img) })) : null), [img, packs])
+  const verdict = useMemo(() => (reads && inked ? consensus(reads.map((x) => x.r)) : null), [reads, inked])
   return (
-    <div className="drawpad">
-      <canvas ref={ref} width={192} height={192} aria-label="Draw a digit: 8 by 8 pixels"
-        onPointerDown={(e) => { drawing.current = true; (e.target as HTMLElement).setPointerCapture(e.pointerId); paint(e) }}
-        onPointerMove={(e) => { if (drawing.current) paint(e) }} onPointerUp={() => { drawing.current = false }} />
-      <div className="col">
-        <p className="small">Draw a digit<Hint>Every network recomputes as you draw. Pick a test digit below, or draw your own with the mouse.</Hint></p>
-        {stressed && <div className="seen"><canvas ref={seen} width={96} height={96} aria-label="What the networks see after the stress test" /><span className="small">they see this</span></div>}
-        <button className="btn2 sm" onClick={() => useZoo.getState().setImg(new Array(64).fill(0), null)}>Clear</button>
+    <div className="s6padwrap">
+      <div className="s6pad">
+        <Explainer id="pad" placement="top-right"><Say id="pad" /></Explainer>
+        <canvas ref={cv} data-pad width={PAD} height={PAD} aria-label="Draw a number here" role="img" style={{ touchAction: 'none' }}
+          onPointerDown={(e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return
+            e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId)
+            if (sample.current) { sample.current = null; strokes.current = [] }   // drawing over a sample digit starts fresh
+            live.current = [at(e)]; later()
+          }}
+          onPointerMove={(e) => { if (!live.current) return; const evs = (e.nativeEvent as PointerEvent).getCoalescedEvents?.() ?? []; for (const q of evs.length ? evs : [e.nativeEvent]) live.current.push(at(q)); later() }}
+          onPointerUp={end} onPointerCancel={end} />
+        {!inked && <div className="s6guide" aria-hidden><i /><span>Draw a number</span></div>}
       </div>
-    </div>
-  )
-}
-
-function Gallery() {
-  const digits = useZoo((s) => s.digits)
-  if (!digits) return null
-  return (
-    <div className="gallery" role="group" aria-label="Test digits">
-      {digits.images.slice(0, 24).map((im, k) => (
-        <button key={k} title={`a ${digits.labels[k]} from the test set`} onClick={() => useZoo.getState().setImg(im, digits.labels[k])}>
-          <svg viewBox="0 0 8 8" width="30" height="30">{im.map((v, i) => <rect key={i} x={i % 8} y={Math.floor(i / 8)} width="1" height="1" fill={`rgba(255,169,77,${v})`} />)}</svg>
-        </button>
-      ))}
+      <div className="s6row">
+        <button className="btn2" onClick={clear} title="Clear (C)">Clear</button>
+        <button className="btn2" onClick={undo} disabled={!nStrokes} title="Undo the last stroke (Z)">Undo</button>
+        <span className="s6line">Try a digit</span>
+      </div>
+      <div className="s6chips" role="group" aria-label="Try a digit">{Array.from({ length: 10 }, (_, d) => <button key={d} className="btn2" onClick={() => pick(d)}>{d}</button>)}</div>
+      <div className="s6see" aria-live="polite">
+        {verdict ? (
+          <>
+            <p className="s6big" data-pad-result>I see a <b>{verdict.top}</b> · {Math.round(verdict.pct * 100)} %</p>
+            {verdict.second !== null && <p className="s6line">or a {verdict.second} · {Math.round(verdict.pct2 * 100)} %</p>}
+            <div className="s6pills">{reads!.map(({ id, r }) => <span key={id} className="s6pill" style={{ borderColor: NET_COLOR[id] }}><b style={{ color: NET_COLOR[id] }} aria-hidden>{GLYPH[id]}</b>{NAME[id]} {r.digit ?? '?'}</span>)}</div>
+          </>
+        ) : <p className="s6line">Draw, or pick a digit. Five networks read it as you draw.</p>}
+      </div>
     </div>
   )
 }
@@ -240,93 +287,25 @@ export function CompareCard() {
   )
 }
 
-/* ------------------------------------------------------------------------------- stress test */
-export function StressCard() {
-  const fx = useZoo((s) => s.fx)
-  const set = useZoo((s) => s.setFx)
-  const off = isNeutral(fx)
-  return (
-    <div className="ccard">
-      <h4>Stress test <small>{off ? 'the clean image' : 'every network sees the changed image'}</small><Hint>A CNN's filters slide, so it often survives a shift that breaks the MLP, which ties each weight to one fixed pixel.</Hint></h4>
-      <div className="fxgrid">
-        <label>Noise <input type="range" min={0} max={0.9} step={0.05} value={fx.noise} onChange={(e) => set({ noise: +e.target.value })} /><em className="mono">{Math.round(fx.noise * 100)}%</em></label>
-        <label>Shift → <input type="range" min={-2} max={2} step={1} value={fx.dx} onChange={(e) => set({ dx: +e.target.value })} /><em className="mono">{fx.dx > 0 ? '+' : ''}{fx.dx} px</em></label>
-        <label>Shift ↓ <input type="range" min={-2} max={2} step={1} value={fx.dy} onChange={(e) => set({ dy: +e.target.value })} /><em className="mono">{fx.dy > 0 ? '+' : ''}{fx.dy} px</em></label>
-        <label>Stroke <input type="range" min={-1} max={1} step={1} value={fx.thick} onChange={(e) => set({ thick: +e.target.value })} /><em className="mono">{fx.thick < 0 ? 'thinner' : fx.thick > 0 ? 'thicker' : 'as drawn'}</em></label>
-      </div>
-      <div className="row">
-        <button className="btn2 sm" disabled={!fx.noise} onClick={() => set({ seed: fx.seed + 1 })}>New noise</button>
-        <button className="btn2 sm" disabled={off} onClick={() => set({ noise: 0, dx: 0, dy: 0, thick: 0 })}>Reset</button>
-      </div>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------------- robustness chart */
-export function RobustCard() {
-  const { sweep, busy, run } = useZoo(useShallow((s) => ({ sweep: s.sweep, busy: s.sweepBusy, run: s.runSweep })))
-  const [hx, setHx] = useState<number | null>(null)
-  const [table, setTable] = useState(false)
-  const W = 320, H = 170, L = 34, R = 18, T = 10, B = 26
-  const lv = sweep?.levels ?? []
-  const x = (i: number) => L + (i / Math.max(1, lv.length - 1)) * (W - L - R)
-  const y = (a: number) => T + (1 - a) * (H - T - B)
-  const done = NETS.filter((n) => (sweep?.acc[n.id]?.length ?? 0) > 0)
-  return (
-    <div className="ccard">
-      <h4>Which network is most robust? <small>accuracy on {sweep?.n ?? 48} test digits as noise rises</small><Hint>Runs all five networks on every test digit at six noise levels (three noise draws each), in this page. The VLM counts as right when the number word in its caption is the right digit.</Hint></h4>
-      {!sweep ? (
-        <>
-          <button className="btn2 sm" onClick={() => run()}>Run the robustness test</button>
-        </>
-      ) : (
-        <>
-          <div className="legend">{NETS.map((n) => <span key={n.id}><i style={{ background: NET_COLOR[n.id] }} />{NAME[n.id]}</span>)}</div>
-          <div className="rchart">
-            <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Accuracy of each network as noise rises"
-              onPointerMove={(e) => { const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect(); const px = ((e.clientX - r.left) / r.width) * W; setHx(Math.max(0, Math.min(lv.length - 1, Math.round(((px - L) / (W - L - R)) * (lv.length - 1))))) }}
-              onPointerLeave={() => setHx(null)}>
-              {[0, 0.25, 0.5, 0.75, 1].map((a) => <g key={a}><line x1={L} x2={W - R} y1={y(a)} y2={y(a)} className="grid" /><text x={L - 6} y={y(a) + 3} textAnchor="end">{a * 100}%</text></g>)}
-              {lv.map((l, i) => <text key={i} x={x(i)} y={H - 8} textAnchor="middle">{Math.round(l * 100)}%</text>)}
-              {hx !== null && <line x1={x(hx)} x2={x(hx)} y1={T} y2={H - B} className="cross" />}
-              {done.map((n) => {
-                const a = sweep.acc[n.id]!
-                return (
-                  <g key={n.id}>
-                    <path d={a.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ')} fill="none" stroke={NET_COLOR[n.id]} strokeWidth="2" strokeLinejoin="round" />
-                    {a.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r={hx === i ? 5 : 4} fill={NET_COLOR[n.id]} stroke="var(--surface)" strokeWidth="2" />)}
-                  </g>
-                )
-              })}
-              <text x={W - 2} y={H - 8} textAnchor="end" className="axl">noise →</text>
-            </svg>
-            {hx !== null && done.length > 0 && (
-              <div className="rtip" style={{ left: `${(x(hx) / W) * 100}%` }}>
-                <b>{Math.round(lv[hx] * 100)}% noise</b>
-                {[...done].sort((a, b) => (sweep.acc[b.id]![hx] ?? 0) - (sweep.acc[a.id]![hx] ?? 0)).map((n) => sweep.acc[n.id]![hx] !== undefined && (
-                  <span key={n.id}><i style={{ background: NET_COLOR[n.id] }} />{NAME[n.id]}<em className="mono">{Math.round(sweep.acc[n.id]![hx] * 100)}%</em></span>
-                ))}
-              </div>
-            )}
-          </div>
-          {busy ? <p className="hint small busy"><span className="pulse" /> testing {busy}…</p> : (
-            <div className="row">
-              <button className="btn2 sm" onClick={() => setTable(!table)}>{table ? 'Hide table' : 'Show as table'}</button>
-              <button className="btn2 sm" onClick={() => run()}>Run again</button>
-            </div>
-          )}
-          {table && (
-            <table className="optab mono"><thead><tr><th>noise</th>{done.map((n) => <th key={n.id}>{n.short}</th>)}</tr></thead>
-              <tbody>{lv.map((l, i) => <tr key={i}><td>{Math.round(l * 100)}%</td>{done.map((n) => <td key={n.id}>{sweep.acc[n.id]![i] !== undefined ? `${Math.round(sweep.acc[n.id]![i] * 100)}%` : ''}</td>)}</tr>)}</tbody></table>
-          )}
-        </>
-      )}
-    </div>
-  )
-}
-
 /* ================================================================================ S6 model UI */
 const CSS = `
+.s6strip{position:absolute;left:12px;right:12px;top:56px;z-index:12;display:flex;flex-direction:column;gap:6px;padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+@media (max-width:900px){.s6strip{top:56px}}
+.s6lang{min-height:44px;max-width:130px;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:4px 8px;font-size:13px}
+.s6note2{justify-content:space-between}
+.s6tok{display:inline-block;padding:2px 7px;margin:2px;border:1px solid var(--line);border-radius:7px;font:13px var(--mono),'Noto Sans','Noto Sans Devanagari','Noto Sans SC','Noto Sans Arabic','Segoe UI',system-ui,sans-serif;white-space:pre}
+.s6padwrap{display:flex;flex-direction:column;gap:10px}
+.s6pad{position:relative;width:100%;max-width:420px;aspect-ratio:1;min-width:280px;margin:0 auto;border-radius:16px;background:var(--surface);border:1px solid var(--line);overflow:hidden}
+.s6pad canvas{position:absolute;inset:0;width:100%;height:100%;color:var(--fg);cursor:crosshair;touch-action:none}
+.s6guide{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;color:var(--muted)}
+.s6guide i{position:absolute;inset:18%;border:2px dashed color-mix(in srgb,var(--muted) 45%,transparent);border-radius:14px}
+.s6guide span{position:relative;font-size:18px}
+.s6chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(40px,1fr));gap:6px}
+.s6chips button,.s6padwrap .btn2{min-height:44px}
+.s6see{display:flex;flex-direction:column;gap:4px}
+.s6big{margin:0;font-size:24px} .s6big b{font-size:30px}
+.s6pills{display:flex;flex-wrap:wrap;gap:6px}
+.s6pill{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border:1.5px solid;border-radius:999px;font-size:12.5px}
 #dock-slot:has([data-s6dock])>:not([data-s6dock]){display:none}
 #model-picker-slot:has([data-picker])>:not([data-picker]){display:none}
 .s6card{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;width:min(440px,calc(100% - 28px));display:flex;flex-direction:column;gap:10px;padding:18px 20px;background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px);box-shadow:0 12px 40px #0008}
@@ -420,6 +399,8 @@ function ErrorBox({ text, action, onAction }: { text: string; action: string; on
 /** Consent, download progress and run status. The numbers come from the main store (plan, download, running). */
 function Status() {
   const { pending, download, running, runStatus, runErr, runErrCode, confirm, decline, cancel } = useStore(useShallow((s) => ({ runErrCode: s.runErrCode, pending: s.pendingDownload, download: s.download, running: s.running, runStatus: s.runStatus, runErr: s.runErr, confirm: s.confirmDownload, decline: s.declineDownload, cancel: s.cancelDownload })))
+  const auto = typeof (useStore.getState() as any).autoStart === 'function'   // the strip over the scene shows progress
+  if (auto && (pending || download || running)) return null
   if (pending) {
     return (
       <div role="alert" className="s6row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
@@ -493,6 +474,51 @@ function FirstVisit() {
   )
 }
 
+/* ------------------------------------------------------------------------------ explainers (R2-3) */
+/** Two or three short lines per animation (plain words, TODO section 6.4). */
+const EXPLAIN: Record<NetId | 'pad', string[]> = {
+  llm: ['Each dot is a word. Lines show what it listens to.', 'The bars at the end are its guesses for the next word.'],
+  mlp: ['Pixels go in on the left. Each layer mixes them.', 'Ten bars come out, one for each digit.'],
+  cnn: ['Small filters slide over the picture. They find edges and curves.', 'Then the net picks a digit.'],
+  rnn: ['It reads the digit one row at a time.', 'It keeps a memory of the rows it saw.'],
+  vit: ['It cuts the picture into patches. Each patch is a token.', 'Attention lets the patches talk to each other.'],
+  vlm: ['It looks at the picture first.', 'Then it writes a caption, one word at a time.'],
+  pad: ['Draw a number. Five networks read it as you draw.', 'Each pill shows what one network guessed.'],
+}
+const Say = ({ id }: { id: NetId | 'pad' }) => <>{EXPLAIN[id].map((l, i) => <p key={i} style={{ margin: '0 0 4px' }}>{l}</p>)}</>
+
+/* --------------------------------------------------------------------- progress strip (R2-2) */
+/** With automatic downloads the first-visit card is gone: one slim line says what is coming, how big it is and how far along. */
+function AutoStrip() {
+  const { spec, repo, examples, running, lastStats, download, pending, runErr, cancel } = useStore(useShallow((s) => ({ spec: s.spec, repo: s.repo, examples: s.examples, running: s.running, lastStats: s.lastStats, download: s.download, pending: s.pendingDownload, runErr: s.runErr, cancel: s.cancelDownload })))
+  const plan = useCurrentPlan()
+  // the engine starts the default model by itself; ask once, after the catalog is known
+  const asked = useRef(false)
+  useEffect(() => {
+    const st: any = useStore.getState()
+    if (asked.current || !examples.length || typeof st.autoStart !== 'function') return
+    asked.current = true
+    void st.autoStart()
+  }, [examples.length])
+  const title = examples.find((e) => e.repo.toLowerCase() === repo.toLowerCase())?.title ?? (repo.split('/').pop() || 'the model')
+  const total = download?.total ?? pending?.bytes ?? plan?.bytes ?? null
+  const pct = download && download.total ? Math.min(100, Math.round((download.done / download.total) * 100)) : null
+  const conn: any = (navigator as any).connection
+  const mobile = !!conn && (conn.saveData || conn.type === 'cellular')
+  const busy = !!download || !!pending || (running && !lastStats && !!spec && isBrowserFit(useStore.getState().fit))
+  if (!busy || runErr) return null
+  return (
+    <div className="s6strip" role="status" data-strip>
+      <div className="s6row" style={{ flexWrap: 'nowrap' }}>
+        <span className="s6line" style={{ flex: 1, minWidth: 0 }} aria-live="polite">Getting <b>{title}</b>{total ? ` · ${fmtBytes(total)}` : ''}{pct !== null ? ` · ${pct} %` : ''}</span>
+        <button className="btn2 sm" onClick={() => cancel()}>Cancel</button>
+      </div>
+      <div className="s6bar" role="progressbar" aria-label="Download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? 0}><i style={{ width: `${pct ?? 0}%` }} /></div>
+      {mobile && <span className="s6line">You are on mobile data. Cancel any time.</span>}
+    </div>
+  )
+}
+
 /* ------------------------------------------------------------------------------ model picker */
 function Picker() {
   const { examples, repo, backend, loadExample, loadModel, probing, probeErr } = useStore(useShallow((s) => ({ examples: s.examples, repo: s.repo, backend: s.backend, loadExample: s.loadExample, loadModel: s.loadModel, probing: s.probing, probeErr: s.probeErr })))
@@ -551,10 +577,22 @@ function Picker() {
   return slot ? createPortal(node, slot) : node
 }
 
+function LangSelect({ value, onChange, label = 'Language', disabled = false }: { value: LangId; onChange: (l: LangId) => void; label?: string; disabled?: boolean }) {
+  return (
+    <>
+      <label className="sr" htmlFor="s6lang">{label}</label>
+      <select id="s6lang" data-lang-picker className="s6lang" disabled={disabled} value={value} onChange={(e) => onChange(e.target.value as LangId)} title={label}>
+        {LANGS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+      </select>
+    </>
+  )
+}
+
 /* ---------------------------------------------------------------------------- task input */
 function InputBox({ compact = false }: { compact?: boolean }) {
   const { spec, input, setInput, mode } = useStore(useShallow((s) => ({ spec: s.spec, input: s.input, setInput: s.setInput, mode: s.mode })))
-  const { custom, remember, caps } = useZoo(useShallow((s) => ({ custom: s.custom, remember: s.remember, caps: s.caps })))
+  const { custom, remember, caps, lang, setLang } = useZoo(useShallow((s) => ({ custom: s.custom, remember: s.remember, caps: s.caps, lang: s.lang, setLang: s.setLang })))
+  const examplesAll = useStore((s) => s.examples)
   const task: Task = spec?.task ?? 'text-generation'
   const kind = kindOf(task)
   const [msg, setMsg] = useState<string | null>(null)
@@ -608,16 +646,33 @@ function InputBox({ compact = false }: { compact?: boolean }) {
   }
   const drop = (e: React.DragEvent) => { e.preventDefault(); setOver(false); pickFile(e.dataTransfer.files?.[0]) }
   const insertMask = () => { const t = cur.kind === 'text' ? cur.text : ''; set({ kind: 'text', text: /\[MASK\]/.test(t) ? t : `${t.trimEnd()} [MASK]`.trim() }) }
+  const langOk = task === 'text-generation' || task === 'text-classification'
+  const multi = isMultilingual(spec)
+  const spoken = kind === 'audio' && multi
+  const swap = async () => {
+    const st = useStore.getState()
+    let r: any = null
+    try { r = await (engine as any).multilingualFor?.(task) } catch { /* not ready: use the catalog */ }
+    let repo: string | undefined = typeof r === 'string' ? r : r?.repo ?? r?.id
+    let ex = repo ? st.examples.find((e) => e.id === repo || e.repo.toLowerCase() === String(repo).toLowerCase()) : undefined
+    if (!ex && !repo) ex = st.examples.find((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
+    if (ex) await st.loadExample(ex.id); else if (repo) await st.loadModel(repo, langPrompt(lang, task))
+  }
+  const canSwap = typeof (engine as any).multilingualFor === 'function' || examplesAll.some((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
+  const needsMulti = langOk && lang !== 'en' && !multi
   return (
     <div className="stack" style={{ gap: 8 }}>
+      {needsMulti && <div className={`s6row s6note2 ${compact ? 's6float' : ''}`} data-note><span className="s6line">This model knows English best.</span>{canSwap && <button className="btn2 sm" onClick={swap}>Use a multilingual model</button>}</div>}
+      {spoken && <div className="s6row"><LangSelect value={lang} onChange={setLang} label="Spoken language" /></div>}
       <input ref={file} type="file" accept={kind === 'image' ? 'image/*' : 'audio/*'} hidden onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = '' }} />
       {kind === 'text' && cur.kind === 'text' && (
         <>
           <label className={compact ? 'sr' : 'lbl'} htmlFor="s6text">{task === 'fill-mask' ? 'Sentence with a gap' : task === 'text-classification' ? 'Text to judge' : 'Start of a sentence'}</label>
           <div className="s6row s6inrow">
+            {langOk && <LangSelect disabled={replay} value={lang} onChange={(id) => { setLang(id); set({ kind: 'text', text: langPrompt(id, task) }) }} />}
             {compact
-              ? <input id="s6text" className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
-              : <textarea id="s6text" rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
+              ? <input id="s6text" data-prompt className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
+              : <textarea id="s6text" data-prompt rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
             {task === 'fill-mask' && <button className="btn2 sm" disabled={replay} onClick={insertMask}>[MASK]</button>}
             <button className="btn2 sm" disabled={replay} onClick={() => set(dflt)} title="Put the example text back">Example</button>
           </div>
@@ -688,12 +743,17 @@ function RunDock() {
 
 /* ---------------------------------------------------------------------------- result card */
 function Result() {
+  const lang = useZoo((s) => s.lang)
+  const tokens = useStore((s) => s.tokens)
   const { lastStats, fit, spec, final, runErr, running, examples, loadExample } = useStore(useShallow((s) => ({ lastStats: s.lastStats, fit: s.fit, spec: s.spec, final: s.final, runErr: s.runErr, running: s.running, examples: s.examples, loadExample: s.loadExample })))
   const alt = runErr && /smaller|too big/i.test(runErr) ? examples.find((e) => e.repo.toLowerCase() !== spec?.repo.toLowerCase() && (e.task ?? 'text-generation') === spec?.task) : null
   const items = final?.topk ?? final?.labels?.map((l: any) => ({ token: l.label, p: l.score }))
   const text: string | undefined = final?.text
   return (
     <div className="stack">
+      {tokens.length > 0 && (
+        <div className="ccard"><h4>Tokens <small>the pieces the model reads</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{tokens.slice(0, 60).map((t, i) => <span key={i} className="s6tok" data-token>{showTok(t)}</span>)}</div></div>
+      )}
       {final && !running && (
         <div className="ccard">
           <h4>Response <small>from the model</small></h4>
@@ -770,11 +830,12 @@ export function ZooView() {
             <p className="small mono">{FLOPS[net as DigitNet].split('≈').pop()?.trim()}<Hint>Work per image: {FLOPS[net as DigitNet]}. Computed in this page, on this device.</Hint></p>
           </div>
         )}
+        <Explainer key={net} id={net === 'llm' ? 'model' : `net-${net}`} placement={net === 'llm' ? 'top-left' : 'bottom-left'}><Say id={net} /></Explainer>
         <Empty />
         <Crumb />
         <Legend />
         <div className="stagebottom"><ZooTimeline /></div>
-        <FirstVisit />
+        {typeof (useStore.getState() as any).autoStart === 'function' ? <AutoStrip /> : <FirstVisit />}
         {err && <div className="err">{err}</div>}
       </section>
       <RunDock />
@@ -783,12 +844,9 @@ export function ZooView() {
           <div className="stack">
             {!loaded && <p className="hint">Loading the networks…</p>}
             <DrawPad />
-            <Gallery />
             <CompareCard />
-            <StressCard />
             <Output />
             <CalcCard />
-            <RobustCard />
             <p className="small">About these networks<Hint>All five learned from the same 1,500 digits. Compare how each one solves it.</Hint></p>
           </div>
         </div>}

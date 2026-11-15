@@ -108,3 +108,19 @@ only the row of section links stays on screen.
   (1.5 s) only. The next 1.5 s ("idle, drawing the live 3D view") measure its cost, shown in the Energy tab: about
   +3.5 W in a quiet run on the test PC. Background activity can hide a difference that small; the tab says so when
   it does. Scores with the live view were 1,049–1,175 against 1,138–1,205 without it.
+
+## Default models (smallest good model per task)
+
+Sizes are what the browser downloaded on this PC (real Hub, cold cache). "First result" is page load of the model plus the first answer, measured here with WebGPU / WASM. Run `web/public/examples/index.json` order: the first model of a task without a recording is the default.
+
+| Task | Model | Download (WebGPU / WASM) | First result, cold (WebGPU / WASM) | Note |
+| --- | --- | --- | --- | --- |
+| Text | SmolLM2-135M-Instruct | 118 MB / 137 MB | 19 s / 19 s | Slightly over 100 MB: no smaller text model gave good sentences. |
+| Text (old default) | DistilGPT-2 | 329 MB / 322 MB | 40 s / 40 s | The engine fetches more than the 85 MB quantized file. Kept in the picker only. |
+| Fill-mask | DistilBERT base uncased | 72 MB / 68 MB | 9.8 s / 11.6 s | |
+| Sentiment | DistilBERT SST-2 | 73 MB / 68 MB | 12 s / 10.4 s | |
+| Image | MobileViT small | 7 MB / 6 MB | 12 s / 8.3 s | Smallest. Lower accuracy than ViT. |
+| Image | ViT base patch16 | 51 MB / 88 MB | 9.6 s / 16.8 s | Better accuracy. |
+| Speech | Whisper tiny (English) | 52 MB / 41 MB | 10.6 s / 8.7 s | |
+| Speech, many languages | Whisper tiny | 52 MB / 41 MB | 11 s / 8.3 s | |
+| Many languages (text) | none under 300 MB works yet | | | Gemma 3 270M (273 MB) failed to load in the browser. The language picker still works; the English-only note names the gap. |
