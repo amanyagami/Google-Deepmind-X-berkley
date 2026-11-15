@@ -1169,6 +1169,7 @@ if (typeof window !== 'undefined') {
 /* ------------------------------------------------------------------ Explainer (round 2, R2-3) */
 
 const EXPL_CSS = `
+.nsx-ecard>span{display:block}
 .nsx-expl{position:absolute;z-index:5;pointer-events:none;width:0;height:0}
 .nsx-expl[data-p="top-left"]{top:8px;left:calc(8px + var(--off,0px))}
 .nsx-expl[data-p="top-right"]{top:8px;right:calc(8px + var(--off,0px))}
