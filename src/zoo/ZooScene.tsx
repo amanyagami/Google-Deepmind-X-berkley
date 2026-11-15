@@ -1,10 +1,11 @@
 // The model zoo in 3D. One layout per kind of network; every value drawn is computed live in the browser
 // (nets.ts) and everything that moves is a pure function of the playhead, so the flow scrubs and rewinds.
 // Amber = positive, blue = negative, brightness = size. Double-click any unit to see how its number was computed.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { useTheme, WheelScrollsPage } from '../aspect'
-import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@react-three/drei'
+import { CameraControls, Environment, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { create } from 'zustand'
@@ -405,6 +406,93 @@ function rove(reg: Reg | null, from: HTMLElement, dir: 1 | -1) {
   next.focus()
 }
 
+const _pWorld = new THREE.Vector3(), _pCam = new THREE.Vector3(), _pFwd = new THREE.Vector3(), _pDelta = new THREE.Vector3()
+/** React-19-safe replacement for @react-three/drei <Html>: creates a DOM root cleanly outside R3F and defers
+ *  root.unmount() to a microtask so React 19 never sees a synchronous unmount while rendering/committing. */
+function StageHtml({ pos, zIndexRange = [5, 0], children }: { pos: [number, number, number]; zIndexRange?: [number, number]; children: ReactNode }) {
+  const groupRef = useRef<THREE.Group>(null)
+  const gl = useThree((s) => s.gl)
+  const events = useThree((s) => s.events)
+  const camera = useThree((s) => s.camera)
+  const size = useThree((s) => s.size)
+  const target = (events.connected as HTMLElement | null | undefined) ?? (gl.domElement.parentNode as HTMLElement | null)
+  const stateRef = useRef<{ el: HTMLDivElement; root: Root; x: number; y: number; z: number; show: boolean } | null>(null)
+  const latestChildren = useRef(children)
+  latestChildren.current = children
+  const zHi = zIndexRange[0], zLo = zIndexRange[1]
+
+  const sync = useCallback(() => {
+    const g = groupRef.current, st = stateRef.current
+    if (!g || !st) return
+    g.updateWorldMatrix(true, false)
+    _pWorld.setFromMatrixPosition(g.matrixWorld)
+    _pCam.setFromMatrixPosition(camera.matrixWorld)
+    _pFwd.set(0, 0, -1).applyQuaternion(camera.quaternion)
+    const behind = _pDelta.subVectors(_pWorld, _pCam).dot(_pFwd) <= 0
+    const show = !behind
+    if (show !== st.show) {
+      st.show = show
+      st.el.style.display = show ? 'block' : 'none'
+    }
+    if (!show) return
+    const dist = _pDelta.length()
+    _pWorld.project(camera)
+    const x = (_pWorld.x * 0.5 + 0.5) * size.width
+    const y = (_pWorld.y * -0.5 + 0.5) * size.height
+    const z = Math.max(zLo, Math.min(zHi, Math.round(zHi - Math.min(1, Math.max(0, (dist - 1) / 40)) * (zHi - zLo))))
+    if (Math.abs(x - st.x) > 0.01 || Math.abs(y - st.y) > 0.01) {
+      st.x = x
+      st.y = y
+      st.el.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,0)`
+    }
+    if (z !== st.z) {
+      st.z = z
+      st.el.style.zIndex = String(z)
+    }
+  }, [camera, size.height, size.width, zHi, zLo])
+
+  const syncRef = useRef(sync)
+  syncRef.current = sync
+  const skipNextRender = useRef(false)
+
+  useLayoutEffect(() => {
+    if (!target) return
+    const el = document.createElement('div')
+    el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;display:none;'
+    target.appendChild(el)
+    const root = createRoot(el)
+    stateRef.current = { el, root, x: NaN, y: NaN, z: -1, show: false }
+    skipNextRender.current = true
+    root.render(
+      <div style={{ position: 'absolute', transform: 'translate3d(-50%,-50%,0)', pointerEvents: 'none' }}>
+        {latestChildren.current}
+      </div>,
+    )
+    syncRef.current()
+    return () => {
+      if (stateRef.current?.el === el) stateRef.current = null
+      if (el.parentNode === target) target.removeChild(el)
+      queueMicrotask(() => root.unmount())
+    }
+  }, [target])
+
+  useLayoutEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    if (skipNextRender.current) { skipNextRender.current = false; return }
+    st.root.render(
+      <div style={{ position: 'absolute', transform: 'translate3d(-50%,-50%,0)', pointerEvents: 'none' }}>
+        {children}
+      </div>,
+    )
+    sync()
+  })
+
+  useFrame(sync)
+
+  return <group ref={groupRef} position={pos} />
+}
+
 export interface ChipProps {
   pos: [number, number, number]; name: string; glyph?: string; sub?: string
   live?: ReactNode; liveRef?: (el: HTMLElement | null) => void; score?: string
@@ -434,12 +522,12 @@ export function Chip(p: ChipProps) {
   )
   const style = { display: p.hidden ? 'none' : undefined } as const
   return (
-    <Html position={p.pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
+    <StageHtml pos={p.pos} zIndexRange={[5, 0]}>
       {p.onClick
         ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label data-block={p.name} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
             onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={(e) => { p.onKey?.(e); if (e.defaultPrevented) return; if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); rove(reg, e.currentTarget, 1) } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); rove(reg, e.currentTarget, -1) } }} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
         : <div ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label>{inner}</div>}
-    </Html>
+    </StageHtml>
   )
 }
 
@@ -456,9 +544,9 @@ export function Word({ pos, elRef, hidden, prio = 1, children }: { pos: [number,
     return () => { reg.delete(el); er.current?.(null) }
   }, [reg])
   return (
-    <Html position={pos} center zIndexRange={[4, 0]} style={{ pointerEvents: 'none' }}>
+    <StageHtml pos={pos} zIndexRange={[4, 0]}>
       <div ref={setRef} className="nsw" data-label data-prio={prio} style={{ display: hidden ? 'none' : undefined }}>{children}</div>
-    </Html>
+    </StageHtml>
   )
 }
 
