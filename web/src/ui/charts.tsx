@@ -385,13 +385,13 @@ export function Peek({ summary, details, label = 'Show details', className, ...r
   const id = useId()
   const vis = !shut && (open || hov || foc)
   const close = useCallback(() => { setOpen(false); setShut(true) }, [])
-  useEffect(() => {
-    if (!vis) return
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { close(); if (root.current?.contains(document.activeElement)) e.stopPropagation() } }
-    const down = (e: Event) => { if (open && !root.current?.contains(e.target as Node)) close() }
-    document.addEventListener('keydown', key, true); document.addEventListener('pointerdown', down, true)
-    return () => { document.removeEventListener('keydown', key, true); document.removeEventListener('pointerdown', down, true) }
-  }, [vis, open, close])
+  const live = useRef({ vis, open }); live.current = { vis, open }
+  useEffect(() => { // always listening (no gap while state changes); acts only while the card is showing
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && live.current.vis) { close(); if (root.current?.contains(document.activeElement)) e.stopPropagation() } }
+    const down = (e: Event) => { if (live.current.open && !root.current?.contains(e.target as Node)) close() }
+    window.addEventListener('keydown', key, true); document.addEventListener('pointerdown', down, true)
+    return () => { window.removeEventListener('keydown', key, true); document.removeEventListener('pointerdown', down, true) }
+  }, [close])
   const toggle = (e: React.MouseEvent) => {
     const touch = (e.nativeEvent as PointerEvent).pointerType === 'touch'
     if (touch ? open : vis) close()

@@ -906,13 +906,22 @@ export function ZooView() {
   const p = net === 'llm' ? undefined : packs[net]
   const repo = useStore((s) => s.repo)
   const short = repo ? repo.split('/').pop()! : 'This model'
+  const stageRef = useRef<HTMLElement>(null), tabsRef = useRef<HTMLDivElement>(null)
+  // the net card sits under the tab row: measure the row (it can wrap) instead of guessing its height
+  useEffect(() => {
+    const st = stageRef.current, tb = tabsRef.current
+    if (!st || !tb) return
+    const f = () => st.style.setProperty('--zoo-tabs-b', `${Math.ceil(tb.getBoundingClientRect().bottom - st.getBoundingClientRect().top)}px`)
+    f(); const ro = new ResizeObserver(f); ro.observe(tb); ro.observe(st)
+    return () => ro.disconnect()
+  }, [])
   return (
     <main className="main machine zoo">
       <style>{CSS}</style>
-      <section className="stage" aria-label={`3D view of a ${p?.title ?? 'network'}`}>
+      <section ref={stageRef} className="stage" aria-label={`3D view of a ${p?.title ?? 'network'}`}>
         <ZooScene />
         <Picker />
-        <div className="vswitch seg zoonets" role="group" aria-label="Network">
+        <div ref={tabsRef} className="vswitch seg zoonets" data-zoo-tabs role="group" aria-label="Network">
           <button className={`real ${net === 'llm' ? 'on' : ''}`} onClick={() => useZoo.getState().setNet('llm')} title={`${short}: a real language model, on your prompt`}>{short.replace(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i, '')}<span className="sfx">{short.match(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i)?.[0] ?? ''}</span></button>
           {/* the pad stays one tap away (Draw in the dock): an open drawer would cover this tab row and half the scene */}
           {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} data-net-tab={n.id} onClick={() => void useZoo.getState().setNet(n.id as NetId)} title={n.id === 'vlm' ? 'A tiny network that looks at a digit and finishes your words about it' : 'A tiny network that reads 8×8 handwritten digits'}>{n.short}</button>)}
