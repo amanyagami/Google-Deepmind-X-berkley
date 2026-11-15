@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
+import { useShallow } from 'zustand/react/shallow'
 import { useStore, type Edit } from '../store'
 import { DimBars, Gauge, Heat, Hint, Spark, TopBars, showTok } from './charts'
 import { RUNTIME_NAME, scoreRun } from '../hw/score'
@@ -13,7 +14,7 @@ const sci = (x: number | null | undefined) => (x === null || x === undefined ? '
 
 /* ------------------------------------------------------------------ Model */
 export function ModelPanel() {
-  const { probe, probing, probeErr, mode } = useStore()
+  const { probe, probing, probeErr, mode } = useStore(useShallow((s) => ({ probe: s.probe, probing: s.probing, probeErr: s.probeErr, mode: s.mode })))
   if (probing) return <p className="hint">Reading the model header…<Hint>Only config.json and the safetensors header are fetched, not the weights.</Hint></p>
   if (probeErr) return <div className="err">{probeErr}</div>
   if (!probe) return <p className="hint">Paste a Hugging Face link above, or pick an example.</p>
@@ -57,7 +58,7 @@ export function ModelPanel() {
 
 /* -------------------------------------------------------------------- Run */
 export function RunPanel() {
-  const s = useStore()
+  const s = useStore(useShallow((st) => ({ tokens: st.tokens, final: st.final, runErr: st.runErr, running: st.running, mode: st.mode, edits: st.edits, useEdits: st.useEdits, prompt: st.prompt, setPrompt: st.setPrompt, run: st.run, probe: st.probe, setUseEdits: st.setUseEdits, runStatus: st.runStatus, qpos: st.qpos, setQpos: st.setQpos, lastStats: st.lastStats, fit: st.fit })))
   const { tokens, final, runErr, running, mode, edits, useEdits } = s
   const maxP = final ? Math.max(...final.topk.map((t: any) => t.p)) : 1
   return (
@@ -104,7 +105,7 @@ export function RunPanel() {
 
 /* ------------------------------------------------------------------ Layer */
 export function LayerPanel() {
-  const s = useStore()
+  const s = useStore(useShallow((st) => ({ probe: st.probe, selLayer: st.selLayer, selHead: st.selHead, layers: st.layers, tokens: st.tokens, scan: st.scan, selectHead: st.selectHead, setTab: st.setTab, fetchCalc: st.fetchCalc, addEdit: st.addEdit, tensors: st.tensors, openTensor: st.openTensor, tensorErr: st.tensorErr })))
   const { probe, selLayer: i, selHead, layers, tokens, scan } = s
   if (!probe) return null
   if (i === null) return <p className="hint">Click a block in the 3D view.<Hint>Heads are the small teeth on top of each attention plate.</Hint></p>
@@ -179,7 +180,7 @@ export function LayerPanel() {
 
 /* ------------------------------------------------------------------- Calc */
 export function CalcPanel() {
-  const s = useStore()
+  const s = useStore(useShallow((st) => ({ calc: st.calc, selLayer: st.selLayer, selHead: st.selHead, tokens: st.tokens, qpos: st.qpos, edits: st.edits, useEdits: st.useEdits, fetchCalc: st.fetchCalc, calcing: st.calcing, calcErr: st.calcErr, probe: st.probe })))
   const c = s.calc
   const ready = s.selLayer !== null && s.selHead !== null
   return (
@@ -238,7 +239,7 @@ const edLabel = (e: Edit) =>
   e.type === 'scale_weight' ? `scale ${shortName(e.name!).replace(/^(layers|h)\./, 'L')} ×${e.factor}` : `set ${shortName(e.name!).replace(/^(layers|h)\./, 'L')}[${e.row},${e.col}] = ${e.value}`
 
 export function EditPanel() {
-  const s = useStore()
+  const s = useStore(useShallow((st) => ({ probe: st.probe, scan: st.scan, compare: st.compare, edits: st.edits, mode: st.mode, selLayer: st.selLayer, selHead: st.selHead, addEdit: st.addEdit, runScan: st.runScan, scanning: st.scanning, showImportance: st.showImportance, setShowImportance: st.setShowImportance, scanErr: st.scanErr, scanMax: st.scanMax, selectLayer: st.selectLayer, selectHead: st.selectHead, setTab: st.setTab, pack: st.pack, showRecorded: st.showRecorded, removeEdit: st.removeEdit, clearEdits: st.clearEdits, runCompare: st.runCompare, comparing: st.comparing, compareErr: st.compareErr })))
   const { probe, scan, compare: c, edits, mode } = s
   const [type, setType] = useState('ablate_head')
   const [layer, setLayer] = useState(0)

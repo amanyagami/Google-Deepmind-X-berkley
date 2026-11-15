@@ -232,6 +232,7 @@ function Pcb() {
     for (let z = -6; z <= 6.5; z += 0.5) pts.push(-10, 0.011, z, 10, 0.011, z)
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); return g
   }, [])
+  useEffect(() => () => geo.dispose(), [geo])
   return (
     <group>
       {PT.light && <RoundedBox args={[21, 0.3, 13.5]} radius={0.25} smoothness={4} position={[0, -0.22, 0.25]}><meshBasicMaterial color="#c3c9e4" /></RoundedBox>}
@@ -247,15 +248,20 @@ function Pcb() {
 function Rail({ c, level, color = AMBER, count: count0 = 26, width = 0.045, speed = 1 }: { c: THREE.CatmullRomCurve3; level: () => number; color?: THREE.Color; count?: number; width?: number; speed?: number }) {
   const lite = useContext(LiteCtx), count = lite ? Math.max(4, Math.ceil(count0 / 2)) : count0
   const tube = useMemo(() => new THREE.TubeGeometry(c, 64, width, 8, false), [c, width])
+  const glowTube = useMemo(() => new THREE.TubeGeometry(c, 64, width * 3.2, 8, false), [c, width])
+  const packetColor = useMemo(() => color.clone().multiplyScalar(3), [color])
+  useEffect(() => () => { tube.dispose(); glowTube.dispose() }, [tube, glowTube])
   const mat = useRef<THREE.MeshPhysicalMaterial>(null!)
   const glow = useRef<THREE.MeshBasicMaterial>(null!)
   const mesh = useRef<THREE.InstancedMesh>(null!)
   const d = useMemo(() => new THREE.Object3D(), [])
   const p = useMemo(() => new THREE.Vector3(), [])
   const phase = useRef(Math.random())
+  const smoothF = useRef(0)
   useFrame((_, dt) => {
     const lv = level()
-    const f = Number.isFinite(lv) ? Math.max(0, Math.min(1, lv)) : 0
+    const rawF = Number.isFinite(lv) ? Math.max(0, Math.min(1, lv)) : 0
+    const f = reduceMotion ? rawF : (smoothF.current = THREE.MathUtils.damp(smoothF.current, rawF, 10, Math.min(dt, 0.05)))
     mat.current.emissive.copy(color); mat.current.emissiveIntensity = 0.05 + 0.6 * f
     glow.current.opacity = 0.05 + 0.35 * f
     phase.current = (phase.current + (reduceMotion ? 0 : dt * speed * (0.08 + 0.9 * f))) % 1
@@ -264,7 +270,8 @@ function Rail({ c, level, color = AMBER, count: count0 = 26, width = 0.045, spee
       const u = Number.isFinite(phase.current) ? (phase.current + i / count) % 1 : 0
       c.getPointAt(u, p)
       d.position.copy(p)
-      d.scale.setScalar(i < on && f > 0.02 ? 0.045 + 0.05 * f : 0.0001)
+      const taper = 0.35 + 0.65 * Math.sin(u * Math.PI)
+      d.scale.setScalar(i < on && f > 0.02 ? (0.045 + 0.05 * f) * taper : 0.0001)
       d.updateMatrix(); mesh.current.setMatrixAt(i, d.matrix)
     }
     mesh.current.instanceMatrix.needsUpdate = true
@@ -272,9 +279,9 @@ function Rail({ c, level, color = AMBER, count: count0 = 26, width = 0.045, spee
   return (
     <group>
       <mesh geometry={tube}><meshPhysicalMaterial ref={mat} color={COPPER} metalness={0.9} roughness={0.3} emissive={color} emissiveIntensity={0.1} /></mesh>
-      <mesh geometry={useMemo(() => new THREE.TubeGeometry(c, 64, width * 3.2, 8, false), [c, width])}><meshBasicMaterial ref={glow} color={color} transparent opacity={0.1} depthWrite={false} toneMapped={false} /></mesh>
+      <mesh geometry={glowTube}><meshBasicMaterial ref={glow} color={color} transparent opacity={0.1} depthWrite={false} toneMapped={false} /></mesh>
       <instancedMesh ref={mesh} args={[undefined as any, undefined as any, count]} frustumCulled={false}>
-        <sphereGeometry args={[1, 10, 10]} /><meshBasicMaterial color={color.clone().multiplyScalar(3)} toneMapped={false} />
+        <sphereGeometry args={[1, 10, 10]} /><meshBasicMaterial color={packetColor} toneMapped={false} />
       </instancedMesh>
     </group>
   )
@@ -283,7 +290,13 @@ function Rail({ c, level, color = AMBER, count: count0 = 26, width = 0.045, spee
 /** Power comes in here: the adapter's DC jack. */
 function DcIn() {
   const ring = useRef<THREE.MeshBasicMaterial>(null!)
-  useFrame(() => { const s = currentSample().s; const f = s ? Math.min(1, s.pkg_w / 70) : 0; ring.current.color.copy(AMBER).multiplyScalar(0.5 + 2.5 * f) })
+  const smoothF = useRef(0)
+  useFrame((_, dt) => {
+    const s = currentSample().s
+    const rawF = s ? Math.min(1, s.pkg_w / 70) : 0
+    const f = reduceMotion ? rawF : (smoothF.current = THREE.MathUtils.damp(smoothF.current, rawF, 10, Math.min(dt, 0.05)))
+    ring.current.color.copy(AMBER).multiplyScalar(0.5 + 2.5 * f)
+  })
   return (
     <group position={DCIN.toArray()}>
       <Slab size={[1.4, 0.8, 1.2]} pos={[0, 0.4, 0]} color="#151c33" />
@@ -299,12 +312,16 @@ function Vrm() {
   const chokes = useRef<THREE.MeshPhysicalMaterial[]>([])
   const fets = useRef<THREE.MeshBasicMaterial[]>([])
   const t = useRef(0)
+  const smoothF = useRef(0)
   useFrame((_, dt) => {
     const s = currentSample().s
-    const f = s ? Math.min(1, s.pkg_w / 65) : 0
+    const rawF = s ? Math.min(1, s.pkg_w / 65) : 0
+    const f = reduceMotion ? rawF : (smoothF.current = THREE.MathUtils.damp(smoothF.current, rawF, 10, Math.min(dt, 0.05)))
     t.current += reduceMotion ? 0 : dt * (0.6 + 5 * f)  // a visual rate: real phases switch ~500 000 times a second
+    const duty = Math.max(0.05, 0.24 + 0.5 * f)
     for (let k = 0; k < PHASES; k++) {
-      const on = ((t.current + k / PHASES) % 1) < (0.22 + 0.5 * f) ? 1 : 0.15
+      const ph = (t.current + k / PHASES) % 1
+      const on = ph < duty ? 0.15 + 0.85 * Math.cos((ph / duty) * Math.PI * 0.5) : 0.15
       const m = chokes.current[k]; if (m) { m.emissive.copy(AMBER); m.emissiveIntensity = 0.03 + f * 1.4 * on }
       const g = fets.current[k]; if (g) g.color.copy(AMBER).multiplyScalar(0.25 + 3 * f * on)
     }
@@ -349,13 +366,20 @@ function CpuChip() {
   const deepCore = path[0] === 'cpu' && path[1]?.startsWith('core') ? +path[1].slice(4) : -1
   const d = useMemo(() => new THREE.Object3D(), [])
   const col = useMemo(() => new THREE.Color(), [])
+  const heatColor = useMemo(() => AMBER.clone().multiplyScalar(1.6), [])
+  const arcColor = useMemo(() => new THREE.Color('#bfe3ff').multiplyScalar(2.6), [])
+  const smoothW = useMemo(() => new Float32Array(64), [])
+  const smoothPkg = useRef(0)
+  const smoothRest = useRef(0)
   const HEAT = 14
   const arcGeo = useMemo(() => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(nCores * 2 * 6 * 2 * 3), 3)); return g }, [nCores])
+  useEffect(() => () => arcGeo.dispose(), [arcGeo])
   const lastArc = useRef(0), lastTxt = useRef(0), hot = useRef(-1)
   const shown = useRef<Set<number>>(new Set())
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, dt) => {
     const s = currentSample().s
     const time = clock.elapsedTime
+    const safeDt = Math.min(dt, 0.05)
     const cw = s?.core_w ?? []
     const doText = time - lastTxt.current > 0.25 // label text at 4 Hz
     if (doText) { lastTxt.current = time; let mx = 0.5; hot.current = -1; for (let i = 0; i < cw.length; i++) if ((cw[i] ?? 0) > mx) { mx = cw[i]; hot.current = i } }
@@ -363,21 +387,28 @@ function CpuChip() {
     if (doText) { const rank = cw.map((w, i) => [w ?? 0, i]).sort((x, y) => y[0] - x[0]).slice(0, 2).filter(([w]) => w >= 1).map(([, i]) => i); shown.current = new Set(deepCore >= 0 ? [deepCore] : rank) }
     const pulse = reduceMotion ? 1 : 1 + 0.18 * Math.sin(time * 5)
     const split = splitOf(s)   // cores <= package (D19); rest of chip unknown when the sensors disagree
-    ring.current.color.copy(AMBER).multiplyScalar(0.3 + 2.4 * Math.min(1, (s?.pkg_w ?? 0) / 65))
-    soc.current.emissiveIntensity = 0.05 + 1.2 * Math.min(1, (split?.rest ?? 0) / 25)
+    const rawPkg = Math.min(1, (s?.pkg_w ?? 0) / 65)
+    const rawRest = Math.min(1, (split?.rest ?? 0) / 25)
+    const pkgF = reduceMotion ? rawPkg : (smoothPkg.current = THREE.MathUtils.damp(smoothPkg.current, rawPkg, 10, safeDt))
+    const restF = reduceMotion ? rawRest : (smoothRest.current = THREE.MathUtils.damp(smoothRest.current, rawRest, 10, safeDt))
+    ring.current.color.copy(AMBER).multiplyScalar(0.3 + 2.4 * pkgF)
+    soc.current.emissiveIntensity = 0.05 + 1.2 * restF
     for (const c of cores) {
-      const w = cw[c.k] ?? 0
+      const rawW = cw[c.k] ?? 0
+      const w = reduceMotion ? rawW : (smoothW[c.k] = THREE.MathUtils.damp(smoothW[c.k], rawW, 10, safeDt))
       const h = 0.1 + Math.min(1.4, w * 0.15)
       d.position.set(c.x, 0.3 + h / 2, c.z); d.scale.set(1, h, 1); d.updateMatrix(); tiles.current.setMatrixAt(c.k, d.matrix)
       heat(w, col); tiles.current.setColorAt(c.k, col.multiplyScalar((1 + Math.min(2.2, w / 3)) * (c.k === hot.current ? pulse : 1)))
       for (let i = 0; i < HEAT; i++) {
         const life = ((time * (0.25 + w * 0.06) + i / HEAT + c.k * 0.37) % 1)
         const on = i < Math.round(HEAT * Math.min(1, w / 8))
-        d.position.set(c.x + Math.sin(i * 7.1 + c.k) * sp * 0.28, 0.4 + h + life * 2.2, c.z + Math.cos(i * 3.7 + c.k) * sp * 0.28)
+        const swirl = life * 2.2
+        const rad = sp * (0.22 + 0.1 * life)
+        d.position.set(c.x + Math.sin(i * 7.1 + c.k + swirl) * rad, 0.4 + h + life * 2.2, c.z + Math.cos(i * 3.7 + c.k + swirl) * rad)
         d.scale.setScalar(on && !reduceMotion ? 0.05 * (1 - life) + 0.01 : 0.0001); d.updateMatrix(); heatM.current.setMatrixAt(c.k * HEAT + i, d.matrix)
       }
       const el = labels.current[c.k]
-      if (el && doText) { setText(el, `${w.toFixed(1)} W`); el.style.outline = c.k === deepCore ? '1px solid #ffa94d' : ''; el.style.opacity = shown.current.has(c.k) ? '' : '0' }
+      if (el && doText) { setText(el, `${rawW.toFixed(1)} W`); el.style.outline = c.k === deepCore ? '1px solid #ffa94d' : ''; el.style.opacity = shown.current.has(c.k) ? '' : '0' }
     }
     tiles.current.instanceMatrix.needsUpdate = true; tiles.current.instanceColor!.needsUpdate = true; heatM.current.instanceMatrix.needsUpdate = true
     // sparks: short jagged arcs from the power ring into each busy core, redrawn ~15 times a second
@@ -419,9 +450,9 @@ function CpuChip() {
         <boxGeometry args={[sp * 0.78, 1, sp * 0.78]} /><meshBasicMaterial toneMapped={false} />
       </instancedMesh>
       <instancedMesh ref={heatM} args={[undefined as any, undefined as any, nCores * HEAT]} frustumCulled={false}>
-        <sphereGeometry args={[1, 8, 8]} /><meshBasicMaterial color={AMBER.clone().multiplyScalar(1.6)} transparent opacity={0.55} toneMapped={false} depthWrite={false} />
+        <sphereGeometry args={[1, 8, 8]} /><meshBasicMaterial color={heatColor} transparent opacity={0.55} toneMapped={false} depthWrite={false} />
       </instancedMesh>
-      <lineSegments ref={arcs} geometry={arcGeo}><lineBasicMaterial color={new THREE.Color('#bfe3ff').multiplyScalar(2.6)} toneMapped={false} transparent opacity={0.9} /></lineSegments>
+      <lineSegments ref={arcs} geometry={arcGeo}><lineBasicMaterial color={arcColor} toneMapped={false} transparent opacity={0.9} /></lineSegments>
       <RoundedBox args={[3.6, 0.1, 0.7]} radius={0.04} smoothness={2} position={[0, 0.26, 1.65]}>
         <meshPhysicalMaterial ref={soc} color="#15203f" emissive={BLUE} emissiveIntensity={0.1} metalness={0.5} roughness={0.35} />
       </RoundedBox>
@@ -436,8 +467,10 @@ function CpuChip() {
 function Ram() {
   const sticks = useHW((s) => Math.max(1, s.info?.ram?.sticks?.length || 2))
   const mats = useRef<THREE.MeshPhysicalMaterial[]>([])
-  useFrame(() => {
-    const f = activity().ram
+  const smoothF = useRef(0.08)
+  useFrame((_, dt) => {
+    const rawF = activity().ram
+    const f = reduceMotion ? rawF : (smoothF.current = THREE.MathUtils.damp(smoothF.current, rawF, 10, Math.min(dt, 0.05)))
     mats.current.forEach((m) => { if (m) m.emissiveIntensity = 0.05 + f * 0.9 })
   })
   return (
@@ -454,7 +487,12 @@ function Ram() {
 
 function Small({ pos, id, name, sub, act, size, live }: { pos: THREE.Vector3; id: string; name: string; sub?: string; act: () => number; size: [number, number, number]; live?: LiveKey }) {
   const m = useRef<THREE.MeshPhysicalMaterial>(null!)
-  useFrame(() => { m.current.emissiveIntensity = 0.04 + act() * 0.9 })
+  const smoothF = useRef(0.05)
+  useFrame((_, dt) => {
+    const rawF = act()
+    const f = reduceMotion ? rawF : (smoothF.current = THREE.MathUtils.damp(smoothF.current, rawF, 10, Math.min(dt, 0.05)))
+    m.current.emissiveIntensity = 0.04 + f * 0.9
+  })
   return (
     <Hot pos={pos} id={id}>
       <RoundedBox args={size} radius={0.05} smoothness={2} position={[0, size[1] / 2, 0]}>
@@ -492,15 +530,32 @@ function Keyboard() {
   const keys = useRef<THREE.InstancedMesh>(null!)
   const d = useMemo(() => new THREE.Object3D(), [])
   const col = useMemo(() => new THREE.Color(), [])
+  const keyBase = useMemo(() => new THREE.Color('#202a4a'), [])
+  const keyGlow = useMemo(() => new Float32Array(56), [])
   useEffect(() => {
     let i = 0
     for (let r = 0; r < 4; r++) for (let c = 0; c < 14; c++) { d.position.set(-1.35 + c * 0.208, 0.1, -0.42 + r * 0.26); d.updateMatrix(); keys.current.setMatrixAt(i++, d.matrix) }
     keys.current.instanceMatrix.needsUpdate = true
   }, [d])
-  useFrame(() => {
+  useFrame((_, dt) => {
     const a = activity()
     const lit = a.stage === 'input' ? (a.typed * 11) % 56 : -1
-    for (let i = 0; i < 56; i++) { col.set('#202a4a'); if (i === lit) col.copy(AMBER).multiplyScalar(3); keys.current.setColorAt(i, col) }
+    const safeDt = Math.min(dt, 0.05)
+    let moved = false
+    for (let i = 0; i < 56; i++) {
+      const target = i === lit ? 1 : 0
+      const prev = keyGlow[i]
+      const g = reduceMotion ? target : (keyGlow[i] = THREE.MathUtils.damp(prev, target, 14, safeDt))
+      if (Math.abs(g - prev) > 0.002) {
+        moved = true
+        const r = Math.floor(i / 14), c = i % 14
+        d.position.set(-1.35 + c * 0.208, 0.1 - 0.018 * g, -0.42 + r * 0.26); d.updateMatrix()
+        keys.current.setMatrixAt(i, d.matrix)
+      }
+      col.copy(keyBase).lerp(AMBER, g).multiplyScalar(1 + 2 * g)
+      keys.current.setColorAt(i, col)
+    }
+    if (moved) keys.current.instanceMatrix.needsUpdate = true
     keys.current.instanceColor!.needsUpdate = true
   })
   return (
@@ -515,7 +570,12 @@ function Keyboard() {
 /** The screen: it brightens while the answer travels to it. */
 function Screen() {
   const mat = useRef<THREE.MeshBasicMaterial>(null!)
-  useFrame(() => { const f = activity().vid; mat.current.color.copy(INK).lerp(BLUE, 0.25 + 0.5 * f).multiplyScalar(0.6 + 1.4 * f) })
+  const smoothF = useRef(0)
+  useFrame((_, dt) => {
+    const rawF = activity().vid
+    const f = reduceMotion ? rawF : (smoothF.current = THREE.MathUtils.damp(smoothF.current, rawF, 10, Math.min(dt, 0.05)))
+    mat.current.color.copy(INK).lerp(BLUE, 0.25 + 0.5 * f).multiplyScalar(0.6 + 1.4 * f)
+  })
   return (
     <Hot pos={SCRP} id="display">
       <Slab size={[3.4, 2.0, 0.12]} pos={[0, 1.05, 0]} color="#10172e" radius={0.08} />
@@ -535,6 +595,7 @@ function Lanes({ active }: { active: boolean }) {
   const d = useMemo(() => new THREE.Object3D(), [])
   const col = useMemo(() => new THREE.Color(), [])
   const sum = useRef<THREE.Mesh>(null!)
+  const sumColor = useMemo(() => AMBER.clone().multiplyScalar(2.4), [])
   useFrame(({ clock }) => {
     if (!micro || !active || rows.current.length < 3) return
     const T = reduceMotion ? 0.85 : (clock.elapsedTime % 9) / 9
@@ -562,7 +623,7 @@ function Lanes({ active }: { active: boolean }) {
           <boxGeometry args={[0.14, 1, 0.3]} /><meshBasicMaterial toneMapped={false} />
         </instancedMesh>
       ))}
-      <mesh ref={sum} position={[0, 0.05, 2.35]}><boxGeometry args={[1, 0.12, 0.3]} /><meshBasicMaterial color={AMBER.clone().multiplyScalar(2.4)} toneMapped={false} /></mesh>
+      <mesh ref={sum} position={[0, 0.05, 2.35]}><boxGeometry args={[1, 0.12, 0.3]} /><meshBasicMaterial color={sumColor} toneMapped={false} /></mesh>
       <Tag pos={[-2.4, 0.45, 0]} name="x" sub="16 inputs" show={on} group="cpu" />
       <Tag pos={[-2.4, 0.45, 0.75]} name="w" sub="16 weights" show={on} group="cpu" />
       <Tag pos={[-2.4, 0.45, 1.5]} name="x × w" sub="16 at once" show={on} group="cpu" />
@@ -666,9 +727,20 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   const summary = useHWThrottled((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveOf('cpu', s) || 'not measured'}. Memory ${liveOf('ram', s) || 'not measured'}. Storage ${liveOf('ssd', s) || 'not measured'}. Network ${liveOf('nic', s) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`, 1000)
   const reset = () => { const h = useHW.getState(); if (h.path.length) { let n = h.path.length; while (n-- > 0) useHW.getState().back() } else SCENE.cams.machine?.home() }
   useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true }, reset)
+  const glClean = useRef<(() => void) | null>(null)
+  useEffect(() => () => { glClean.current?.() }, [])
   return (
     <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
       <Canvas frameloop={!st.run || baseline ? 'never' : recording ? 'demand' : 'always'} dpr={recording ? 1 : st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [0.2, 13.6, 15.8], fov: 38 }} gl={{ antialias: false, powerPreference: 'high-performance' }}
+        onCreated={({ gl }) => {
+          glClean.current?.()
+          const dom = gl.domElement
+          const onLost = (e: Event) => { e.preventDefault() }
+          const onRestored = () => { /* R3F resumes rendering once context restores */ }
+          dom.addEventListener('webglcontextlost', onLost)
+          dom.addEventListener('webglcontextrestored', onRestored)
+          glClean.current = () => { dom.removeEventListener('webglcontextlost', onLost); dom.removeEventListener('webglcontextrestored', onRestored) }
+        }}
         onPointerMissed={(e) => { if (e.type === 'dblclick') reset(); else if (e.type === 'click') { const h = useHW.getState(); let n = h.path.length; while (n-- > 0) useHW.getState().back() } }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
@@ -680,6 +752,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
             <fog attach="fog" args={[light ? '#eef0fb' : '#060a1a', 26, 54]} />
             <ambientLight intensity={0.3} />
             <directionalLight position={[6, 12, 8]} intensity={1.3} />
+            <directionalLight position={[-8, 9, -8]} intensity={light ? 0.45 : 0.7} color="#7ea6ff" />
             <Environment resolution={64} environmentIntensity={0.6}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
               <Lightformer form="rect" intensity={1.5} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />

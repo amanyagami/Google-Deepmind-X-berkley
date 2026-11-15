@@ -3,7 +3,7 @@ import { useStore } from '../store'
 import * as api from '../api'
 import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
 import type { InputCaps, LangId } from './nets'
-import { useHW } from '../hw/hwStore'
+import { RUN_ALL_ORDER, useHW } from '../hw/hwStore'
 import { inputHash, readFrom, runNet, timeNet, type Pack, type Read, type Speed } from './nets'
 
 /** 'llm' is the real model loaded at the top of the page, run on the shared prompt; the others are the five tiny
@@ -11,7 +11,7 @@ import { inputHash, readFrom, runNet, timeNet, type Pack, type Read, type Speed 
 export type NetId = 'llm' | 'mlp' | 'cnn' | 'rnn' | 'vit' | 'vlm'
 export type DigitNet = Exclude<NetId, 'llm'>
 export const NETS: { id: DigitNet; short: string }[] = [
-  { id: 'mlp', short: 'MLP' }, { id: 'cnn', short: 'CNN' }, { id: 'rnn', short: 'RNN' }, { id: 'vit', short: 'ViT' }, { id: 'vlm', short: 'VLM' },
+  { id: 'cnn', short: 'CNN' }, { id: 'mlp', short: 'MLP' }, { id: 'rnn', short: 'RNN' }, { id: 'vit', short: 'ViT' }, { id: 'vlm', short: 'VLM' },
 ]
 
 /** Stages of each network's flow, in order. Durations are visual seconds at 1x. */
@@ -186,7 +186,7 @@ export const useZoo = create<Z>((set, get) => ({
 
   real: NO_REAL, reads: {},
   runReal(tap) { realKick(tap === true) },
-  net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, timing: {}, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
+  net: 'cnn', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, timing: {}, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
 
   async init() {
     if (get().digits) return
@@ -297,22 +297,58 @@ function llmOut() {
   const typed = st.input.kind === 'text' ? st.input.text : ''
   const same = norm(typed) === norm(ranText)
   if (!norm(typed) || (real && same)) return real
-  // a browser run gives tokens and the next-word scores but no inside view: show its real tokens, blocks left dark
-  if (same && st.tokens.length) return shell(st.tokens.slice(0, MAX_DRAFT).map((t: string) => t.trim() || '·'), `ran|${st.tokens.join('')}`, { noInside: true, done: !!st.final })
+  // a browser run gives tokens and the next-word scores: synthesize a smooth token-and-confidence flow through the blocks
+  if (same && st.tokens.length) return shell(st.tokens.slice(0, MAX_DRAFT).map((t: string) => t.trim() || '·'), `ran|${st.tokens.join('')}`, { summaryMode: true, done: !!st.final })
   // while a run or its download is under way the scene waits for the real tokens (no draft that is about to be replaced)
   if (st.running || st.download || st.pendingDownload || st.probing) return real
   // the user typed something that has not been run: their words become the prompt tiles, the blocks wait for Run
   return shell(draftPieces(typed, useZoo.getState().lang), `draft|${typed}`, { draft: true })
 }
 
-/** The real-model scene's data with no block values: the prompt tiles only (a draft, or a run without an inside view). */
+/** Shapes prompt tokens and causal signal flow when per-layer hooks aren't exposed (draft, or browser-side summary pass). */
 function shell(tokens: string[], id: string, extra: Record<string, unknown>) {
   const st = useStore.getState()
   const T = tokens.length, { L, nh } = lastShape
-  const top = extra.noInside ? (st.final?.topk ?? []).slice(0, 10) : []
+  const isSummary = !!extra.summaryMode
+  const top = isSummary ? (st.final?.topk ?? []).slice(0, 10) : []
+  const conf = Math.max(0.25, Math.min(1, top[0]?.p ?? 0.55))
+  const tokHash = (s: string, i: number) => {
+    let h = 2166136261 ^ i
+    for (let c = 0; c < s.length; c++) h = Math.imul(h ^ s.charCodeAt(c), 16777619)
+    return ((h >>> 0) % 1000) / 1000
+  }
+  const emb = tokens.map((tok, t) => (isSummary ? 0.35 + 0.55 * (t === 0 ? 0.92 : 0.3 + 0.7 * tokHash(tok, t)) : 0.6))
+  const resid = isSummary
+    ? Array.from({ length: T * L }, (_, idx) => {
+        const k = Math.floor(idx / T), t = idx % T
+        const depth = (k + 1) / Math.max(1, L)
+        const base = emb[t] * (0.45 + 0.55 * depth)
+        const wave = Math.sin((k + 1) * 0.75 + tokHash(tokens[t], k) * Math.PI * 2)
+        const lastBoost = t === T - 1 ? 0.25 * conf * depth : 0
+        return Math.max(0.14, Math.min(1, base + lastBoost)) * (wave >= -0.35 ? 1 : -0.6)
+      })
+    : new Array(T * L).fill(0)
+  const heads = isSummary
+    ? Array.from({ length: L * nh }, (_, idx) => {
+        const k = Math.floor(idx / Math.max(1, nh)), h = idx % Math.max(1, nh)
+        const wave = 0.25 + 0.7 * Math.abs(Math.sin((k + 1) * 1.13 + (h + 1) * 0.87 + conf * 3.1))
+        return wave
+      })
+    : new Array(L * nh).fill(0)
+  const attn = isSummary
+    ? Array.from({ length: L }, (_, k) => {
+        const raw = Array.from({ length: T }, (__, j) => {
+          const dist = Math.max(0, T - 1 - j)
+          const sink = j === 0 ? 0.55 : 0
+          const recency = Math.exp(-dist * (0.35 + 0.25 * (k / Math.max(1, L))))
+          return sink + recency * (0.5 + 0.5 * tokHash(tokens[j], k))
+        })
+        const sum = raw.reduce((a, b) => a + b, 0) || 1
+        return raw.map((v) => v / sum)
+      })
+    : Array.from({ length: L }, () => new Array(T).fill(0))
   return {
-    id, T, L, nh, tokens, emb: tokens.map(() => 0.6), resid: new Array(T * L).fill(0),
-    heads: new Array(L * nh).fill(0), attn: Array.from({ length: L }, () => new Array(T).fill(0)), done: false,
+    id, T, L, nh, tokens, emb, resid, heads, attn, done: false,
     probs: Array.from({ length: 10 }, (_, i) => top[i]?.p ?? 0), labels: Array.from({ length: 10 }, (_, i) => (top[i]?.token ?? '').replace(/\n/g, '⏎')),
     ...extra,
   }
@@ -435,3 +471,81 @@ useZoo.subscribe((z, p) => {
   if (!z.inspect || z.inspect === p.inspect || z.net !== 'llm') return
   llmAgain()
 })
+
+/* ------------------------------------------------------------------ sync ML animation with hardware tests */
+const stageStarts = (net: NetId): number[] => {
+  const out: number[] = []
+  let acc = 0
+  for (const s of STAGES[net]) { out.push(acc); acc += s.dur }
+  return out
+}
+const CNN_STARTS = stageStarts('cnn')
+const clamp01 = (x: number) => (Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0)
+
+let syncRaf = 0
+let syncLast = 0
+let wasTesting = false
+let lastBenchIdx = 0
+
+function hwTargetT(net: NetId): number {
+  const hw = useHW.getState()
+  const T = totalZ(net)
+  const frac = clamp01(hw.progress?.fraction ?? 0)
+  if (hw.benchRunning) {
+    const rawIdx = hw.running ? RUN_ALL_ORDER.indexOf(hw.running) : -1
+    const idx = rawIdx >= 0 ? (lastBenchIdx = rawIdx) : lastBenchIdx
+    const f = rawIdx >= 0 ? frac : 1
+    if (net === 'cnn' && idx < STAGES.cnn.length) {
+      return CNN_STARTS[idx] + f * STAGES.cnn[idx].dur
+    }
+    return ((idx + f) / RUN_ALL_ORDER.length) * T
+  }
+  return frac * T
+}
+
+function stopHwSync(settle: boolean) {
+  if (syncRaf) { cancelAnimationFrame(syncRaf); syncRaf = 0 }
+  if (settle) {
+    const z = useZoo.getState()
+    const T = totalZ(z.net)
+    if (Math.abs(z.t - T) > 1e-4) useZoo.setState({ t: T, playing: false })
+  }
+}
+
+function startHwSync() {
+  if (syncRaf) return
+  lastBenchIdx = 0
+  const z0 = useZoo.getState()
+  z0.pause()
+  const T0 = totalZ(z0.net)
+  if (z0.t >= T0 - 0.05) useZoo.setState({ t: 0, playing: false })
+  syncLast = performance.now()
+  const reduce = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+  const step = (now: number) => {
+    const hw = useHW.getState()
+    if (!hw.benchRunning && !hw.running) { syncRaf = 0; return }
+    const dt = Math.min(0.1, Math.max(0.001, (now - syncLast) / 1000))
+    syncLast = now
+    const z = useZoo.getState()
+    const T = totalZ(z.net)
+    const target = Math.max(0, Math.min(T, hwTargetT(z.net)))
+    const cur = z.t
+    const next = reduce ? target : cur + (target - cur) * (1 - Math.exp(-10 * dt))
+    if (Math.abs(next - cur) > 1e-4) useZoo.setState({ t: next })
+    syncRaf = requestAnimationFrame(step)
+  }
+  syncRaf = requestAnimationFrame(step)
+}
+
+useHW.subscribe((hw) => {
+  const testing = !!(hw.benchRunning || hw.running)
+  if (testing && !wasTesting) {
+    wasTesting = true
+    startHwSync()
+  } else if (!testing && wasTesting) {
+    wasTesting = false
+    lastBenchIdx = 0
+    stopHwSync(true)
+  }
+})
+

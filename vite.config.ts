@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
+// @ts-ignore pure ESM module in server-web
+import { createApi, fileStore } from './server-web/server.mjs'
 
 // The FastAPI backend serves /api and /ws on :8000. In dev, Vite proxies to it.
 // base './': the build is a static web app that works from any host and any sub-path.
@@ -20,6 +22,29 @@ const CSP = [
   "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
 ].join('; ')
 const ISOLATION = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'credentialless' }
+
+// Serves leaderboard API endpoints and meta marker during Vite dev so the leaderboard works without building first.
+const devLeaderboard = (): Plugin => ({
+  name: 'dev-leaderboard',
+  apply: 'serve',
+  transformIndexHtml(html) {
+    return html.includes('kundali-board') ? html : html.replace('</head>', '    <meta name="kundali-board" content="on" />\n  </head>')
+  },
+  configureServer(s) {
+    const store = fileStore(resolve(__dirname, '.kundali-scores.json'))
+    const api = createApi({ store, trustProxy: true })
+    s.middlewares.use(async (req, res, next) => {
+      const path = (req.url ?? '').split('?')[0].replace(/\/+$/, '')
+      if (path !== '/api/scores' && path !== '/api/leaderboard' && path !== '/api/leaderboard/me') return next()
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost:3000')
+        await api(req, res, url, { 'X-Content-Type-Options': 'nosniff' })
+      } catch (err) {
+        next(err as Error)
+      }
+    })
+  },
+})
 
 // The ONNX runtime's WebAssembly files, served from our own origin at /ort/ (no third-party CDN).
 const ORT = ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']
@@ -60,9 +85,11 @@ export default defineConfig({
   base: './',
   // the app version, sent with a leaderboard score
   define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version) },
-  plugins: [react(), selfHostOrt(), stampSw()],
+  plugins: [react(), devLeaderboard(), selfHostOrt(), stampSw()],
   server: {
-    port: 5173,
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
     // dev keeps inline scripts and a live-reload socket, so only isolation is applied here; preview gets the full policy
     headers: { ...ISOLATION },
     proxy: {

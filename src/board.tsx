@@ -13,7 +13,7 @@ export type BoardPillar = (typeof BOARD_PILLARS)[number]
 export interface BoardRow { rank: number; name: string; best: number; pillars: Partial<Record<BoardPillar, number | null>>; tested?: number; backend?: string; updatedAt: string }
 export interface BoardMe { rank: number; total: number; name: string; best: number; latest?: number; visits: number; updatedAt: string; pillars?: BoardRow['pillars'] }
 export interface BoardPayload { name: string; score: number; pillars: Record<BoardPillar, number | null>; tested: number; backend: string; appVersion: string }
-export type SendState = 'idle' | 'sending' | 'sent' | 'off' | 'offline' | 'blocked' | 'error'
+export type SendState = 'idle' | 'sending' | 'sent' | 'off' | 'offline' | 'blocked' | 'rate_limited' | 'error'
 
 const get = (k: string) => { try { return localStorage.getItem(k) } catch { return null } }
 const put = (k: string, v: string | null) => { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v) } catch { /* private mode */ } }
@@ -36,8 +36,32 @@ export const useBoard = create<Board>(() => ({ open: false, off: get('ns.board')
 if (typeof window !== 'undefined') (window as any).__board = useBoard
 
 /** Open or close the leaderboard. A hook for any button (the top bar can call this). */
-export const openLeaderboard = () => useBoard.setState({ open: true })
+export const openLeaderboard = () => {
+  useBoard.setState({ open: true })
+  const st = useBoard.getState()
+  if (st.pending && !st.off && st.state === 'error' && boardHere()) void send(st.pending)
+}
 export const closeLeaderboard = () => useBoard.setState({ open: false })
+
+export function retryPending() {
+  const st = useBoard.getState()
+  if (st.pending && !st.off && st.state !== 'sending' && boardHere()) void send(st.pending)
+}
+
+export function startTestAll() {
+  const fn = useBoard.getState().testAll
+  if (fn) { fn(); return }
+  closeLeaderboard()
+  void import('./store').then(({ jumpTo }) => {
+    jumpTo('power')
+    let n = 0
+    const t = setInterval(() => {
+      const f = useBoard.getState().testAll
+      if (f) { clearInterval(t); f() }
+      else if (++n > 40) clearInterval(t)
+    }, 50)
+  })
+}
 
 export function setBoardOff(off: boolean) {
   put('ns.board', off ? 'off' : null)
@@ -78,13 +102,13 @@ export async function submitScore(s: { score: number; pillars: Partial<Record<st
 
 async function send(p: BoardPayload) {
   const id = deviceId(true)
-  if (!id) { useBoard.setState({ state: 'error' }); return }
+  if (!id) { useBoard.setState({ state: 'error', pending: p }); return }
   useBoard.setState({ state: 'sending', pending: null })
   try {
     const r = await fetch('/api/scores', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: id, ...p }) })
     const j = await r.json().catch(() => ({}))
     if (r.ok && j.me) useBoard.setState({ state: 'sent', me: j.me })
-    else useBoard.setState({ state: j.error === 'name_not_allowed' ? 'blocked' : 'error', pending: p })
+    else useBoard.setState({ state: j.error === 'name_not_allowed' ? 'blocked' : r.status === 429 || j.error === 'rate_limited' ? 'rate_limited' : 'error', pending: p })
   } catch { useBoard.setState({ state: 'error', pending: p }) }
 }
 
@@ -124,6 +148,7 @@ export function BoardStatus({ className = 't5-line' }: { className?: string }) {
   const text = s === 'sending' ? 'Sending your score to the leaderboard…'
     : s === 'sent' && me ? `On the leaderboard: #${me.rank.toLocaleString('en-US')} of ${me.total.toLocaleString('en-US')}.`
     : s === 'blocked' ? 'This name cannot go on the leaderboard. Change your name, then test again.'
+    : s === 'rate_limited' ? 'Too many submissions right now — your score is saved here; try again shortly.'
     : s === 'error' ? 'Your score did not reach the leaderboard. It is saved here.'
     : s === 'off' ? 'You are off the leaderboard.'
     : null

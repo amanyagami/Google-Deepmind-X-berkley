@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { Component, lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
 import { BoardHost, BoardOptOut, openLeaderboard } from './board'
 // Each view loads its own code on first use, so the first page needs only what it shows.
@@ -85,6 +85,7 @@ function NameCard() {
     <div className="namewall" data-namecard>
       <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
         <div className="namefields">
+          <div className="namebrand"><KundaliLogo size={20} /><span>Kundali</span></div>
           <h3 id="nm-t">What is your name?</h3>
           <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
           <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
@@ -106,12 +107,31 @@ function SavedLine() {
   return <span className="savedline">{i.bytes ? <>Saved on this device: {mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB · <button type="button" className="t5link" onClick={() => void useStore.getState().clear().then(load)}>Clear</button></> : 'Nothing saved on this device yet.'}</span>
 }
 
-/** The Kundali mark: a North-Indian birth chart (square, both diagonals, inner diamond = 12 houses), in the brand gradient. */
+/** The Kundali mark: a North-Indian birth chart (chamfered square, both diagonals, inner diamond, vertex dots and central bindu star). */
 export function KundaliLogo({ size = 20 }: { size?: number }) {
+  const uid = useId().replace(/:/g, '')
+  const gid = `ns-lg-${uid}`, cid = `ns-lc-${uid}`, aid = `ns-la-${uid}`
   return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 24 24" aria-hidden fill="none" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round">
-      <defs><linearGradient id="ns-logo-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#9a82ff" /><stop offset=".55" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" /></linearGradient></defs>
-      <path stroke="url(#ns-logo-g)" d="M2 2h20v20H2zM2 2l20 20M22 2L2 22M12 2l10 10-10 10L2 12z" />
+    <svg className="logo" width={size} height={size} viewBox="0 0 24 24" aria-hidden fill="none">
+      <defs>
+        <linearGradient id={gid} x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#9a82ff" /><stop offset=".52" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" />
+        </linearGradient>
+        <linearGradient id={cid} x1="8" y1="8" x2="16" y2="16" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#fff4e0" /><stop offset=".5" stopColor="#ffa94d" /><stop offset="1" stopColor="#ff7ab6" />
+        </linearGradient>
+        <radialGradient id={aid} cx="50%" cy="50%" r="50%">
+          <stop offset="0" stopColor="#3ddcf5" stopOpacity=".24" /><stop offset=".6" stopColor="#9a82ff" stopOpacity=".1" /><stop offset="1" stopColor="#ff8fc4" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+      <rect x="2" y="2" width="20" height="20" rx="3.4" fill={`url(#${aid})`} stroke={`url(#${gid})`} strokeWidth="1.75" strokeLinejoin="round" />
+      <path d="M2.8 2.8l18.4 18.4M21.2 2.8L2.8 21.2" stroke={`url(#${gid})`} strokeOpacity=".82" strokeWidth="1.35" strokeLinecap="round" />
+      <path d="M12 2L22 12 12 22 2 12z" stroke={`url(#${gid})`} strokeWidth="1.65" strokeLinejoin="round" />
+      <circle cx="12" cy="2" r="1.25" fill="#9a82ff" />
+      <circle cx="22" cy="12" r="1.25" fill="#3ddcf5" />
+      <circle cx="12" cy="22" r="1.25" fill="#ff8fc4" />
+      <circle cx="2" cy="12" r="1.25" fill="#3ddcf5" />
+      <path d="M12 8.4l1.1 2.5L15.6 12l-2.5 1.1L12 15.6l-1.1-2.5L8.4 12l2.5-1.1z" fill={`url(#${cid})`} />
     </svg>
   )
 }
@@ -326,8 +346,8 @@ function useDrawers() {
 
 export default function App() {
   const init = useStore((s) => s.init)
-  const probeRes = useStore((s) => s.probe)
-  const layers = useStore((s) => s.layers.length)
+
+
   const view = useStore((s) => s.appView)
   const flow = useRef<HTMLDivElement>(null)
   const seen = useSections(flow)
@@ -343,7 +363,7 @@ export default function App() {
     return () => mo.disconnect()
   }, [])
   // the default model downloads by itself and runs when ready (no click); the recorded run plays meanwhile
-  useEffect(() => { init(); void useStore.getState().autoStart() }, [init])
+  useEffect(() => { init() }, [init])
   // a link such as /#power opens at that section (the old #journey link opens the merged Machine section)
   useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first === 'journey' ? 'power' : first, false)) }, [])
   useEffect(() => { try { history.replaceState(null, '', view === 'model' ? location.pathname + location.search : `${location.search}#${view}`) } catch { /* ignore */ } }, [view])
