@@ -697,6 +697,18 @@ export async function disposeAll(): Promise<void> {
   const all = [...pool.values()]
   pool.clear()
   for (const c of all) { try { await (await c.p).pipe?.dispose?.() } catch { /* the load failed, nothing to free */ } }
+  await disposeVlm()
+}
+/** Free the image model and the vision-language model (the language model stays): only one real session is kept alive at a time. */
+export async function releaseVision(): Promise<void> {
+  if (worker && !IN_WORKER) { try { await callWorker(worker, { type: 'dispose', vision: true }, {}) } catch { /* no worker to free */ } }
+  for (const [task, c] of [...pool.entries()]) { if (task === 'text-generation') continue; pool.delete(task); try { await (await c.p).pipe?.dispose?.() } catch { /* nothing to free */ } }
+  await disposeVlm()
+}
+async function disposeVlm(): Promise<void> {
+  const v = vlmLoaded; vlmLoaded = null
+  if (!v) return
+  try { const { model } = await v.p; await model?.dispose?.() } catch { /* the load failed, nothing to free */ }
 }
 /** Load (or reuse) the single live pipeline. `cached` is true when it was already in memory. */
 export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 'wasm', dtype: string): Promise<{ l: Loaded; cached: boolean }> {
@@ -1303,7 +1315,7 @@ export type ModelWorkerIn =
   | { type: 'load'; id: number; spec: ModelSpec; device: 'webgpu' | 'wasm'; dtype?: string; avoid?: string[] }
   | { type: 'run'; id: number; spec: ModelSpec; input: TaskInput; device: 'webgpu' | 'wasm'; dtype?: string; avoid?: string[]; prepared?: Prepared }
   | { type: 'cancel'; id: number }
-  | { type: 'dispose'; id: number }
+  | { type: 'dispose'; id: number; vision?: boolean }
   | { type: 'activation'; id: number; q: { repo: string; input: TaskInput; layer: number; pos: number; kind: 'resid' | 'attn' | 'mlp' } }
   | { type: 'vlm'; id: number; q: { image: string; question: string; device: 'webgpu' | 'wasm' } }
 /** Worker -> page (frames carry transferable buffers) */
@@ -1391,7 +1403,7 @@ function serveWorker() {
   const job = async (m: ModelWorkerIn, ac: AbortController) => {
     if (m.type === 'cancel') return
     if (ac.signal.aborted) { post({ type: 'error', id: m.id, code: 'cancelled', message: 'The run was cancelled.' }); ctl.delete(m.id); return }
-    if (m.type === 'dispose') { await disposeAll(); post({ type: 'done', id: m.id, stats: {} as any }); ctl.delete(m.id); return }
+    if (m.type === 'dispose') { if ((m as any).vision) await releaseVision(); else await disposeAll(); post({ type: 'done', id: m.id, stats: {} as any }); ctl.delete(m.id); return }
     if (m.type === 'activation') { post({ type: 'activation', id: m.id, result: await activation(m.q) }); ctl.delete(m.id); return }
     if (m.type === 'vlm') {
       try {
