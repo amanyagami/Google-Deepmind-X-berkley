@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
+import { BoardHost, BoardOptOut, openLeaderboard } from './board'
 // Each view loads its own code on first use, so the first page needs only what it shows.
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
@@ -72,7 +73,8 @@ function HowItWorks() {
   )
 }
 
-/** First visit: ask for a name (stays on this device). Enter continues; "Use Guest" skips. */
+/** First visit: ask for a name. It goes on the score card and, after Test all, on the public leaderboard (unless the
+ *  visitor ticks "Keep me off the leaderboard"). Enter continues; "Use Guest" skips. */
 function NameCard() {
   const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
   const [v, setV] = useState('')
@@ -84,8 +86,9 @@ function NameCard() {
       <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
         <div className="namefields">
           <h3 id="nm-t">What is your name?</h3>
-          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
-          <p className="namenote">It stays on this device.</p>
+          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+          <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
+          <BoardOptOut />
           <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
         </div>
         <HowItWorks />
@@ -142,7 +145,8 @@ function ProfileMenu() {
           </form>
           <div className="profrow"><span className="lbl">Theme</span><ThemeToggle /></div>
           <p className="profline mono">{device}</p>
-          <p className="profline"><Ico d={SHIELD} /> Runs on your device. Nothing is uploaded. <SavedLine /></p>
+          <p className="profline"><Ico d={SHIELD} /> Models run on your device. Only your name and score go on the leaderboard. <SavedLine /></p>
+          <BoardOptOut />
         </div>
       )}
     </div>
@@ -163,7 +167,7 @@ function TopBar({ view }: { view: AppView }) {
         ))}
       </nav>
       <span className="grow" />
-      <button className="btn2 boardbtn" data-board aria-label="Leaderboard" onClick={() => window.dispatchEvent(new Event('ns-open-board'))}><Ico d={CUP} /><span className="boardtxt">Leaderboard</span></button>
+      <button className="btn2 boardbtn" data-board aria-label="Leaderboard" onClick={openLeaderboard}><Ico d={CUP} /><span className="boardtxt">Leaderboard</span></button>
       <ProfileMenu />
     </header>
   )
@@ -358,6 +362,7 @@ export default function App() {
       </div>
       <Dock />
       <NameCard />
+      <BoardHost />
     </div>
   )
 }

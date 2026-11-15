@@ -37,24 +37,55 @@ Open the `neural-studio` folder (File > Open Folder), then:
 
 ## Deploy to Cloud Run
 
-Cloud Run serves the web app only (browser mode). The `Dockerfile` builds `web/` and serves it with nginx on port
-8080, with the same headers as `web/public/_headers` (set in `nginx.conf.template`; keep the two in step).
-Replace `PROJECT_ID` and `REGION` (for example `europe-west1`).
+Cloud Run serves the web app (browser mode) and the score leaderboard from one container. The `Dockerfile` builds
+`web/` and runs `server-web/server.mjs`, one small Node 22 server (no framework) on port 8080. It serves `web/dist`
+with the headers of `web/public/_headers` (it reads that file, so there is one place to change them), and the
+leaderboard API. Scores are stored in Firestore in the same project. Replace `PROJECT_ID` and `REGION`
+(for example `europe-west1`).
 
 ```powershell
 gcloud auth login
 gcloud config set project PROJECT_ID
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
-gcloud run deploy kundali --source . --region REGION --allow-unauthenticated --port 8080 --memory 512Mi --cpu 1 --min-instances 0
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com firestore.googleapis.com
+
+# once: the Firestore database (Native mode) for the leaderboard
+gcloud firestore databases create --location=REGION
+
+# once: let the service's account read and write Firestore. Cloud Run uses the Compute Engine default
+# service account unless you pick another: PROJECT_NUMBER-compute@developer.gserviceaccount.com
+gcloud projects describe PROJECT_ID --format="value(projectNumber)"
+gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:PROJECT_NUMBER-compute@developer.gserviceaccount.com" --role="roles/datastore.user"
+
+gcloud run deploy kundali --source . --region REGION --allow-unauthenticated --port 8080 --memory 512Mi --cpu 1 --min-instances 0 --set-env-vars GOOGLE_CLOUD_PROJECT=PROJECT_ID
 ```
 
 The last command prints the app's URL. Run it again to ship a new version.
+
+The API (same origin only; other sites get 403 and no CORS headers):
+
+| Call | What it does |
+| --- | --- |
+| `POST /api/scores` | `{deviceId, name, score, pillars, tested, backend, appVersion}`. One row per device: its best score is kept, the latest score, date and visit count are updated. Stored as `scores/{sha256(deviceId)}`; the raw device ID is never stored. Body at most 4 kB; values are range-checked and the score must match its five parts; simple name blocklist; 10 writes per device and 30 per IP per hour (per instance). |
+| `GET /api/leaderboard?limit=50` | top N by best score: rank, name, best, parts, date |
+| `GET /api/leaderboard/me?deviceId=...` | this device's rank, even outside the top N |
+
+Settings (environment): `KUNDALI_STORE=memory` keeps scores in memory (local runs and tests; also the default when
+neither `GOOGLE_CLOUD_PROJECT` nor Cloud Run's `K_SERVICE` is set), `KUNDALI_FIRESTORE_DB` for a database other
+than `(default)`, `KUNDALI_RATE_DEVICE`, `KUNDALI_RATE_IP`, `KUNDALI_ORIGINS` (extra allowed origins, comma separated).
+
+Run it on this PC without Google Cloud, and test it:
+
+```powershell
+cd web ; npm run build ; cd ..\server-web ; npm install
+$env:KUNDALI_STORE='memory'; $env:PORT='8090'; node server.mjs     # open http://127.0.0.1:8090
+node --test server.test.mjs                                        # validation, upsert, ranking, limits, headers
+```
 
 Test the image on this PC first (needs Docker Desktop):
 
 ```powershell
 docker build -t kundali .
-docker run --rm -p 8080:8080 -e PORT=8080 kundali   # open http://127.0.0.1:8080
+docker run --rm -p 8080:8080 -e PORT=8080 -e KUNDALI_STORE=memory kundali   # open http://127.0.0.1:8080
 ```
 
 ## What you see
@@ -62,7 +93,8 @@ docker run --rm -p 8080:8080 -e PORT=8080 kundali   # open http://127.0.0.1:8080
 One page, no tabs. **Model** (left) and **Machine** (right) sit side by side on a wide screen and stack on a phone.
 Each has a **Details** drawer, closed until you open it (Esc or a click outside closes it). A slim score strip sits on top.
 
-- **First visit.** Type your name (it stays on this device and goes on your score card). The default model downloads by
+- **First visit.** Type your name. It goes on your score card and, after Test all, on the public leaderboard
+  (tick "Keep me off the leaderboard" to send nothing). The default model downloads by
   itself with a progress bar and Cancel, then runs. Models are saved on this device: the second visit downloads nothing
   and works offline. Open the 💡 in the top bar to see what is saved and clear it.
 - **Light and dark.** The toggle in the top bar follows your system and remembers your choice.
@@ -76,10 +108,14 @@ Each has a **Details** drawer, closed until you open it (Esc or a click outside 
 - **Machine.** Every part of the machine shows live numbers, and the same prompt is replayed through the real hardware
   (companion only). The score strip shows your overall score; the Machine drawer shows it again with five rows
   (Compute, Memory, GPU, Storage, Model). Click a row to open its tests; every test has a default input and "use my own".
-  After "Test all" you get one score with how much was tested, the weakest part, and a share card.
-- **Speed.** First JS is about 27 kB gzipped; the 3D loads when needed; models run in a Web Worker so the page never
+  After "Test all" you get one score with how much was tested, the weakest part, and a share card. The score also
+  goes on the global **Leaderboard** (button next to Test all and Share): the top 50 devices by best score, and your
+  own rank even outside the top 50.
+- **Speed.** First JS is about 30 kB gzipped; the 3D loads when needed; models run in a Web Worker so the page never
   stalls. The service worker makes repeat visits instant.
-- **Privacy.** Everything runs in your browser. Only model files come from Hugging Face. Your name never leaves the device.
+- **Privacy.** Everything runs in your browser. Only model files come from Hugging Face. After Test all, your name,
+  your score and its five parts go on the public leaderboard, with a random device ID that this browser keeps (the
+  server stores only a hash of it). Tick "Keep me off the leaderboard" on the name card and nothing is sent.
 
 ## What is where
 
@@ -94,6 +130,8 @@ Each has a **Details** drawer, closed until you open it (Esc or a click outside 
 | `server/make_examples.py` | records the replay packs the web app plays without a companion (`python make_examples.py machine` for the Machine pack) |
 | `web/src/hw` | machine view: timeline, scenes, score, power, browser benchmarks (`wasmKernel.ts`: hand-written WASM SIMD) |
 | `web/src/zoo` | network zoo: forward passes and stress tests (`nets.ts`), state (`zooStore.ts`), 3D scene, UI (`ZooUI.tsx`, including the comparison and robustness cards) |
+| `server-web/server.mjs` | Cloud Run server: static files with the security headers, leaderboard API, Firestore or memory store |
+| `web/src/board.tsx`, `web/src/ui/Leaderboard.tsx` | leaderboard: device ID, opt-out, submit after Test all; the dialog (loaded on first open) |
 | `web/tests`, `server/tests` | unit tests (`npm test`, `pytest`); `web/tests/e2e` drives the real app in Edge |
 
 ## Checked on the test PC (Ryzen 7 8745HS, Radeon 780M, DDR5-5600, NVMe Gen4 x4)

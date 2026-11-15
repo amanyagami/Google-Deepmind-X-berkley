@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
 import { scaleLinear, scaleLog } from 'd3'
 import { useStore } from '../store'
+import { BoardStatus, closeLeaderboard, LeaderboardButton, submitScore, useBoard } from '../board'
 import { Explainer, Hint } from '../ui/charts'
 import { inputLimits, peaksOf, useHWThrottled, type Snapshot, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
 import { probe } from './browserBench'
@@ -113,8 +114,22 @@ async function runBatch(ids: ComponentId[]) {
     if (useUI.getState().cancelled) break
     await exec(id, null); ran++
   }
+  const stopped = useUI.getState().cancelled
   useUI.setState({ batch: null })
   if (ran && !MOCK) S3().snapshot?.()
+  if (ran && !MOCK && !stopped) toBoard(ids)
+}
+/** After Test all (or Test the rest) ends with a full set: send the final score to the leaderboard (board.tsx decides if it may). */
+function toBoard(ids: ComponentId[]) {
+  const res: Record<string, TestResult> = S3().results ?? {}
+  const done = TEST_IDS.every((i) => res[i] && !res[i].flags.includes('cancelled'))
+  if (!done && ids.length < TEST_IDS.length) return
+  try {
+    const f = finalScore(res)
+    if (!(f.score > 0)) return
+    const where = res.gpu?.env?.where ?? Object.values(res)[0]?.env?.where ?? ''
+    void submitScore({ score: f.score, pillars: Object.fromEntries(f.pillars.map((p) => [p.id, p.score])), tested: f.coverage.ran / f.coverage.of, backend: where }, useStore.getState().name)
+  } catch { /* results of two scales: no single score to send */ }
 }
 async function runOne(id: ComponentId, input?: number | string | null) { if (!busyNow()) await exec(id, input) }
 function cancelAll() {
@@ -389,8 +404,10 @@ function ScoreHero() {
       <div className="t5-row">
         <button type="button" className="t5-btn pri" disabled={busy || !rest.length} data-test="rest" onClick={() => runBatch(rest)}>{f.tested ? 'Test the rest' : 'Test all'}</button>
         <button type="button" className="t5-btn" data-share onClick={shareNow}>Share</button>
+        <LeaderboardButton />
         <button type="button" className="t5-link" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Fewer options' : 'More options'}</button>
       </div>
+      <BoardStatus />
       {open && <SharePanel f={f} name={name} onClose={() => setOpen(false)} />}
     </div>
   )
@@ -474,7 +491,7 @@ function ScoreStrip() {
         ? <><span className="t5-srun mono">{labelOf(running).replace(/^CPU, /, 'CPU ')}{batch ? ` ${idx + 1}/${batch.ids.length} · ${secs} s` : ''}
           <span className="t5-bar" role="progressbar" aria-label="Test progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)}><i style={{ width: `${Math.round(frac * 100)}%` }} /></span></span>
           <button type="button" className="t5-btn" onClick={cancelAll}>Cancel</button></>
-        : <button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={() => runBatch(TEST_IDS)}>Test all</button>}
+        : <><LeaderboardButton /><button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={() => runBatch(TEST_IDS)}>Test all</button></>}
     </div>
   )
 }
@@ -539,6 +556,10 @@ const T5_CSS = `
 .t5-stier{font:600 13px var(--display)}.t5-sinfo,.t5-sweak{font-size:13px;color:var(--muted)}
 .t5-srun{display:flex;align-items:center;gap:10px;font-size:12.5px;flex:1;min-width:140px}
 .t5-strip>.t5-btn:last-child{margin-left:auto}
+.t5-board{display:inline-flex;align-items:center;justify-content:center;gap:6px}.t5-board svg{flex:none}
+.t5-strip>.t5-board{margin-left:auto}.t5-strip>.t5-board+.t5-btn:last-child{margin-left:0}
+.t5-sinfo{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+@media (max-width:600px){.t5-strip>.t5-board{padding:0;width:44px}.t5-strip>.t5-board .t5-blbl{display:none}}
 @media (max-width:600px){.t5-stier,.t5-sweak{display:none}.t5-score{font-size:var(--t3,28px)}}
 .t5-btn{min-height:var(--hit,40px);min-width:var(--hit,40px);padding:0 14px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;font:600 13px var(--body);white-space:nowrap}
 .t5-btn:hover:not(:disabled){border-color:var(--muted)}
@@ -1004,6 +1025,8 @@ function DetailsButton() {
 /** The one machine section: the electricity scene, live always, with the prompt's journey played on it. */
 export function MachineView() {
   useMachineBoot()
+  // the empty leaderboard offers Test all
+  useEffect(() => { useBoard.setState({ testAll: () => { closeLeaderboard(); void runBatch(TEST_IDS) } }); return () => useBoard.setState({ testAll: null }) }, [])
   useSelectToCard()
   // a link straight to the machine opens its drawer once
   useEffect(() => { if (/^#(machine|power|journey)/.test(location.hash)) useStore.getState().setRail('machine', true) }, [])

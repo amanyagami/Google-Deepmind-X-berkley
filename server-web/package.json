@@ -1,0 +1,15 @@
+{
+  "name": "kundali-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "One small Node server for Cloud Run: serves web/dist and the score leaderboard API.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test server.test.mjs"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "9.4.1"
+  }
+}
