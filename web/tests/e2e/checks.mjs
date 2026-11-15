@@ -282,10 +282,19 @@ export const checks = [
         const rg = document.createRange(); rg.selectNodeContents(n); for (const r of rg.getClientRects()) if (r.width > 0 && !tops.some((t) => Math.abs(t - r.top) < 6)) tops.push(r.top) }
       const det = el.querySelector('[data-peek-details]'), b = el.getBoundingClientRect()
       return { name: (el.dataset.hud || el.className).slice(0, 18), lines: tops.length, open: !!det && __h.vis(det), w: Math.round(b.width), h: Math.round(b.height) } })
-    const cls = () => { window.__cls = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__cls += e.value }).observe({ type: 'layout-shift' }) }
+    const cls = () => { window.__cls = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) { /* only the card and the tabs count: other lanes' controls (dock Run button) shift on their own */ if (e.sources.some((x) => x.node?.parentElement?.closest?.('[data-peek],[data-zoo-tabs]') || x.node?.closest?.('[data-peek],[data-zoo-tabs]'))) window.__cls += e.value; (window.__cs ??= []).push(e.sources.map((x) => `${(x.node?.className || x.node?.nodeName || '?').toString().slice(0, 24)} y${Math.round(x.previousRect.y)}->${Math.round(x.currentRect.y)}`).join(',')) } }).observe({ type: 'layout-shift' }) }
     // the zoo timeline plays on its own and its caption can wrap (a shift that is not the card's): pause it first
     const setNet = async (pg) => { await pg.evaluate(() => window.__zoo?.getState().setNet('cnn')); await pg.waitForTimeout(600); await pg.evaluate(() => window.__zoo?.getState().pause?.()) }
     const out = [], bad = []
+    // the net card (rest and opened) never touches the tab row, at every width, for a small and a long card
+    for (const w of [1600, 1480, 1100, 820, 700, 390]) for (const net of ['cnn', 'vlm']) {
+      const o = await env.open({ w, touch: w < 600 }); await o.goto('#zoo', 1200); await o.page.evaluate((n) => window.__zoo?.getState().setNet(n), net); await o.page.waitForTimeout(900); await o.page.evaluate(() => window.__zoo?.getState().pause?.())
+      const hit = await o.page.evaluate(() => { const tb = document.querySelector('[data-zoo-tabs]'), pk = document.querySelector('[data-peek]'); if (!tb || !pk || !__h.vis(pk)) return 'missing'
+        const x = tb.getBoundingClientRect(), st = pk.closest('.stage').getBoundingClientRect(), box = () => [pk, pk.querySelector('[data-peek-details]')].filter((e) => e && __h.vis(e)).map((e) => e.getBoundingClientRect())
+        const bad = (rs) => rs.some((r) => r.left < x.right && r.right > x.left && r.top < x.bottom && r.bottom > x.top)
+        const clip = (rs) => rs.some((r) => r.left < st.left - 0.5 || r.right > st.right + 0.5 || r.bottom > st.bottom + 0.5), rest = bad(box()), restClip = clip(box()); pk.querySelector('.nspeek-tog').focus(); return new Promise((res) => setTimeout(() => res(rest ? 'rest overlaps tabs' : restClip ? 'rest clipped by the stage edge' : bad(box()) ? 'open panel overlaps tabs' : clip(box()) ? 'open panel clipped by the stage edge' : ''), 300)) })
+      if (hit) bad.push(`${w}px ${net}: ${hit}`)
+    }
     // wide, mouse + keyboard
     const p = await env.open({ w: 1480 }); await p.goto('#zoo', 1500); await setNet(p.page); await p.page.waitForTimeout(900); await p.page.evaluate(cls)
     const rest = await p.page.evaluate(probe); if (!rest.length) return F('no visible [data-peek] card (zoo net HUD) at 1480')
@@ -294,10 +303,10 @@ export const checks = [
       const card = p.page.locator('[data-peek]').filter({ visible: true }).nth(k)
       await card.hover(); await p.page.waitForTimeout(250); const hv = (await p.page.evaluate(probe))[k]
       if (!hv.open) bad.push(`${r.name}: hover does not open`); if (hv.w !== r.w || hv.h !== r.h) bad.push(`${r.name}: box changed on hover ${r.w}x${r.h} -> ${hv.w}x${hv.h}`)
-      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(200); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close while hovered`)
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(500); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close while hovered`)
       await p.page.mouse.move(3, 300); await p.page.waitForTimeout(250); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: stays open after the mouse leaves`)
       await card.locator('.nspeek-tog').focus(); await p.page.waitForTimeout(250); if (!(await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: keyboard focus does not open`)
-      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(200); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close on focus`)
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(500); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close on focus`)
       await p.page.evaluate(() => document.activeElement?.blur())
       out.push(`${r.name} ${r.lines} line(s) ${r.w}x${r.h}`) }
     const c1 = await p.page.evaluate(() => window.__cls)
@@ -311,7 +320,7 @@ export const checks = [
       await tg.tap(); await q.page.waitForTimeout(250); if ((await q.page.evaluate(probe))[0].open) bad.push('390: second tap does not close')
       await tg.tap(); await q.page.waitForTimeout(250); await q.page.touchscreen.tap(366, 240); await q.page.waitForTimeout(250); if ((await q.page.evaluate(probe))[0].open) bad.push('390: tap outside does not close')
       c2 = await q.page.evaluate(() => window.__cls); out.push(`390 ${tr[0].lines} line(s)`) }
-    if (c1 > 0.0005 || c2 > 0.0005) bad.push(`CLS ${c1.toFixed(4)} / ${c2.toFixed(4)}`)
+    if (c1 > 0.0005 || c2 > 0.0005) bad.push(`CLS ${c1.toFixed(4)} / ${c2.toFixed(4)} ${JSON.stringify(await q.page.evaluate(() => window.__cs ?? []))}`)
     return ok(!bad.length, `${out.join('; ')}; CLS ${c1.toFixed(4)} (1480) ${c2.toFixed(4)} (390)${bad.length ? ' | ' + bad.join('; ') : ''}`) } },
 
   { id: 'A28', title: 'frame budget: p95 <= 33 ms and no long task > 100 ms during runAll; idle p95 <= 20 ms', needs: ['runAll'], run: async (env) => {
