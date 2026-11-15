@@ -78,7 +78,7 @@ function DrawPad() {
   const reads = useMemo(() => (NETS.every((n) => packs[n.id]) ? NETS.map((n) => ({ id: n.id, r: readDigit(n.id, packs[n.id]!, img) })) : null), [img, packs])
   const verdict = useMemo(() => (reads && inked ? consensus(reads.map((x) => x.r)) : null), [reads, inked])
   return (
-    <div className="s6padwrap">
+    <div className="s6padwrap" data-pad-wrap>
       <div className="s6pad">
         <Explainer id="pad" placement="top-right"><Say id="pad" /></Explainer>
         <canvas ref={cv} data-pad width={PAD} height={PAD} aria-label="Draw a number here" role="img" style={{ touchAction: 'none' }}
@@ -93,8 +93,8 @@ function DrawPad() {
         {!inked && <div className="s6guide" aria-hidden><i /><span>Draw a number</span></div>}
       </div>
       <div className="s6row">
-        <button className="btn2" onClick={clear} title="Clear (C)">Clear</button>
-        <button className="btn2" onClick={undo} disabled={!nStrokes} title="Undo the last stroke (Z)">Undo</button>
+        <button className="btn2" data-pad-clear onClick={clear} title="Clear (C)">Clear</button>
+        <button className="btn2" data-pad-undo onClick={undo} disabled={!nStrokes} title="Undo the last stroke (Z)">Undo</button>
         <span className="s6line">Try a digit</span>
       </div>
       <div className="s6chips" role="group" aria-label="Try a digit">{Array.from({ length: 10 }, (_, d) => <button key={d} className="btn2" onClick={() => pick(d)}>{d}</button>)}</div>
@@ -399,6 +399,10 @@ function ErrorBox({ text, action, onAction }: { text: string; action: string; on
 /** Consent, download progress and run status. The numbers come from the main store (plan, download, running). */
 function Status() {
   const { pending, download, running, runStatus, runErr, runErrCode, confirm, decline, cancel } = useStore(useShallow((s) => ({ runErrCode: s.runErrCode, pending: s.pendingDownload, download: s.download, running: s.running, runStatus: s.runStatus, runErr: s.runErr, confirm: s.confirmDownload, decline: s.declineDownload, cancel: s.cancelDownload })))
+  if (runErr && !download) {
+    const retry = runErrCode === 'offline' || runErrCode === 'aborted' || runErrCode === 'unknown'
+    return <ErrorBox text={runErr} action={retry ? 'Try again' : 'Pick another model'} onAction={() => (retry ? void runNow() : window.dispatchEvent(new Event('ns-open-picker')))} />
+  }
   const auto = typeof (useStore.getState() as any).autoStart === 'function'   // the strip over the scene shows progress
   if (auto && (pending || download || running)) return null
   if (pending) {
@@ -649,27 +653,28 @@ function InputBox({ compact = false }: { compact?: boolean }) {
   const langOk = task === 'text-generation' || task === 'text-classification'
   const multi = isMultilingual(spec)
   const spoken = kind === 'audio' && multi
-  const swap = async () => {
-    const st = useStore.getState()
-    let r: any = null
-    try { r = await (engine as any).multilingualFor?.(task) } catch { /* not ready: use the catalog */ }
-    let repo: string | undefined = typeof r === 'string' ? r : r?.repo ?? r?.id
-    let ex = repo ? st.examples.find((e) => e.id === repo || e.repo.toLowerCase() === String(repo).toLowerCase()) : undefined
-    if (!ex && !repo) ex = st.examples.find((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
-    if (ex) await st.loadExample(ex.id); else if (repo) await st.loadModel(repo, langPrompt(lang, task))
+  const canSwap = !!(engine as any).multilingualFor?.(task)
+  /** A language fills the prompt; a model that only knows English is swapped for the smallest multilingual one, which then downloads by itself. */
+  const pickLang = async (id: LangId) => {
+    setLang(id); (useStore.getState() as any).setLanguage?.(id)
+    set({ kind: 'text', text: langPrompt(id, task) })
+    if (id !== 'en' && !isMultilingual(useStore.getState().spec) && canSwap) {
+      useStore.getState().cancelDownload()
+      await (useStore.getState() as any).switchToMultilingual?.()
+      set({ kind: 'text', text: langPrompt(id, task) })
+    }
   }
-  const canSwap = typeof (engine as any).multilingualFor === 'function' || examplesAll.some((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
-  const needsMulti = langOk && lang !== 'en' && !multi
+  const needsMulti = langOk && lang !== 'en' && !multi && !canSwap
   return (
     <div className="stack" style={{ gap: 8 }}>
-      {needsMulti && <div className={`s6row s6note2 ${compact ? 's6float' : ''}`} data-note><span className="s6line">This model knows English best.</span>{canSwap && <button className="btn2 sm" onClick={swap}>Use a multilingual model</button>}</div>}
+      {needsMulti && <div className={`s6row s6note2 ${compact ? 's6float' : ''}`} data-note><span className="s6line">This model knows English best.</span></div>}
       {spoken && <div className="s6row"><LangSelect value={lang} onChange={setLang} label="Spoken language" /></div>}
       <input ref={file} type="file" accept={kind === 'image' ? 'image/*' : 'audio/*'} hidden onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = '' }} />
       {kind === 'text' && cur.kind === 'text' && (
         <>
           <label className={compact ? 'sr' : 'lbl'} htmlFor="s6text">{task === 'fill-mask' ? 'Sentence with a gap' : task === 'text-classification' ? 'Text to judge' : 'Start of a sentence'}</label>
           <div className="s6row s6inrow">
-            {langOk && <LangSelect disabled={replay} value={lang} onChange={(id) => { setLang(id); set({ kind: 'text', text: langPrompt(id, task) }) }} />}
+            {langOk && <LangSelect value={lang} onChange={(id) => pickLang(id)} />}
             {compact
               ? <input id="s6text" data-prompt className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
               : <textarea id="s6text" data-prompt rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
@@ -744,6 +749,10 @@ function RunDock() {
 /* ---------------------------------------------------------------------------- result card */
 function Result() {
   const lang = useZoo((s) => s.lang)
+  const typed = useStore((s) => (s.input.kind === 'text' ? s.input.text : ''))
+  const preview = useMemo(() => {
+    try { const seg = new (Intl as any).Segmenter(lang, { granularity: 'word' }); return [...seg.segment(typed)].filter((x: any) => x.isWordLike).map((x: any) => x.segment as string).slice(0, 40) } catch { return typed.split(/\s+/).filter(Boolean).slice(0, 40) }
+  }, [typed, lang])
   const tokens = useStore((s) => s.tokens)
   const { lastStats, fit, spec, final, runErr, running, examples, loadExample } = useStore(useShallow((s) => ({ lastStats: s.lastStats, fit: s.fit, spec: s.spec, final: s.final, runErr: s.runErr, running: s.running, examples: s.examples, loadExample: s.loadExample })))
   const alt = runErr && /smaller|too big/i.test(runErr) ? examples.find((e) => e.repo.toLowerCase() !== spec?.repo.toLowerCase() && (e.task ?? 'text-generation') === spec?.task) : null
@@ -751,6 +760,9 @@ function Result() {
   const text: string | undefined = final?.text
   return (
     <div className="stack">
+      {tokens.length === 0 && preview.length > 0 && (
+        <div className="ccard"><h4>Your text <small>before the model cuts it up</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{preview.map((t, i) => <span key={i} className="s6tok" data-token>{t}</span>)}</div></div>
+      )}
       {tokens.length > 0 && (
         <div className="ccard"><h4>Tokens <small>the pieces the model reads</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{tokens.slice(0, 60).map((t, i) => <span key={i} className="s6tok" data-token>{showTok(t)}</span>)}</div></div>
       )}
