@@ -555,3 +555,44 @@ s4describe('S4 models engine', () => {
     })
   })
 })
+
+/* ===================================================================== S4 round 2: default models (fenced block) */
+s4describe('S4 chooseDefault', () => {
+  const GiB = 1024 ** 3, MB = 1048576
+  const hub: Record<string, { tag: string; q8: number }> = {
+    'Xenova/distilbert-base-uncased': { tag: 'fill-mask', q8: 65 * MB },
+    'Xenova/bert-base-multilingual-cased': { tag: 'fill-mask', q8: 171 * MB },
+    'Xenova/mobilevit-xx-small': { tag: 'image-classification', q8: 2 * MB },
+    'Xenova/mobilevit-small': { tag: 'image-classification', q8: 6 * MB },
+    'Xenova/vit-base-patch16-224': { tag: 'image-classification', q8: 400 * MB },
+  }
+  const realFetch = globalThis.fetch
+  s4beforeEach(() => {
+    globalThis.fetch = (async (u: any) => {
+      const m = /\/api\/models\/(.+?)(\?|$)/.exec(String(u))
+      const h = m && hub[m[1]]
+      if (!h) return new Response('{}', { status: 404 })
+      return new Response(JSON.stringify({ pipeline_tag: h.tag, config: { model_type: 'bert' }, siblings: [{ rfilename: 'onnx/model_quantized.onnx', size: h.q8 }, { rfilename: 'onnx/model.onnx', size: h.q8 * 4 }] }))
+    }) as any
+  })
+  s4afterEach(() => { globalThis.fetch = realFetch })
+  const budget = (ramGiB: number, gpu = false): any => ({ companionRam: null, browserRam: ramGiB * GiB, browserRamCapped: false, gpu: gpu ? { maxBuffer: 4 * GiB, maxStorage: 2 * GiB } : null, cacheQuota: 100 * GiB })
+
+  s4it('picks the smallest entry that fits, from real (mocked) Hub sizes', async () => {
+    const c = await S4.chooseDefault('fill-mask', { budget: budget(8) })
+    s4expect(c?.entry.repo).toBe('Xenova/distilbert-base-uncased')
+    s4expect(c?.bytes).toBe(65 * MB)
+    s4expect(c?.fit.where).toBe('wasm')
+  })
+  s4it('skips entries that are too big for the device', async () => {
+    s4expect((await S4.chooseDefault('image-classification', { budget: budget(8) }))?.entry.repo).toBe('Xenova/mobilevit-small')
+    s4expect(await S4.chooseDefault('image-classification', { budget: budget(0.005) })).toBeNull()   // nothing fits in 5 MB
+  })
+  s4it('lite also considers lite-only entries; a language other than English needs multilingual ones', async () => {
+    s4expect((await S4.chooseDefault('image-classification', { budget: budget(8), profile: 'lite' }))?.entry.repo).toBe('Xenova/mobilevit-xx-small')
+    s4expect((await S4.chooseDefault('fill-mask', { budget: budget(8), language: 'es' }))?.entry.repo).toBe('Xenova/bert-base-multilingual-cased')
+    s4expect(S4.multilingualFor('fill-mask')?.repo).toBe('Xenova/bert-base-multilingual-cased')
+    s4expect(S4.multilingualFor('automatic-speech-recognition')?.repo).toBe('Xenova/whisper-tiny')
+    s4expect(S4.multilingualFor('image-classification')).toBeNull()
+  })
+})

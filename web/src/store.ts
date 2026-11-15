@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, checkFit, deviceBudget, loadSavedInput, parseRepo, planDownload, requestPersist, resolveModel, runInBrowser, saveInput, streamRun } from './api'
+import { api, checkFit, multilingualFor, clearModels, deviceBudget, loadInBrowser, loadSavedInput, parseRepo, persistAfterDownload, planDownload, resolveModel, runInBrowser, saveInput, savedInfo as savedInfoApi, streamRun } from './api'
 import type { DownloadPlan, Fit, ModelSpec, RunStats, Task, TaskInput } from './api'
 
 export type Tab = 'model' | 'run' | 'layer' | 'calc' | 'edit'
@@ -11,7 +11,8 @@ const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-r
 let timer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0
 let dlAbort: AbortController | null = null
-let persistAsked = false
+let autoEnabled = false          // autoStart() was called: every model picked later also starts at once
+const autoDone = new Set<string>()
 
 /** Progress of the model download that a run started (bytes, speed, time left). */
 export interface DownloadProgress { done: number; total: number | null; bytesPerSec: number | null; etaSeconds: number | null }
@@ -70,16 +71,34 @@ interface S {
   lastStats: RunStats | null
   /** size, time and consent level of the model download this model would need (null until known / not a browser model) */
   plan: DownloadPlan | null
-  /** a live browser run is waiting for the user: show plan.bytes / etaSeconds and a Download button (confirmDownload) or Cancel (declineDownload) */
+  /** The download in progress (size, time), null otherwise. Since round 2 it only holds progress: nothing waits for a click. */
   pendingDownload: DownloadPlan | null
+  /** always false now (kept so older UI code compiles) */
   needsConsent: boolean
   consent: DownloadPlan['consent'] | null
-  /** set while a model downloads; null otherwise */
+  /** bytes, speed and time left while a model downloads; null otherwise */
   download: DownloadProgress | null
+  /** no-op alias kept for older UI code: downloads start by themselves */
   confirmDownload: () => Promise<void>
+  /** same as cancelDownload */
   declineDownload: () => void
   /** stop a running download (the run ends without an error) */
   cancelDownload: () => void
+  /** one quiet line (metered connection, cancelled download); null when there is nothing to say */
+  note: string | null
+  /** Start the default model by itself: download, then run. Call it once the model is known; safe to call again. */
+  autoStart: () => Promise<void>
+  /** how much is saved on this device, and whether the browser promised to keep it */
+  savedInfo: () => Promise<{ bytes: number; persisted: boolean | null }>
+  /** delete every downloaded model */
+  clear: () => Promise<void>
+  /** the language of the prompt (ns.lang): a BCP-47 code such as 'en', 'es', 'hi' */
+  language: string
+  setLanguage: (l: string) => void
+  /** load the smallest multilingual model for the current task; false when the catalog has none */
+  switchToMultilingual: () => Promise<boolean>
+  /** the last finished live run, remembered between visits (ns.last) */
+  last: { repo: string; task: string; at: number; final: any; stats: RunStats | null } | null
   /** machine-readable reason of the last failed run: a BrowserRunError code, or null */
   runErrCode: string | null
   probe: any | null
@@ -161,6 +180,10 @@ const lsGet = (k: string): string | null => { try { return localStorage.getItem(
 const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* private window */ } }
 const loadRail = (): Record<'model' | 'machine', boolean> => { try { const j = JSON.parse(lsGet('ns.rail') ?? '{}'); return { model: !!j.model, machine: !!j.machine } } catch { return { model: false, machine: false } } }
 
+/** Remember a small JSON value for another part of the app (last results, last journey): key `ns.memo.<key>`. */
+export const remember = (key: string, value: unknown) => lsSet(`ns.memo.${key}`, JSON.stringify(value))
+export const recall = <T = unknown>(key: string): T | null => { try { return JSON.parse(lsGet(`ns.memo.${key}`) ?? 'null') } catch { return null } }
+
 export const useStore = create<S>((set, get) => {
   function startReveal() {
     if (timer) clearInterval(timer)
@@ -191,29 +214,87 @@ export const useStore = create<S>((set, get) => {
     } else if (f.type === 'final') set({ final: f })
   }
 
-  /** Run now with what is in the store (consent, when it was needed, has been given). */
-  async function execute() {
+  /** play the recorded run (a pack): the scene is never empty while a model downloads */
+  function playRecorded() {
     const s = get()
-    const replay = s.mode === 'replay' && !!s.pack
+    if (!s.pack) return
+    set({ ...resetRun, running: true, streaming: true, tab: 'run' })
+    startReveal()
+    for (const f of s.pack.run.frames) onFrame(f)
+    set({ streaming: false })
+  }
+
+  /** download progress, with a smoothed speed and time left */
+  function progressMeter() {
+    let last = { t: performance.now(), done: 0 }
+    let rate: number | null = null
+    return (done: number, total: number | null) => {
+      const now = performance.now()
+      if (now - last.t >= 500) { const r = ((done - last.done) * 1000) / (now - last.t); rate = rate == null ? r : rate * 0.6 + r * 0.4; last = { t: now, done } }
+      set({ download: { done, total, bytesPerSec: rate, etaSeconds: total != null && rate && rate > 0 ? Math.max(0, Math.ceil((total - done) / rate)) : null } })
+    }
+  }
+
+  /** Download (and compile) the model in the background thread. False when it was cancelled or failed (the reason is in the store). */
+  async function downloadModel(plan: DownloadPlan): Promise<RunStats | null> {
+    const s = get()
+    const ctl = (dlAbort = new AbortController())
+    try {
+      const loaded = await loadInBrowser(s.spec!, { device: s.fit!.where as 'webgpu' | 'wasm', dtype: plan.dtype, signal: ctl.signal, onProgress: progressMeter() })
+      if (!plan.cached) void persistAfterDownload()   // the browser keeps what was just downloaded
+      set((st) => ({ plan: st.plan ? { ...st.plan, cached: true } : plan }))
+      return loaded
+    } catch (e: any) {
+      const code: string | null = e?.code ?? null
+      if (code === 'aborted') set({ note: 'Download cancelled.' })
+      else set({ runErr: e?.message ?? String(e), runErrCode: code, running: false })
+      return null
+    } finally {
+      dlAbort = null
+      set({ download: null, pendingDownload: null })
+    }
+  }
+
+  /** A live run in the browser: starts the download at once when the files are not saved, then runs. Never asks. */
+  async function beginBrowser(o: { recordedFirst?: boolean }) {
+    const s = get()
+    const where = s.fit!.where as 'webgpu' | 'wasm'
+    let plan: DownloadPlan
+    try { plan = await planDownload(s.spec!, { device: where }) } catch (e: any) { set({ ...resetRun, tab: 'run', runErr: e.message ?? String(e) }); return }
+    const mb = plan.bytes ? `${Math.round(plan.bytes / 1048576)} MB` : 'a model'
+    set({ plan, pendingDownload: plan.cached ? null : plan, needsConsent: false, consent: null, note: plan.metered && !plan.cached ? `You may be on a metered connection. This model is ${mb}.` : null })
+    const keep = !!s.pack && s.mode === 'replay'   // a recorded example keeps its layers; the live run only fills in the result
+    let loaded: RunStats | null = null
+    if (!plan.cached) {
+      if (o.recordedFirst && s.pack) playRecorded()
+      loaded = await downloadModel(plan)
+      if (!loaded) return
+    }
+    await execute({ live: true, keep, loaded })
+  }
+
+  /** Run now with what is in the store. `live`: use the browser even when a recording exists; `keep`: keep the recorded frames, take only the final result. */
+  async function execute(o: { live?: boolean; keep?: boolean; loaded?: RunStats | null } = {}) {
+    const s = get()
+    const replay = !o.live && s.mode === 'replay' && !!s.pack
     const where = s.fit?.where ?? 'none'
     const viaBrowser = !replay && (where === 'webgpu' || where === 'wasm')
-    set({ ...resetRun, running: true, streaming: true, tab: 'run', pendingDownload: null, needsConsent: false })
-    startReveal()
+    if (o.keep) set({ running: true, streaming: true, runErr: null, runErrCode: null })
+    else set({ ...resetRun, running: true, streaming: true, tab: 'run', pendingDownload: null, needsConsent: false })
+    if (!o.keep) startReveal()
+    const frame = o.keep ? (f: any) => { if (f.type === 'final') set({ final: f }) } : onFrame
     const t0 = performance.now()
     try {
       if (replay) {
         for (const f of s.pack.run.frames) onFrame(f)
       } else if (viaBrowser) {
         const ctl = (dlAbort = new AbortController())
-        let last = { t: performance.now(), done: 0 }
-        let rate: number | null = null
-        const onProgress = (done: number, total: number | null) => {
-          const now = performance.now()
-          if (now - last.t >= 500) { const r = ((done - last.done) * 1000) / (now - last.t); rate = rate == null ? r : rate * 0.6 + r * 0.4; last = { t: now, done } }
-          set({ download: { done, total, bytesPerSec: rate, etaSeconds: total != null && rate && rate > 0 ? Math.max(0, Math.ceil((total - done) / rate)) : null } })
-        }
-        const stats: RunStats = await runInBrowser(s.spec!, s.input, onFrame, { device: where as 'webgpu' | 'wasm', signal: ctl.signal, onProgress })
+        const stats: RunStats = await runInBrowser(s.spec!, s.input, frame, { device: where as 'webgpu' | 'wasm', signal: ctl.signal, onProgress: progressMeter() })
+        // the model was fetched and compiled just before the run: report that load, not the warm one
+        if (o.loaded) Object.assign(stats, { loadMs: o.loaded.loadMs, cached: (o.loaded as any).cached })
         set({ lastStats: stats })
+        const fin = get().final
+        if (fin) { const last = { repo: s.repo, task: s.spec?.task ?? '', at: Date.now(), final: fin, stats }; set({ last }); remember('lastRun', last) }
       } else {
         await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], onFrame)
         const totalMs = performance.now() - t0, fin = get().final
@@ -224,7 +305,7 @@ export const useStore = create<S>((set, get) => {
       set({ runErr: code === 'aborted' ? null : (e.message ?? String(e)), runErrCode: code, running: false })
     } finally {
       dlAbort = null
-      set((st) => ({ streaming: false, download: null, runSeq: st.runSeq + 1 }))
+      set((st) => ({ streaming: false, download: null, runSeq: st.runSeq + 1, ...(o.keep ? { running: false } : {}) }))
     }
   }
 
@@ -239,7 +320,7 @@ export const useStore = create<S>((set, get) => {
     setAppView: (appView: AppView) => set({ appView } as any),
     visible: { model: true }, setVisible: (visible) => set({ visible } as any),
     details: readDetails(), setDetails: (details) => { set({ details } as any); try { localStorage.setItem(DETAILS_KEY, details ? '1' : '0') } catch { /* private mode */ } },
-    plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
+    plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, note: null, language: lsGet('ns.lang') || 'en', last: recall('lastRun'), backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
     prompt: 'The capital of France is', ...resetRun, selLayer: null, selHead: null, qpos: -1, hover: null, tab: 'model',
     runSeq: 0, tensors: {}, tensorErr: null, edits: [], useEdits: true, compare: null, comparing: false, compareErr: null,
     calc: null, calcing: false, calcErr: null,
@@ -270,8 +351,10 @@ export const useStore = create<S>((set, get) => {
         const r = await fetch(`${import.meta.env.BASE_URL}examples/index.json`)
         if (r.ok) set({ examples: await r.json() })
       } catch { /* no recorded examples */ }
+      const saved = lsGet('ns.model')
       const first = get().examples[0]
-      if (first) await get().loadExample(first.id)
+      if (saved) await get().loadModel(saved)
+      else if (first) await get().loadExample(first.id)
       else await get().loadModel('HuggingFaceTB/SmolLM2-135M')
     },
 
@@ -279,8 +362,10 @@ export const useStore = create<S>((set, get) => {
       const repo = parseRepo(text)
       if (timer) { clearInterval(timer); timer = null }
       const mySeq = ++loadSeq
+      dlAbort?.abort()
+      lsSet('ns.model', repo)
       const prevTask = get().spec?.task
-      set({ repo, spec: null, fit: null, plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, probing: true, probeErr: null, probe: null, ...resetRun, selLayer: null, selHead: null, tensors: {}, edits: [], compare: null, calc: null, scan: null, showImportance: false, tab: 'model', ...(prompt ? { prompt, input: { kind: 'text', text: prompt } as TaskInput } : {}) })
+      set({ repo, spec: null, fit: null, plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, note: null, probing: true, probeErr: null, probe: null, ...resetRun, selLayer: null, selHead: null, tensors: {}, edits: [], compare: null, calc: null, scan: null, showImportance: false, tab: 'model', ...(prompt ? { prompt, input: { kind: 'text', text: prompt } as TaskInput } : {}) })
       // what the Hub says and whether it fits here (needs no companion)
       let spec: ModelSpec | null = null, fit: Fit | null = null, specErr: string | null = null
       try {
@@ -321,6 +406,7 @@ export const useStore = create<S>((set, get) => {
       } finally {
         if (mySeq === loadSeq) set({ probing: false })
       }
+      if (mySeq === loadSeq && autoEnabled) void get().autoStart()
     },
 
     async loadExample(id) {
@@ -353,28 +439,37 @@ export const useStore = create<S>((set, get) => {
         set({ ...resetRun, tab: 'run', runErr: s.fit?.reason ?? 'This model cannot run on this computer.' })
         return
       }
-      if (viaBrowser) {
-        // a user click may ask the browser to keep the model; the page itself never downloads anything on its own
-        if (!opts?.auto && !persistAsked) { persistAsked = true; void requestPersist() }
-        let plan: DownloadPlan
-        try { plan = await planDownload(s.spec!, { device: where }) } catch (e: any) { set({ ...resetRun, tab: 'run', runErr: e.message ?? String(e) }); return }
-        set({ plan })
-        if (opts?.auto && !plan.cached) return
-        if (!plan.cached && plan.consent !== 'none') { set({ pendingDownload: plan, needsConsent: true, consent: plan.consent, tab: 'run' }); return }
-      }
+      if (viaBrowser) { await beginBrowser({}); return }
       await execute()
     },
 
-    async confirmDownload() {
-      if (!get().pendingDownload) return
-      void requestPersist()   // this runs inside the user's click
-      set({ pendingDownload: null, needsConsent: false })
-      await execute()
-    },
+    async confirmDownload() { /* downloads start by themselves now */ },
 
-    declineDownload() { set({ pendingDownload: null, needsConsent: false, consent: null }) },
+    declineDownload() { dlAbort?.abort() },
 
     cancelDownload() { dlAbort?.abort() },
+
+    async autoStart() {
+      autoEnabled = true
+      const s = get()
+      if (!s.spec || s.probing) return   // loadModel calls this again when the model is known
+      const where = s.fit?.where
+      if ((where !== 'webgpu' && where !== 'wasm') || s.fit?.verdict === 'too-big' || s.running || s.download) return
+      const key = `${s.repo}|${s.spec.task}`
+      if (autoDone.has(key)) return
+      autoDone.add(key)
+      await beginBrowser({ recordedFirst: true })
+    },
+
+    savedInfo: async () => { const i = await savedInfoApi(); return { bytes: i.bytes, persisted: i.persisted } },
+    async clear() { await clearModels(); set((st) => ({ plan: st.plan ? { ...st.plan, cached: false } : null })) },
+    setLanguage: (language) => { lsSet('ns.lang', language); set({ language }) },
+    async switchToMultilingual() {
+      const m = multilingualFor(get().spec?.task ?? null)
+      if (!m) return false
+      await get().loadModel(m.repo)
+      return true
+    },
 
     setTab: (tab) => set({ tab }),
     selectLayer: (i) => set({ selLayer: i, selHead: null, calc: null, ...(i !== null ? { tab: 'layer' as Tab } : {}) }),

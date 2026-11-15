@@ -424,7 +424,7 @@ export async function planDownload(spec: ModelSpec, opts: { device?: 'webgpu' | 
   const cellular = conn?.type === 'cellular'
   const rate = lastBytesPerSec ?? (conn?.downlink ? (conn.downlink * 1e6) / 8 : null)
   const etaSeconds = cached ? 0 : bytes != null && rate ? Math.ceil(bytes / rate) : null
-  return { repo, bytes, cached, etaSeconds, consent: cached ? 'none' : consentFor(bytes, { cellular, saveData: !!conn?.saveData }) }
+  return { repo, bytes, cached, etaSeconds, dtype, metered: cellular || !!conn?.saveData, consent: cached ? 'none' : consentFor(bytes, { cellular, saveData: !!conn?.saveData }) }
 }
 
 function quotaError(e: any): BrowserRunError | null {
@@ -499,6 +499,14 @@ export async function requestPersist(): Promise<boolean> {
   try { return (await nav()?.storage?.persist?.()) ?? false } catch { return false }
 }
 
+/** After the first good download: ask the browser to keep the files (Chrome grants this silently for engaged sites). Once only. */
+export async function persistAfterDownload(): Promise<boolean> {
+  try {
+    if (await nav()?.storage?.persisted?.()) return true
+    return await requestPersist()
+  } catch { return false }
+}
+
 export interface ModelCacheInfo { usage: number | null; quota: number | null; persisted: boolean | null; models: { repo: string; dtype: string; bytes: number }[] }
 /** What is stored: browser usage and quota, whether it is persistent, and the downloaded models. */
 export async function modelCacheInfo(): Promise<ModelCacheInfo> {
@@ -516,6 +524,12 @@ export async function modelCacheInfo(): Promise<ModelCacheInfo> {
     }
   } catch { /* unavailable */ }
   return info
+}
+
+/** What is saved on this device: model bytes, and whether the browser promised to keep them. */
+export async function savedInfo(): Promise<{ bytes: number; persisted: boolean | null; usage: number | null; quota: number | null }> {
+  const i = await modelCacheInfo()
+  return { bytes: i.models.reduce((a, m) => a + m.bytes, 0), persisted: i.persisted, usage: i.usage, quota: i.quota }
 }
 
 /** Delete every downloaded model and release the one in memory. */
@@ -646,8 +660,10 @@ export function classifyError(e: any, device = 'webgpu'): BrowserRunError {
 
 /* one pipeline at a time: loading another disposes the previous one first */
 let current: { key: string; p: Promise<Loaded> } | null = null
+let ortRoot = ''   // where the page serves the ONNX runtime from (/ort/); a worker is told by the page
 export const livePipelineKey = () => current?.key ?? null
 export async function disposeAll(): Promise<void> {
+  if (worker && !IN_WORKER) { try { await callWorker(worker, { type: 'dispose' }, {}) } catch { /* no worker to free */ } }
   const c = current
   current = null
   if (!c) return
@@ -662,6 +678,7 @@ export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 
     if (prev) { try { await (await prev.p).pipe?.dispose?.() } catch { /* previous failed to load */ } }
     const tf: any = await import('@huggingface/transformers')
     try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
+    if (IN_WORKER && ortRoot) { try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: ortRoot + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: ortRoot + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
     return { pipe: await tf.pipeline(task, repo, { device, dtype }), tf, repo }
   })()
   current = { key, p }
@@ -670,10 +687,12 @@ export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 
 }
 
 /** Does this browser's GPU compute float16 wrongly? Asks the capability probe (stream S2); a stub or failure means "unknown". */
+const IN_WORKER = typeof (globalThis as any).WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined' && self instanceof (globalThis as any).WorkerGlobalScope
 let f16Verdict: Promise<boolean> | null = null
 function gpuF16Bad(): Promise<boolean> {
   return (f16Verdict ??= (async () => {
     try {
+      if (IN_WORKER) return false   // the page decides and passes `avoid`
       const c = await (await import('./hw/browserBench')).probe()
       return !!c.gpu?.available && (c.gpu.f16 === false || c.gpu.canaryOk === false)
     } catch { return false }
@@ -720,7 +739,7 @@ function layerFrames(out: any, emit: (f: any) => void): boolean {
   return true
 }
 
-interface RunOpts { device: 'webgpu' | 'wasm'; dtype?: string; signal?: AbortSignal; onProgress?: (done: number, total: number | null) => void }
+interface RunOpts { device: 'webgpu' | 'wasm'; dtype?: string; avoid?: string[]; prepared?: Prepared; signal?: AbortSignal; onProgress?: (done: number, total: number | null) => void }
 
 async function runOnce(spec: ModelSpec, task: Task, prep: Prepared, emit: (f: any) => void, device: 'webgpu' | 'wasm', dtype: string, opts: RunOpts): Promise<BrowserRunStats> {
   const repo = spec.onnx?.repo ?? spec.repo
@@ -809,17 +828,21 @@ async function runOnce(spec: ModelSpec, task: Task, prep: Prepared, emit: (f: an
  * output is empty or the GPU fails. Failures arrive as BrowserRunError with a code. Starts downloading when the files are not cached:
  * the caller must have asked the user first (see planDownload).
  */
-export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: RunOpts): Promise<BrowserRunStats> {
+async function runInThread(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: RunOpts): Promise<BrowserRunStats> {
   const task = spec.task
   if (!task) throw new BrowserRunError('unsupported', 'This kind of model cannot be run in the browser.')
   if (!spec.onnx) throw new BrowserRunError('unsupported', 'This model has no ONNX weights, so the browser cannot run it. Use the companion instead.')
-  const check = await validateInput(task, input)
-  if (!check.ok) throw new BrowserRunError('input', check.error)
-  const prep = check.prepared
+  let prep: Prepared
+  if (opts.prepared) prep = opts.prepared
+  else {
+    const check = await validateInput(task, input)
+    if (!check.ok) throw new BrowserRunError('input', check.error)
+    prep = check.prepared
+  }
   let device = opts.device
-  if (device === 'webgpu' && !(await (navigator as any).gpu?.requestAdapter?.().catch(() => null))) device = 'wasm'
+  if (device === 'webgpu' && !(await (globalThis.navigator as any)?.gpu?.requestAdapter?.().catch(() => null))) device = 'wasm'
   const dts = spec.onnx.dtypes
-  const f16Bad = device === 'webgpu' && !opts.dtype && (await gpuF16Bad())
+  const f16Bad = device === 'webgpu' && !opts.dtype && (opts.avoid ? opts.avoid.includes('fp16') : await gpuF16Bad())
   const tried = new Set<string>()
   const next = (dev: 'webgpu' | 'wasm'): string | null => {
     const d = dev === device && opts.dtype && !tried.has(`${dev}|${opts.dtype}`) ? opts.dtype : pickDtype(dts, dev, [...(f16Bad && dev === 'webgpu' ? ['fp16', 'q4f16'] : []), ...[...tried].filter((t) => t.startsWith(`${dev}|`)).map((t) => t.split('|')[1])])
@@ -844,12 +867,12 @@ export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (
         throw err
       }
     }
-  } finally { prep.revoke?.() }
+  } finally { if (!opts.prepared) prep.revoke?.() }
 }
 
 /* ================================================================== CONTRACT (frozen in Phase 0; owner: S4)
  * Downloads with consent, and real weights/activations for the inspector. */
-export interface DownloadPlan { repo: string; bytes: number | null; cached: boolean; etaSeconds: number | null; consent: 'none' | 'size' | 'warn' }
+export interface DownloadPlan { repo: string; bytes: number | null; cached: boolean; etaSeconds: number | null; consent: 'none' | 'size' | 'warn'; /** the precision that will be fetched */ dtype?: string; /** cellular or data saver: the UI adds one quiet line, nothing blocks */ metered?: boolean }
 export interface DownloadHandle { cancel(): void; done: Promise<{ cached: boolean; bytes: number }> }
 /* planDownload(spec, opts?), ensureModel(spec, {onProgress, signal?, device?, dtype?}), requestPersist(), clearModels(), modelCacheInfo() are defined above.
  * consent: 'none' < 25 MB, 'size' 25-150 MB (show size + time), 'warn' > 150 MB or cellular/saveData. */
@@ -1157,6 +1180,7 @@ export async function activation(q: { repo: string; input: TaskInput; layer: num
       return { available: true, dim: data.length, data, stats: statsOf(data), source: 'companion', what: 'norm-per-position' }
     } catch (e: any) { return { available: false, reason: `The companion could not run this model: ${e?.message ?? e}` } }
   }
+  if (worker && !IN_WORKER) { try { return await callWorker<Activation>(worker, { type: 'activation', q }, {}) } catch (e: any) { return { available: false, reason: `The browser could not read this layer: ${e?.message ?? e}` } } }
   const live = current
   if (!live) return { available: false, reason: 'Run the model in the browser first, then ask again.' }
   if (hiddenSeen.get(q.repo) !== true) return { available: false, reason: 'This ONNX export does not expose hidden states, so only the weights can be shown in the browser. The local companion can show activations.' }
@@ -1177,15 +1201,197 @@ export async function activation(q: { repo: string; input: TaskInput; layer: num
 }
 /* ================================================================== */
 
+/* ------------------------------------------------------------------ default models */
+export interface CatalogEntry {
+  repo: string; task: Task; title: string
+  /** roughly the smallest browser download in MB (checked against the Hub on 2026-11-14; chooseDefault reads the real size again) */
+  approxMB: number
+  /** reads more than English */
+  multilingual?: boolean
+  /** only the lite profile may pick it: smaller, but a weaker result */
+  liteOnly?: boolean
+}
+/** Browser-runnable models, smallest first per task. Sizes are the q4f16/q8 ONNX weights read from the Hub. */
+export const CATALOG: CatalogEntry[] = [
+  { repo: 'HuggingFaceTB/SmolLM2-135M-Instruct', task: 'text-generation', title: 'SmolLM2 135M', approxMB: 112 },
+  { repo: 'onnx-community/Qwen2.5-0.5B-Instruct', task: 'text-generation', title: 'Qwen2.5 0.5B (many languages)', approxMB: 461, multilingual: true },
+  { repo: 'Xenova/distilbert-base-uncased', task: 'fill-mask', title: 'DistilBERT', approxMB: 65 },
+  { repo: 'Xenova/bert-base-multilingual-cased', task: 'fill-mask', title: 'BERT multilingual', approxMB: 171, multilingual: true },
+  { repo: 'Xenova/distilbert-base-uncased-finetuned-sst-2-english', task: 'text-classification', title: 'DistilBERT SST-2', approxMB: 64 },
+  { repo: 'Xenova/distilbert-base-multilingual-cased-sentiments-student', task: 'text-classification', title: 'DistilBERT multilingual sentiment', approxMB: 130, multilingual: true },
+  { repo: 'Xenova/mobilevit-xx-small', task: 'image-classification', title: 'MobileViT xx-small', approxMB: 2, liteOnly: true },
+  { repo: 'Xenova/mobilevit-small', task: 'image-classification', title: 'MobileViT small', approxMB: 6 },
+  { repo: 'Xenova/resnet-18', task: 'image-classification', title: 'ResNet-18', approxMB: 11 },
+  { repo: 'Xenova/vit-base-patch16-224', task: 'image-classification', title: 'ViT base', approxMB: 84 },
+  { repo: 'Xenova/whisper-tiny.en', task: 'automatic-speech-recognition', title: 'Whisper tiny (English)', approxMB: 39 },
+  { repo: 'Xenova/whisper-tiny', task: 'automatic-speech-recognition', title: 'Whisper tiny (many languages)', approxMB: 39, multilingual: true },
+]
+
+/** The smallest catalog model for a task that reads languages other than English (null when none exists). */
+export function multilingualFor(task: Task | null, catalog: CatalogEntry[] = CATALOG): CatalogEntry | null {
+  return catalog.filter((e) => e.multilingual && e.task === task && !e.liteOnly).sort((a, b) => a.approxMB - b.approxMB)[0] ?? null
+}
+
+const specMemo = new Map<string, Promise<ModelSpec>>()
+export interface Chosen { entry: CatalogEntry; spec: ModelSpec; fit: Fit; bytes: number }
+/**
+ * Pick the default model for a task: the smallest catalog entry (real sizes from the Hub) that passes checkFit.
+ * caps.profile 'lite' also considers the lite-only entries. A language other than 'en' only considers multilingual entries.
+ * `catalog` adds the app's own entries (for example examples/index.json rows with a task). Null when nothing fits.
+ */
+export async function chooseDefault(task: Task, caps: { profile?: 'lite' | 'standard' | 'full'; language?: string; budget?: Budget; catalog?: { repo: string; task?: Task; title?: string }[] } = {}): Promise<Chosen | null> {
+  const lang = (caps.language ?? 'en').toLowerCase().split('-')[0]
+  const extra: CatalogEntry[] = (caps.catalog ?? []).filter((e) => e.task === task && !CATALOG.some((c) => c.repo === e.repo)).map((e) => ({ repo: e.repo, task, title: e.title ?? e.repo, approxMB: 1e9 }))
+  const pool = [...CATALOG, ...extra].filter((e) => e.task === task && (caps.profile === 'lite' || !e.liteOnly) && (lang === 'en' || e.multilingual))
+  const budget = caps.budget ?? (await deviceBudget())
+  const rated = await Promise.all(pool.map(async (entry): Promise<Chosen | null> => {
+    try {
+      let p = specMemo.get(entry.repo)
+      if (!p) { p = resolveModel(entry.repo); specMemo.set(entry.repo, p); p.catch(() => specMemo.delete(entry.repo)) }
+      const spec = await p
+      if (spec.task !== task || !spec.onnx) return null
+      const fit = checkFit(spec, budget)
+      if (fit.where === 'none' || fit.where === 'companion' || fit.verdict === 'too-big') return null
+      const bytes = spec.onnx.sizes?.[fit.dtype ?? ''] ?? Math.min(...Object.values(spec.onnx.sizes ?? { x: entry.approxMB * 1048576 }))
+      return { entry, spec, fit, bytes }
+    } catch { return null }
+  }))
+  return rated.filter((r): r is Chosen => !!r).sort((a, b) => a.bytes - b.bytes)[0] ?? null
+}
+
 /* ROUND 2 CONTRACT (owner S4): the model runs in a Web Worker so download, compile and inference never block the page.
- * Page -> worker */
+ * Page -> worker. (Additive to the frozen shape: optional `avoid` and `prepared`, and the `dispose` and `activation` messages.) */
 export type ModelWorkerIn =
-  | { type: 'load'; id: number; spec: ModelSpec; device: 'webgpu' | 'wasm'; dtype?: string }
-  | { type: 'run'; id: number; spec: ModelSpec; input: TaskInput; device: 'webgpu' | 'wasm'; dtype?: string }
+  | { type: 'load'; id: number; spec: ModelSpec; device: 'webgpu' | 'wasm'; dtype?: string; avoid?: string[] }
+  | { type: 'run'; id: number; spec: ModelSpec; input: TaskInput; device: 'webgpu' | 'wasm'; dtype?: string; avoid?: string[]; prepared?: Prepared }
   | { type: 'cancel'; id: number }
+  | { type: 'dispose'; id: number }
+  | { type: 'activation'; id: number; q: { repo: string; input: TaskInput; layer: number; pos: number; kind: 'resid' | 'attn' | 'mlp' } }
 /** Worker -> page (frames carry transferable buffers) */
 export type ModelWorkerOut =
   | { type: 'progress'; id: number; done: number; total: number | null; file?: string }
   | { type: 'frame'; id: number; frame: any }
   | { type: 'done'; id: number; stats: BrowserRunStats }
-  | { type: 'error'; id: number; code: 'oom' | 'unsupported' | 'degenerate' | 'offline' | 'gated' | 'quota' | 'cancelled' | 'unknown'; message: string }
+  | { type: 'activation'; id: number; result: Activation }
+  | { type: 'error'; id: number; code: 'oom' | 'unsupported' | 'degenerate' | 'offline' | 'gated' | 'quota' | 'cancelled' | 'input' | 'unknown'; message: string }
+
+/* ------------------------------------------------------------------ the worker: this same file is its entry point */
+function serveWorker() {
+  const ctl = new Map<number, AbortController>()
+  const post = (m: ModelWorkerOut, transfer?: Transferable[]) => (self as any).postMessage(m, transfer ?? [])
+  const fail = (id: number, e: any) => {
+    const err = classifyError(e)
+    post({ type: 'error', id, code: err.code === 'aborted' ? 'cancelled' : err.code, message: err.message })
+  }
+  ;(self as any).onmessage = async (ev: MessageEvent<ModelWorkerIn>) => {
+    const m = ev.data
+    if ((m as any).ort) ortRoot = (m as any).ort
+    if (m.type === 'cancel') { ctl.get(m.id)?.abort(); return }
+    if (m.type === 'dispose') { await disposeAll(); post({ type: 'done', id: m.id, stats: {} as any }); return }
+    if (m.type === 'activation') { post({ type: 'activation', id: m.id, result: await activation(m.q) }); return }
+    const ac = new AbortController()
+    ctl.set(m.id, ac)
+    let lastP = 0
+    const onProgress = (done: number, total: number | null) => {
+      const now = performance.now()
+      if (now - lastP < 100 && !(total != null && done >= total)) return   // at most 10 messages a second
+      lastP = now
+      post({ type: 'progress', id: m.id, done, total })
+    }
+    try {
+      if (m.type === 'load') {
+        const t0 = performance.now()
+        const repo = m.spec.onnx?.repo ?? m.spec.repo
+        const dtype = m.dtype ?? pickDtype(m.spec.onnx?.dtypes ?? [], m.device, m.avoid ?? [])
+        const dl = await ensureModel(m.spec, { onProgress, signal: ac.signal, device: m.device, dtype }).done
+        await loadPipeline(m.spec.task!, repo, m.device, dtype)   // compile now, so the first run is warm
+        const loadMs = performance.now() - t0
+        post({ type: 'done', id: m.id, stats: { where: m.device, repo, task: m.spec.task!, loadMs, firstMs: 0, totalMs: 0, items: 0, unit: 'items', perSec: 0, memBytes: null, joules: null, estimatedEnergy: false, device: m.device, dtype, cached: dl.cached } })
+      } else if (m.type === 'run') {
+        const frames = (f: any) => {
+          const tr: Transferable[] = []
+          if (f?.type === 'layer') for (const k of ['resid_norm', 'attn_norm', 'mlp_norm']) if (f[k] instanceof Float32Array) tr.push(f[k].buffer)
+          post({ type: 'frame', id: m.id, frame: f }, tr)
+        }
+        const stats = await runInThread(m.spec, m.input, frames, { device: m.device, dtype: m.dtype, avoid: m.avoid, prepared: m.prepared, signal: ac.signal, onProgress })
+        post({ type: 'done', id: m.id, stats })
+      }
+    } catch (e: any) { fail(m.id, e) } finally { ctl.delete(m.id) }
+  }
+}
+if (IN_WORKER) serveWorker()
+
+/* ------------------------------------------------------------------ the page side: talks to the worker, falls back to running in the page */
+interface Pending { onFrame?: (f: any) => void; onProgress?: (done: number, total: number | null) => void; resolve: (v: any) => void; reject: (e: any) => void }
+let worker: Worker | null = null
+let workerBroken = false
+let msgId = 0
+const pending = new Map<number, Pending>()
+const modelWorker = (): Worker | null => {
+  if (workerBroken || IN_WORKER || typeof Worker === 'undefined') return null
+  if (!worker) {
+    try {
+      worker = new Worker(new URL('./api.ts', import.meta.url), { type: 'module' })
+    } catch { workerBroken = true; return null }
+    worker.onmessage = (ev: MessageEvent<ModelWorkerOut>) => {
+      const m = ev.data, p = pending.get(m.id)
+      if (!p) return
+      if (m.type === 'progress') p.onProgress?.(m.done, m.total)
+      else if (m.type === 'frame') p.onFrame?.(m.frame)
+      else { pending.delete(m.id); if (m.type === 'error') p.reject(new BrowserRunError(m.code === 'cancelled' ? 'aborted' : m.code, m.message)); else p.resolve(m.type === 'activation' ? m.result : m.stats) }
+    }
+    worker.onerror = () => {   // the worker could not start (or died): fail what waits, and run in the page from now on
+      workerBroken = true
+      worker?.terminate(); worker = null
+      for (const [id, p] of pending) { pending.delete(id); p.reject(new BrowserRunError('unsupported', 'The model engine could not start in a background thread.')) }
+    }
+  }
+  return worker
+}
+function callWorker<T>(w: Worker, msg: ModelWorkerIn extends infer U ? (U extends { id: number } ? Omit<U, 'id'> : never) : never, h: Pick<Pending, 'onFrame' | 'onProgress'>, signal?: AbortSignal, transfer: Transferable[] = []): Promise<T> {
+  const id = ++msgId
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) return reject(new BrowserRunError('aborted', 'The run was cancelled.'))
+    pending.set(id, { ...h, resolve, reject })
+    signal?.addEventListener('abort', () => { w.postMessage({ type: 'cancel', id }); if (pending.delete(id)) reject(new BrowserRunError('aborted', 'The run was cancelled.')) }, { once: true })
+    w.postMessage({ ...msg, id, ort: typeof document !== 'undefined' ? new URL('ort/', document.baseURI).href : undefined }, transfer)
+  })
+}
+const f16Avoid = async (device: 'webgpu' | 'wasm', dtype?: string) => (device === 'webgpu' && !dtype && (await gpuF16Bad()) ? ['fp16', 'q4f16'] : [])
+
+/** Run a model. It works in a background thread, so downloading, compiling and inference never freeze the page. */
+export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (f: any) => void, opts: RunOpts): Promise<BrowserRunStats> {
+  const w = modelWorker()
+  if (!w || !spec.task || !spec.onnx) return runInThread(spec, input, onFrame, opts)
+  const check = await validateInput(spec.task, input)   // audio decoding needs the page's AudioContext, so inputs are prepared here
+  if (!check.ok) throw new BrowserRunError('input', check.error)
+  const prep = check.prepared
+  const tr: Transferable[] = prep.audio ? [prep.audio.buffer as ArrayBuffer] : []
+  try {
+    return await callWorker<BrowserRunStats>(w, { type: 'run', spec, input, device: opts.device, dtype: opts.dtype, avoid: opts.avoid ?? (await f16Avoid(opts.device, opts.dtype)), prepared: { text: prep.text, image: prep.image, audio: prep.audio } }, { onFrame, onProgress: opts.onProgress }, opts.signal, tr)
+  } catch (e: any) {
+    if (workerBroken && e?.code === 'unsupported' && !opts.signal?.aborted) return runInThread(spec, input, onFrame, { ...opts, prepared: undefined })
+    throw e
+  } finally { prep.revoke?.() }
+}
+
+/** Download a model (if needed) and compile it, in the background thread. Resolves with the load time and whether the files were already cached. */
+export async function loadInBrowser(spec: ModelSpec, opts: { device: 'webgpu' | 'wasm'; dtype?: string; signal?: AbortSignal; onProgress?: (done: number, total: number | null) => void }): Promise<BrowserRunStats> {
+  const w = modelWorker()
+  const inThread = async (): Promise<BrowserRunStats> => {
+    const t0 = performance.now()
+    const dtype = opts.dtype ?? planDtype(spec, opts.device)
+    const dl = await ensureModel(spec, { onProgress: opts.onProgress ?? (() => {}), signal: opts.signal, device: opts.device, dtype }).done
+    const repo = spec.onnx!.repo
+    await loadPipeline(spec.task!, repo, opts.device, dtype)
+    return { where: opts.device, repo, task: spec.task!, loadMs: performance.now() - t0, firstMs: 0, totalMs: 0, items: 0, unit: 'items', perSec: 0, memBytes: null, joules: null, estimatedEnergy: false, device: opts.device, dtype, cached: dl.cached }
+  }
+  if (!spec.task || !spec.onnx) throw new BrowserRunError('unsupported', 'This model cannot be loaded in the browser.')
+  if (!w) return inThread().catch((e) => { throw classifyError(e, opts.device) })
+  try {
+    return await callWorker<BrowserRunStats>(w, { type: 'load', spec, device: opts.device, dtype: opts.dtype, avoid: await f16Avoid(opts.device, opts.dtype) }, { onProgress: opts.onProgress }, opts.signal)
+  } catch (e: any) {
+    if (workerBroken && !opts.signal?.aborted) return inThread().catch((e2) => { throw classifyError(e2, opts.device) })
+    throw e
+  }
+}
