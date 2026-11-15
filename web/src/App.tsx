@@ -147,30 +147,35 @@ function TopBar({ view }: { view: AppView }) {
   )
 }
 
+/** Narrow only: the Details bar sits right above the dock. It comes early in the DOM (so its toggle is the first one reached)
+ *  and is placed last on screen by CSS order. It opens the drawer of the section in view. */
+function DetailsBar() {
+  const [narrow, setNarrow] = useState(() => matchMedia('(max-width: 999px)').matches)
+  useEffect(() => { const m = matchMedia('(max-width: 999px)'), f = () => setNarrow(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
+  const which = useStore((x) => (x.appView === 'power' ? 'machine' : 'model'))
+  const open = useStore((x) => x.railOpen[which])
+  const setRail = useStore((x) => x.setRail)
+  if (!narrow) return null
+  return <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>
+}
+
 /** Default dock: the prompt and Run. S5 and S6 fill #dock-slot with Test all, progress and Cancel. */
 function Dock() {
   const s = useStore()
   const ref = useRef<HTMLElement>(null)
-  // measure the dock (it grows with strips and the narrow Details bar) and share the height with the layout
+  // measure the dock (it grows with strips; narrow, the 44 px Details bar sits right above it) and share the height with the layout
   useEffect(() => {
     const el = ref.current
     if (!el) return
     // only when narrow: wide, the dock keeps its fixed height and strips float above it, so nothing shifts
     const narrow = matchMedia('(max-width: 999px)')
-    const ro = new ResizeObserver(() => { if (narrow.matches) document.documentElement.style.setProperty('--dock-h', `${Math.ceil(el.getBoundingClientRect().height)}px`); else document.documentElement.style.removeProperty('--dock-h') })
+    const ro = new ResizeObserver(() => { if (narrow.matches) { const h = Math.ceil(el.getBoundingClientRect().height), st = document.documentElement.style; st.setProperty('--dock-core', `${h}px`); st.setProperty('--dock-h', `${h + 44}px`) } else { const st = document.documentElement.style; st.removeProperty('--dock-core'); st.removeProperty('--dock-h') } })
     narrow.addEventListener('change', () => { ro.disconnect(); ro.observe(el) })
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
-  // the Details bar exists only when narrow (wide, each stage has its own edge tab)
-  const [narrow, setNarrow] = useState(() => matchMedia('(max-width: 999px)').matches)
-  useEffect(() => { const m = matchMedia('(max-width: 999px)'), f = () => setNarrow(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
-  const view = useStore((x) => x.appView)
-  const which = view === 'power' ? 'machine' : 'model'
-  const open = useStore((x) => x.railOpen[which])
   return (
     <footer className="dock" data-dock ref={ref}>
-      {narrow && <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => s.setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>}
       <div id="dock-slot">
         <form className="dockform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
           <label className="sr" htmlFor="sharedprompt">Prompt</label>
@@ -328,7 +333,7 @@ export default function App() {
       <TopBar view={view} />
       <OfflineStrip />
       <UpdateStrip />
-      <Dock />{/* last on screen (CSS order), early in the DOM so its Details toggle is the first one reached */}
+      <DetailsBar />
       <div className="flow" ref={flow}>
         <div id="score-strip-slot" data-score-strip />
         <Guard><div className="pair">
@@ -336,6 +341,7 @@ export default function App() {
           <Sect id="power" label="The machine: live electricity and the journey of a prompt">{seen.power ? <Suspense fallback={<Loading />}><MachineView /></Suspense> : <Loading />}</Sect>
         </div></Guard>
       </div>
+      <Dock />
       <NameCard />
     </div>
   )
