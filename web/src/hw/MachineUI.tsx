@@ -502,6 +502,10 @@ const T5_CSS = `
 .main.machine .stage.powerview .stagebottom{position:static;order:2;margin:8px 14px 12px;flex:none}
 }
 @media (max-width:600px){.main.machine .mcol{top:106px}}
+@media (min-width:901px){
+.main.machine{position:relative;grid-template-columns:minmax(0,1fr)!important}
+.main.machine>.inspector{position:absolute;right:0;top:0;bottom:0;width:min(380px,100%);z-index:30;box-shadow:-12px 0 32px #0006}
+}
 .t5-err{display:grid;gap:6px;justify-items:start}
 .t5-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .t5-head h4{margin:0;flex:1;font-size:14px;display:flex;align-items:center;gap:4px}
@@ -526,7 +530,7 @@ const T5_CSS = `
 .t5-pbody{display:grid;gap:8px;padding:4px 0 12px}
 .t5-more{border-top:1px solid var(--line)}.t5-moreb{display:flex;gap:6px;align-items:center;text-decoration:none;color:var(--fg)}
 .t5-strip.card{border:0;border-radius:0;background:transparent}
-.t5-strip{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;padding:6px 12px;min-width:0}
+.t5-strip{display:flex;align-items:center;flex-wrap:nowrap;gap:4px 12px;padding:0 12px;height:52px;overflow:hidden;white-space:nowrap;contain:layout;min-width:0}
 .t5-ssc{font:700 var(--t2,20px) var(--display);background:var(--brand,linear-gradient(135deg,var(--pos),var(--neg)));-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
 .t5-stier{font:600 13px var(--display)}.t5-sinfo,.t5-sweak{font-size:13px;color:var(--muted)}
 .t5-srun{display:flex;align-items:center;gap:10px;font-size:12.5px;flex:1;min-width:140px}
