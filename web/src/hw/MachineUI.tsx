@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
 import { scaleLinear, scaleLog } from 'd3'
 import { useStore } from '../store'
-import { Explainer, Hint } from '../ui/charts'
+import { Counter, Explainer, Hint, Spark } from '../ui/charts'
 import { inputLimits, peaksOf, useHWThrottled, type Snapshot, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
 import { probe } from './browserBench'
 import { activityAt, captionFor, layerOps } from './timeline'
@@ -572,35 +572,6 @@ const T5_CSS = `
 @media (prefers-reduced-motion:reduce){.t5-bar i{transition:none}}
 `
 
-function Counter({ value, digits = 0 }: { value: number | null; digits?: number }) {
-  const [v, setV] = useState(value ?? 0)
-  const from = useRef(value ?? 0)
-  useEffect(() => {
-    if (value === null) return
-    if (reduced()) { from.current = value; setV(value); return }
-    const c = animate(from.current, value, { duration: 0.5, ease: 'easeOut', onUpdate: (x) => { from.current = x; setV(x) } })
-    return () => c.stop()
-  }, [value])
-  return <>{value === null ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })}</>
-}
-
-function Gauge({ score, size = 150, max = 2000, label, small }: { score: number | null; size?: number; max?: number; label?: string; small?: boolean }) {
-  const r = size / 2 - 12, c = size / 2
-  const frac = score === null ? 0 : Math.min(1, score / max)
-  const a0 = Math.PI * 0.8, a1 = Math.PI * 2.2
-  const pt = (a: number) => `${c + r * Math.cos(a)} ${c + r * Math.sin(a)}`
-  const arc = `M ${pt(a0)} A ${r} ${r} 0 1 1 ${pt(a1)}`
-  return (
-    <div className="gauge" style={{ width: size, height: size * (small ? 0.82 : 0.9) }}>
-      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} role="img" aria-label={`${label ?? 'score'} ${score ?? 'not measured'}`}>
-        <path d={arc} fill="none" stroke="var(--line)" strokeWidth={small ? 6 : 9} strokeLinecap="round" />
-        <motion.path d={arc} fill="none" stroke="var(--pos)" strokeWidth={small ? 6 : 9} strokeLinecap="round" initial={{ pathLength: 0 }} animate={{ pathLength: frac }} transition={{ type: 'spring', stiffness: 60, damping: 16 }} style={{ filter: 'drop-shadow(0 0 6px color-mix(in srgb, var(--pos) 60%, transparent))' }} />
-      </svg>
-      <div className="gnum"><b className={small ? 's' : ''}><Counter value={score} /></b>{label && <span>{label}</span>}</div>
-    </div>
-  )
-}
-
 const STAGE_LABEL: Record<string, string> = { ...STAGE_NAME, disk: 'Storage read', gpu: 'GPU compute (WebGPU)' }
 
 function BenchOverlay() {
@@ -893,12 +864,6 @@ function SpecsTab() {
     ['Software', `${info.os} · PyTorch ${info.torch} · ${c.threads_used} worker threads`],
   ]
   return <dl className="specs2">{rows.map(([k, v], i) => <div key={i}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
-}
-
-function Spark({ data, color = 'var(--pos)', max = 100 }: { data: number[]; color?: string; max?: number }) {
-  const x = scaleLinear().domain([0, Math.max(1, data.length - 1)]).range([0, 200]), y = scaleLinear().domain([0, max]).range([34, 2])
-  const d = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ')
-  return <svg viewBox="0 0 200 36" className="spark2" preserveAspectRatio="none"><path d={`${d} L200 36 L0 36 Z`} fill={color} opacity="0.15" /><path d={d} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg>
 }
 
 function LiveTab() {
