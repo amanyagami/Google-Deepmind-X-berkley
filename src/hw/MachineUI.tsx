@@ -33,7 +33,7 @@ const FB: Record<string, Fb> = {
   storage: { label: 'Storage', pillar: 'storage', iw: 1, secs: 6, input: { type: 'number', label: 'File size', unit: 'MB', min: 16, max: 512, step: 16, default: 128, cap: 'Up to 10 % of free space.' }, hint: 'It writes and reads a file in browser storage. The file is deleted afterwards.' },
   gpu: { label: 'GPU', pillar: 'gpu', iw: 1, secs: 5, input: { type: 'number', label: 'Grid size', unit: '', min: 512, max: 4096, step: 512, default: 1024, cap: 'Buffers up to 256 MB.' }, hint: 'The graphics chip multiplies two big grids of numbers through WebGPU.' },
   net: { label: 'Network', pillar: null, iw: 0, secs: 10, input: { type: 'url', label: 'Test file link', default: '', cap: 'Needs https. Up to 100 MB or 15 s.' }, hint: 'It times small requests and a short download. Shown apart. It is not in the score.' },
-  energy: { label: 'Energy', pillar: null, iw: 0, secs: 0, input: null, hint: 'Test all records the power of every test. In a browser this is an estimate. It is not in the score.' },
+  energy: { label: 'Energy', pillar: null, iw: 0, secs: 0, input: null, hint: 'Testing your system records the power of every test. In a browser this is an estimate. It is not in the score.' },
 }
 interface Info { id: ComponentId; label: string; pillar: string | null; iw: number; secs: number; input: InputSchema | null; hint: string }
 function infoOf(id: ComponentId): Info {
@@ -132,15 +132,19 @@ function computeFinal(res: Record<string, TestResult>, history: Snapshot[] = [])
 const useFinal = () => { const r = useResults(), h = useHW((s) => s.history); return useMemo(() => computeFinal(r, h), [r, h]) }
 /** C11: the number and tier show only once every test ran (or a Test all finished); before that, "2 / 6". */
 const useComplete = (f: Final) => { const done = useUI((s) => s.batchDone); return f.score != null && (f.tested === f.total || done) }
-/** "Weakest" always names a part (a pillar), never a single test (C8). */
+/** The part with the lowest score, as a link that opens that part's tests: "Lowest: Model 412 ›". Names a pillar, never one test (C8). */
+function LowestLink({ f }: { f: Final }) {
+  const p = weakOf(f)
+  if (!p) return null
+  const sc = f.pillars?.find((x) => x.id === p)?.score
+  return <p className="t5-line"><button type="button" className="t5-link" title={`Open the ${PILLAR_LABEL[p]} tests`} onClick={() => select(PILLAR_CARD[p] ?? 'cpu1')}>Lowest: {PILLAR_LABEL[p]}{sc != null ? ` ${Math.round(sc)}` : ''} ›</button></p>
+}
+/** "Lowest" always names a part (a pillar), never a single test (C8). */
 const weakOf = (f: Final) => { const p = f.limiting ? pillarOf(f.limiting) : null; return p && p !== 'more' ? p : null }
 const relPct = (f: Final) => (f.score && f.lo != null && f.hi != null ? Math.max(1, Math.round(((f.hi - f.lo) / 2 / f.score) * 100)) : null)
 const arrow = (d: number) => `${d > 0 ? '↑' : '↓'} ${Math.abs(d)}`
 
 /* ---- badges ---- */
-function Badge({ kind }: { kind: 'measured' | 'estimated' | 'na' }) {
-  return kind === 'measured' ? <span className="t5-badge m">● measured</span> : kind === 'estimated' ? <span className="t5-badge e">≈ estimated</span> : <span className="t5-badge n">— not available</span>
-}
 const NA_MSG: Record<string, string> = { gpu: 'No WebGPU on this device. Try a browser that has it.', storage: 'Browser storage is off here. Leave private mode, then try again.' }
 const FLAG_WORD: Record<string, string> = { noisy: 'noisy', 'hidden-tab': 'tab hidden', 'on-battery': 'on battery', 'not-isolated': 'shared', 'coarse-timer': 'coarse timer', 'software-gpu': 'software GPU', 'size-halved': 'size halved', cancelled: 'cancelled', custom: 'custom' }
 
@@ -156,7 +160,6 @@ function validate(id: ComponentId, raw: string, caps: any): string | null {
 /** One result: the score (or the raw value when unscored), the value, and ONE honesty badge (C12). Flags go in the tooltip. */
 function ResultRow({ r, custom }: { r: TestResult; custom?: boolean }) {
   const scored = r.score != null && !custom
-  const est = r.flags.includes('estimated')
   const ci = relCi(r)
   const flags = r.flags.filter((f) => f !== 'estimated' && f !== 'custom').map((f) => FLAG_WORD[f] ?? (f.startsWith('fallback') ? 'fallback' : f))
   return (
@@ -164,10 +167,13 @@ function ResultRow({ r, custom }: { r: TestResult; custom?: boolean }) {
       <span className={`t5-chip ${scored ? 'solid' : 'dash'}`}>{scored ? `${num(r.score as number)} ±${Math.max(1, Math.round(ci))}%` : `${num(r.value, 1)} ${r.unit}`}</span>
       {scored && <span className="mono t5-dim">{num(r.value, 1)} {r.unit}</span>}
       {custom && <span className="t5-dim" data-detail>Custom. Not scored.</span>}
-      <Badge kind={est ? 'estimated' : 'measured'} />
     </div>
   )
 }
+
+/** The one plain line that replaces the measured / estimated pills: it lives inside the card's ⓘ. */
+const BROWSER_NOTE = 'Measured in this browser, so numbers can differ a little from the companion app.'
+const note = (id: string) => (useHW.getState().source === 'companion' ? '' : id === 'energy' ? ' A web page cannot read power sensors, so this is an estimate.' : ` ${BROWSER_NOTE}`)
 
 function TestCard({ id }: { id: ComponentId }) {
   const info = infoOf(id)
@@ -200,7 +206,7 @@ function TestCard({ id }: { id: ComponentId }) {
     setFlash(true); const t = setTimeout(() => setFlash(false), 1600); return () => clearTimeout(t)
   }, [sel, id])
   const state = mine ? 'running' : err ? 'error' : std || rc ? 'result' : 'idle'
-  const defLine = id === 'energy' ? 'Recorded by Test all.' : `~${info.secs} s`
+  const defLine = id === 'energy' ? 'Recorded when you test your system.' : `~${info.secs} s`
   const pct = Math.round((prog?.fraction ?? 0) * 100)
   const tick = Math.round(pct / 10) * 10
   const energy = id === 'energy' ? Object.values(res).reduce((a, x) => a + (x.component !== 'energy' ? x.energy?.joules ?? 0 : 0), 0) : 0
@@ -213,8 +219,7 @@ function TestCard({ id }: { id: ComponentId }) {
   return (
     <section ref={el} id={`t5-${id}`} className={`card t5-card ${flash ? 'sel' : ''}`} aria-label={info.label} data-card={id} data-state={state} tabIndex={-1}>
       <div className="t5-row t5-head">
-        <h4>{info.label}<Hint label={`About ${info.label}`}>{info.hint}</Hint></h4>
-        {state === 'error' && naErr ? <Badge kind="na" /> : id === 'energy' ? <Badge kind={energy > 0 ? (useHW.getState().source === 'companion' ? 'measured' : 'estimated') : 'na'} /> : null}
+        <h4>{info.label}<Hint label={`About ${info.label}`}>{info.hint}{note(id)}</Hint></h4>
         {id !== 'energy' && (mine
           ? <button type="button" className="t5-btn" onClick={cancelAll}>Cancel</button>
           : <button type="button" className="t5-btn" disabled={!!running || batch || !!bad} onClick={onTest} data-test={id} aria-describedby={`t5-${id}-line`}>{state === 'result' ? 'Test again' : 'Test'}</button>)}
@@ -269,7 +274,7 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   g.fillStyle = '#c3cbe6'; g.font = `400 30px ${sans}`
   g.fillText(`${f.tested} of ${f.total} tested${relPct(f) != null ? ` · ±${relPct(f)} %` : ''}`, 64, 394)
   if (f.provisional) { g.fillStyle = '#ffd36b'; g.fillText('Provisional. Some parts are not tested.', 64, 438) }
-  g.fillStyle = '#b9a6ff'; g.font = `600 26px ${sans}`; g.fillText('≈ estimated in your browser', 64, f.provisional ? 486 : 438)
+  g.fillStyle = '#b9a6ff'; g.font = `600 26px ${sans}`; g.fillText('Measured in this browser', 64, f.provisional ? 486 : 438)
   g.fillStyle = '#9aa5c7'; g.font = `600 22px ${sans}`; g.fillText('By part', 700, 90)
   f.rows.slice(0, 7).forEach((r, i) => {
     const y = 120 + i * 56
@@ -350,14 +355,14 @@ function ScoreHero() {
       <div className="t5-big" aria-live="polite">
         {complete
           ? <><b className="t5-score">▲ <Counter value={f.score} /></b><span className="t5-tier">{f.tier}</span><span>{f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span></>
-          : <><b className="t5-score">{f.tested} / {f.total}</b><span>tested. Test all for your score.</span></>}
+          : <><b className="t5-score">{f.tested} / {f.total}</b><span>tested. Test your system for your score.</span></>}
       </div>
       <div className="t5-row">
-        {browser && <span className="t5-badge e">≈ estimated in your browser</span>}
+        {browser && <Hint label="About this score">{BROWSER_NOTE}</Hint>}
         {complete && f.provisional && <span className="t5-dim">Provisional.</span>}
         {delta != null && <span className="t5-dim mono">{arrow(delta)} vs last run</span>}
       </div>
-      {complete && weak && <p className="t5-line">Weakest: <button type="button" className="t5-link" onClick={() => select(PILLAR_CARD[weak] ?? 'cpu1')}>{PILLAR_LABEL[weak]}</button></p>}
+      {complete && <LowestLink f={f} />}
       <div className="t5-row">
         <button type="button" className="t5-btn" data-share disabled={!complete} onClick={shareNow}>Share</button>
         <LeaderboardButton />
@@ -459,11 +464,11 @@ function ScoreStrip() {
             ? <><b className="t5-ssc" data-score={f.score!}>▲{f.score!.toLocaleString('en-US')}</b><span className="t5-stier">{f.tier}</span></>
             : <span className="t5-sinfo"><b className="mono">{f.tested} / {f.total}</b> tested</span>} details={<>
             <p className="t5-line">{f.tested} of {f.total} tested{complete && r != null ? ` · ±${r} %` : ''}{complete && f.provisional ? '. Provisional.' : ''}</p>
-            {complete && weak && <p className="t5-line">Weakest: <button type="button" className="t5-link" onClick={() => select(PILLAR_CARD[weak] ?? 'cpu1')}>{PILLAR_LABEL[weak]}</button></p>}
-            {!complete && <p className="t5-line">Test all runs six short tests, about 30 s.</p>}
-            {browser && <span className="t5-badge e">≈ estimated in your browser</span>}
+            {complete && <LowestLink f={f} />}
+            {!complete && <p className="t5-line">Testing your system runs six short tests, about 30 s.</p>}
+            {browser && <p className="t5-line">{BROWSER_NOTE}</p>}
           </>} />
-          <button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={testAll}>{complete ? 'Test again' : 'Test all'}</button></>}
+          <button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={testAll}>Test your system</button></>}
     </div>
   )
 }
@@ -545,8 +550,6 @@ const T5_CSS = `
 .t5-chip{font:600 13px var(--mono);border-radius:999px;padding:3px 10px;white-space:nowrap}
 .t5-chip.solid{background:color-mix(in srgb,var(--pos) 18%,transparent);color:var(--pos-ink,#ffb867);border:1px solid var(--pos)}
 .t5-chip.dash{border:1px dashed var(--neg);color:var(--neg-ink,#86beff)}
-.t5-badge{font:600 12px var(--body);border-radius:999px;padding:2px 8px;border:1px solid var(--line);white-space:nowrap;justify-self:start;width:max-content}
-.t5-badge.m{color:var(--ok)}.t5-badge.e{color:var(--est,#b9a6ff)}.t5-badge.n{color:var(--muted)}
 .t5-field{display:grid;gap:4px;margin-top:4px}.t5-field label{font-size:12.5px;color:var(--muted)}
 .t5-field .t5-in{flex:0 0 auto;max-width:60%;min-height:var(--hit,40px);width:140px;background:var(--bg,#0a0e19);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:0 10px;font:14px var(--mono)}
 .t5-field .t5-in[aria-invalid=true]{border-color:var(--bad)}
@@ -586,6 +589,9 @@ const T5_CSS = `
 /* shared Peek: summaries as one flex line; detail panels sized for each card */
 .main.machine .phud .nspeek-txt,.main.machine .caption .nspeek-txt,.main.machine .mtl .nspeek-txt{display:flex;align-items:center;gap:8px}
 .main.machine .phud .nspeek-det{right:auto;min-width:268px}
+.main.machine .phud .nspeek{min-width:196px}
+.main.machine .phud .nspeek-txt{white-space:nowrap}
+.main.machine .phud .pbig{min-width:2.2ch;text-align:right;font-variant-numeric:tabular-nums}
 .main.machine .mtl .tlpeek .nspeek-det{right:auto;min-width:260px;top:auto;bottom:calc(100% - 1px);border-top:1px solid var(--line);border-bottom:0;border-radius:var(--peek-r,16px) var(--peek-r,16px) 0 0}
 .main.machine .mtl .tlpeek{min-width:0}
 .main.machine .caption .nspeek-det{top:auto;bottom:calc(100% - 1px);border-top:1px solid var(--line);border-bottom:0;border-radius:var(--peek-r,16px) var(--peek-r,16px) 0 0}
@@ -947,7 +953,7 @@ function SpeedTab() {
             {cache.map((c) => <circle key={c.kb} cx={cx(c.kb)} cy={cy(c.gbps)} r="2.4" fill="var(--pos)" />)}
             <text x={W - 8} y="14" textAnchor="end" className="axl">GB/s</text>
           </svg>
-        ) : <p className="hint">Not measured yet. Press Test all.</p>}
+        ) : <p className="hint">Not measured yet. Press Test your system.</p>}
       </div>
       {pts.length > 0 && <div>
         <h4>Limited by RAM or by math?<Hint>Blue line: the machine's limits from the measured speeds. Amber dots: each operation when writing a word. Every dot sits far left of the bend, so RAM, not math, is the limit. Blue dots: the same operations on the whole prompt, which reuse each weight more.</Hint></h4>
@@ -983,7 +989,7 @@ function Sidebar({ open }: { open: boolean }) {
 /** Loads the hardware facts and starts the 10 Hz telemetry once. */
 let booted = false
 function useMachineBoot() {
-  useEffect(() => { if (!booted) { booted = true; useHW.getState().loadInfo().then(() => useHW.getState().startTelemetry()) } }, [])
+  useEffect(() => { if (!booted) { booted = true; useHW.getState().loadInfo().then(() => { useHW.getState().startTelemetry(); useHW.getState().startBrowserLive() }) } }, [])
   // what this device can do: S2's probe, once, if nobody has set it yet
   useEffect(() => { if (!useHW.getState().caps) probe().then((c) => { if (!useHW.getState().caps) useHW.getState().setCaps(c) }).catch(() => { /* stub or blocked: caps stay null */ }) }, [])
 }
@@ -1038,7 +1044,7 @@ export function MachineView() {
         <Explainer id="machine" placement="bottom-left">
           <span>Amber rails carry power. Blue rails carry data.</span>
           <span>Bright lines show where the numbers move.</span>
-          <span>Press Test all to score this device.</span>
+          <span>Press Test your system to score this device.</span>
         </Explainer>
         <BenchOverlay />
         <div className="stagebottom">

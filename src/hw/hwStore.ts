@@ -4,12 +4,14 @@ import { activityAt, buildTimeline, locate, type Timeline, type Peaks } from './
 import { apiUrl, detectBackend, wsUrl } from '../base'
 import type { Capabilities } from './browserBench'
 import { fromBench, resultKey } from './score'
+import { startBrowserLiveSampler, type BrowserLive } from './liveBrowser'
 
 let raf = 0
 let last = 0
 let praf = 0
 let plast = 0
 let telemetryWs: WebSocket | null = null
+let stopBrowserLive: (() => void) | null = null
 const pbuf: any[] = []
 let pflush = 0
 let lastProg = 0
@@ -214,6 +216,10 @@ interface HW {
   hover: string | null
   loadInfo: () => Promise<void>
   startTelemetry: () => void
+  /** Browser mode: always-on telemetry a page can read (CPU load, memory, fps, network, storage, battery). One store for the labels, the card and the timeline. */
+  bl: BrowserLive | null
+  blHist: BrowserLive[]
+  startBrowserLive: () => void
   runBench: () => Promise<void>
   runJourney: (repo: string, prompt: string) => Promise<void>
   loadMicro: (repo: string, prompt: string, layer?: number, row?: number) => Promise<void>
@@ -261,6 +267,12 @@ export const useHW = create<HW>((set, get) => ({
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       set({ info: await r.json(), source: 'companion', infoErr: null })
     } catch (e: any) { set({ infoErr: e.message ?? String(e) }) }
+  },
+
+  bl: null, blHist: [],
+  startBrowserLive() {
+    if (stopBrowserLive || get().source !== 'browser') return
+    stopBrowserLive = startBrowserLiveSampler((s, h) => set({ bl: s, blHist: h }))
   },
 
   startTelemetry() {

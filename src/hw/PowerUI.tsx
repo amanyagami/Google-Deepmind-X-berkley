@@ -37,33 +37,56 @@ function useNow(): { s: PowerSample | null; mode: PowerMode; energy: number } {
 /** Asks the machine view to run Test all (the one batch lives in MachineUI). */
 export const askTestAll = () => window.dispatchEvent(new CustomEvent('ns-test-all'))
 
-/** The power card. At rest: "52.7 W · CPU" and a mode dot. On hover, focus or tap: where the watts go (D16, D19).
- *  No badge. Without data: the name "CPU power" and one action (D16, owner). */
+/** The power card. At rest: "52.7 W · CPU" when watts are measured (companion) or being estimated (Test all running), else
+ *  "37% · CPU load" from the live browser telemetry. On hover, focus or tap: where the watts go, or the live telemetry (D16, D19). */
 export function PowerHUD() {
   const { s, mode, energy } = useNow()
   const info = useHW((st) => st.info)
   const power = useHW((st) => st.power)
+  const bl = useHWThrottled((st) => st.bl, 500)
+  const latest = useHWThrottled((st) => st.latest, 500)
+  const caps = useHW((st) => st.caps)
   const busy = useHW((st) => st.benchRunning)
   const browser = info?.source === 'browser'
-  const est = mode !== 'live' && mode !== 'journey' && (s?.estimated || power?.estimated || info?.power?.measured === false)
-  const sp = splitOf(s)
-  const source = mode === 'journey' ? 'Modelled from what each part does.' : est || browser ? 'Estimated from the power class. A browser cannot read power sensors.' : 'Measured by the CPU itself.'
+  // watts only when measured (live sensors, a journey's model) or while Test all estimates them; otherwise the load
+  const watts = !!s && (mode === 'live' || mode === 'recording' || mode === 'journey')
+  const sp = watts ? splitOf(s) : null
+  const est = mode === 'recording' && browser
+  const source = mode === 'journey' ? 'Modelled from what each part does.' : est || info?.power?.measured === false ? 'Estimated from the power class you chose. The page cannot read the CPU\'s power sensor.' : 'Measured by the CPU itself.'
   const pct = (x: number) => `${Math.round(x * 100)}%`
-  const data = sp ? { 'data-pkg': sp.pkg.toFixed(2), 'data-cores': sp.cores != null ? sp.cores.toFixed(2) : '', 'data-rest': sp.rest != null ? sp.rest.toFixed(2) : '', 'data-split': sp.state } : {}
-  if (!s || !sp) {
+  if (!watts || !sp) {
+    const load = latest?.cpu_avg != null ? Math.round(latest.cpu_avg) : bl?.cpu ?? null
+    const rest = !!(load != null || bl)
     return (
-      <div className="phud" aria-live="polite" data-mode="none">
-        <Peek label="CPU power" summary={<>
-          <span className="psub">CPU power</span>
-          {browser && !busy && <button type="button" className="btn sm" data-test-system onClick={askTestAll}>Test system</button>}
-        </>} details={<p className="t5-line">{browser ? 'No power sensor in the browser. Test all to estimate.' : 'Waiting for the power sensors.'}</p>} />
+      <div className="phud" aria-live="polite" data-mode="load" {...(load != null ? { 'data-cpu': String(load) } : {})}>
+        <Peek label="CPU load" summary={<>
+          <i className="pdot live" aria-hidden="true" />
+          {load != null ? <><b className="pbig mono">{load}<small> %</small></b><span className="psub">· CPU load</span></> : <span className="psub">CPU load</span>}
+        </>} details={<>
+          {rest && bl && <div className="prow mono">
+            <div><span>cores</span><b>{bl.cores}</b></div>
+            {bl.memBytes != null && <div><span>memory used</span><b>{(bl.memBytes / 2 ** 30).toFixed(2)} GB{bl.memTotalGB ? ` of ~${bl.memTotalGB}` : ''}</b></div>}
+            {bl.fps != null && <div><span>frame rate</span><b>{bl.fps} fps</b></div>}
+            <div><span>network</span><b>↓ {Math.round(bl.netBps / 1e3)} KB/s{bl.net.type ? ` · ${bl.net.type}` : ''}</b></div>
+            {bl.storUsage != null && <div><span>storage used</span><b>{(bl.storUsage / 2 ** 30).toFixed(2)} GB</b></div>}
+            {bl.battery && <div><span>battery</span><b>{bl.battery.charging ? 'plugged in' : `${Math.round(bl.battery.level * 100)}%`}</b></div>}
+            {caps?.gpu?.available && <div className="pwide"><span>graphics</span><b>{caps.gpu.software ? 'software' : 'WebGPU'}{caps.gpu.adapter ? ` · ${String(caps.gpu.adapter).slice(0, 40)}` : ''}</b></div>}
+          </div>}
+          <p className="t5-line">
+            {browser ? 'Load is estimated from how fast a small job runs on this page.' : 'Load from the operating system.'}
+            {browser && !busy && <> Testing your system adds a power estimate.</>}
+            <Hint label="About these numbers">A web page cannot read the CPU's power sensor. Everything here is what the browser lets this page see, sampled twice a second.</Hint>
+          </p>
+          {browser && !busy && !power && <button type="button" className="btn sm" data-test-system onClick={askTestAll}>Test your system</button>}
+        </>} />
       </div>
     )
   }
+  const data = { 'data-pkg': sp.pkg.toFixed(2), 'data-cores': sp.cores != null ? sp.cores.toFixed(2) : '', 'data-rest': sp.rest != null ? sp.rest.toFixed(2) : '', 'data-split': sp.state }
   return (
     <div className="phud" aria-live="polite" data-mode={mode} {...data}>
-      <Peek label="Where the watts go" summary={<><i className={`pdot ${mode}`} aria-hidden="true" /><b className="pbig mono">{s.pkg_w.toFixed(1)}<small> W</small></b><span className="psub">· CPU</span></>} details={<>
-        {s.stage && s.stage !== 'live' && mode !== 'journey' && <div className="psub"><b style={{ color: STAGE_COL[s.stage] }}>{STAGE_NAME[s.stage] ?? s.stage}</b></div>}
+      <Peek label="Where the watts go" summary={<><i className={`pdot ${mode}`} aria-hidden="true" /><b className="pbig mono">{s!.pkg_w.toFixed(1)}<small> W</small></b><span className="psub">· CPU</span></>} details={<>
+        {s!.stage && s!.stage !== 'live' && mode !== 'journey' && <div className="psub"><b style={{ color: STAGE_COL[s!.stage] }}>{STAGE_NAME[s!.stage] ?? s!.stage}</b></div>}
         <div className="prow mono">
           {sp.state === 'unavailable'
             ? <div className="pwide"><span>cores · rest of chip</span><b>split unavailable</b></div>
@@ -71,15 +94,15 @@ export function PowerHUD() {
               <div><span>cores</span><b>{sp.state === 'scaled' ? '≈ ' : ''}{sp.cores!.toFixed(1)} W · {pct(sp.share!)}</b></div>
               <div><span>rest of chip</span><b>{sp.state === 'scaled' ? '≈ ' : ''}{sp.rest!.toFixed(1)} W</b></div>
             </>}
-          {s.mhz ? <div><span>clock</span><b>{(s.mhz / 1000).toFixed(2)} GHz</b></div> : null}
-          {(mode === 'replay' || mode === 'recording') && <div><span>energy</span><b>{energy.toFixed(0)} J</b></div>}
+          {s!.mhz ? <div><span>clock</span><b>{(s!.mhz / 1000).toFixed(2)} GHz</b></div> : null}
+          {mode === 'recording' && <div><span>energy</span><b>{energy.toFixed(0)} J</b></div>}
         </div>
         <p className="t5-line">
-          {sp.state === 'unavailable' ? 'The core sensors disagree with the package, so only the package is shown.' : sp.state === 'scaled' ? 'Cores scaled to fit inside the package.' : 'Cores are part of the package.'}
+          {est ? 'An estimate while your system is tested. ' : ''}{sp.state === 'unavailable' ? 'The core sensors disagree with the package, so only the package is shown.' : sp.state === 'scaled' ? 'Cores scaled to fit inside the package.' : 'Cores are part of the package.'}
           <Hint label="About these numbers">
             {source}{' '}
             {mode === 'live' && <>Averaged over {SMOOTH_S} s. </>}
-            {mode === 'recording' && <>Test all records the power of every test as it runs. </>}
+            {mode === 'recording' && <>Testing your system records the power of every test as it runs. </>}
             {sp.state !== 'ok' && sp.ratio != null && isFinite(sp.ratio) ? <>The core sensors read {pct(sp.ratio)} of the package. On some chips they are not a strict part of it. </> : null}
             Rest of chip = package minus cores (graphics, caches, memory controller). The power of RAM, storage and network is not metered on this computer.
           </Hint>
@@ -94,6 +117,7 @@ export function PowerHUD() {
  *  At rest it shows play and the current stage; the other controls open on hover, focus or tap (D16). */
 export function MachineTimeline() {
   const live = useHWThrottled((s) => ({ powerLive: s.powerLive, telemetry: s.telemetry }), 250, (a, b) => a.powerLive === b.powerLive && a.telemetry === b.telemetry)
+  const blHist = useHWThrottled((s) => s.blHist, 500)
   const h0 = useHW(useShallow((s) => ({ power: s.power, running: s.benchRunning, pMode: s.pMode, journey: s.journey, tl: s.tl, playhead: s.playhead, playing: s.playing, speed: s.speed, expanded: s.expanded, follow: s.follow, info: s.info, bench: s.bench, source: s.source, busy: s.journeyBusy, err: s.journeyErr })))
   const h = { ...h0, ...live }
   const { power, running, journey, tl } = h
@@ -137,15 +161,35 @@ export function MachineTimeline() {
     const t0 = pts.length ? pts[pts.length - 1].t : 0
     return pts.map((x) => ({ t: 15 + x.t - t0, stage: 'live', pkg_w: x.power.pkg_w, core_w: x.power.core_w ?? [], mhz: null, util: [] } as PowerSample)).filter((x) => x.t >= 0)
   }, [m, h.telemetry])
-  // browser: no live sensor, so the chart shows the estimate Test all just made
-  const lastRun = m === 'live' && !liveSamples.length && power?.samples.length ? power.samples : null
-  const samples = m === 'rec' ? h.powerLive : m === 'journey' ? jsamples : lastRun ?? liveSamples
+  // browser, nothing recording: the chart is the live telemetry (CPU load, memory, frame rate) of the last 15 s
+  const loadMode = m === 'live' && browser
+  const samples = m === 'rec' ? h.powerLive : m === 'journey' ? jsamples : liveSamples
   const name = (st: string) => (m === 'journey' ? (LABEL as Record<string, string[]>)[st]?.[1] : STAGE_NAME[st]?.replace('CPU · ', '')) ?? st
   const cur = locate(tl, h.playhead)
   const canSeek = m === 'journey'
   const chart = (() => {
-    if (!samples.length) return <div className="pchart empty">{m === 'live' && browser ? 'No power sensor in the browser. Test all to estimate.' : m === 'live' ? 'Waiting for power samples…' : 'Recording…'}</div>
-    const T = m === 'live' && !lastRun ? 15 : m === 'journey' ? tl.total : Math.max(1, samples[samples.length - 1].t)
+    if (loadMode) {
+      if (blHist.length < 2) return <div className="pchart empty">Reading this device…</div>
+      const H = 84, T = 15, t1 = blHist[blHist.length - 1].t
+      const x = scaleLinear().domain([0, T]).range([0, w]), y = scaleLinear().domain([0, 100]).range([H - 16, 6])
+      const xt = (b: { t: number }) => x(T - (t1 - b.t))
+      const line = (f: (b: (typeof blHist)[number]) => number | null) => blHist.filter((b) => f(b) != null).map((b, i) => `${i ? 'L' : 'M'}${xt(b).toFixed(1)} ${y(f(b)!).toFixed(1)}`).join(' ')
+      const memMax = Math.max(1, ...blHist.map((b) => b.memBytes ?? 0)) * 1.25
+      const cpu = line((b) => b.cpu), fps = line((b) => (b.fps == null ? null : Math.min(100, (b.fps / 60) * 100))), mem = line((b) => (b.memBytes == null ? null : (b.memBytes / memMax) * 100))
+      return (
+        <div className="pchart" ref={setBox} role="img" aria-label="Live CPU load, memory and frame rate of the last 15 seconds">
+          <svg width={w} height={H}>
+            {[0, 50, 100].map((v) => <g key={v}><line x1={0} x2={w} y1={y(v)} y2={y(v)} stroke="var(--line)" opacity={0.45} /><text x={2} y={y(v) - 2} className="pbl">{v}%</text></g>)}
+            {cpu && <path d={cpu} fill="none" stroke="var(--pos)" strokeWidth={1.8} />}
+            {mem && <path d={mem} fill="none" stroke="var(--neg)" strokeWidth={1.3} />}
+            {fps && <path d={fps} fill="none" stroke="var(--muted)" strokeWidth={1.1} strokeDasharray="3 3" />}
+          </svg>
+          <div className="plegend mono"><span style={{ color: 'var(--pos)' }}>CPU load</span><span style={{ color: 'var(--neg)' }}>memory</span><span>fps</span></div>
+        </div>
+      )
+    }
+    if (!samples.length) return <div className="pchart empty">{m === 'live' ? 'Waiting for power samples…' : 'Recording…'}</div>
+    const T = m === 'live' ? 15 : m === 'journey' ? tl.total : Math.max(1, samples[samples.length - 1].t)
     const H = 84
     const maxW = Math.max(20, ...samples.map((s) => s.pkg_w)) * 1.1
     const x = scaleLinear().domain([0, T]).range([0, w]), y = scaleLinear().domain([0, maxW]).range([H - 16, 6])
@@ -171,7 +215,7 @@ export function MachineTimeline() {
           <path d={`${area} L${x(samples[samples.length - 1].t)} ${y(0)} L${x(samples[0].t)} ${y(0)} Z`} fill="var(--pos)" opacity={0.16} />
           <path d={area} fill="none" stroke="var(--pos)" strokeWidth={1.6} />
           <path d={cores} fill="none" stroke="var(--neg)" strokeWidth={1.1} opacity={0.85} />
-          {!lastRun && <line x1={x(head)} x2={x(head)} y1={0} y2={H - 14} stroke="var(--fg)" strokeWidth={1.4} />}
+          <line x1={x(head)} x2={x(head)} y1={0} y2={H - 14} stroke="var(--fg)" strokeWidth={1.4} />
         </svg>
       </div>
     )
@@ -183,7 +227,7 @@ export function MachineTimeline() {
         {m === 'rec' && <span className="livetag rec"><span className="pulse" />Recording the tests</span>}
         {m === 'journey' && <button className="ib big" aria-label={h.playing ? 'Pause' : 'Play'} onClick={() => hw.toggle()}>{h.playing ? '❚❚' : '▶'}</button>}
         {m === 'live' && hasLive && <span className="livetag"><span className="livedot" />Live</span>}
-        {m === 'live' && browser && <span className="tlstage">{lastRun ? 'Estimate from Test all' : 'Live'}</span>}
+        {m === 'live' && browser && <span className="livetag"><span className="livedot" />Live</span>}
         {m === 'journey' && (
           <Peek className="tlpeek" label="Timeline controls" summary={<span className="tlstage">{stageNow || 'Journey'}</span>} details={<>
             <div className="t5-row">
@@ -209,9 +253,9 @@ export function MachineTimeline() {
         <Hint label="About the timeline">
           {m === 'journey' ? <>Each band is a stage of the prompt's journey; drag along the chart to scrub. The cores, RAM and the blue data rails light as the stage uses them. Watts are modelled from that activity.</>
             : m === 'rec' ? <>Every test drives the 3D view as it runs, and is recorded.</>
-            : browser ? <>A web page cannot read power sensors. Test all records an estimate of every test.</>
+            : browser ? <>Live from this page, twice a second: how busy the CPU is, memory, and frames per second. Testing your system adds a power estimate.</>
             : <>Package power right now, and the cores inside it. Press Run to follow a prompt through the machine.</>}
-          {' '}Amber line: the CPU package. Blue line: the cores inside it, never above the package.
+          {!loadMode && <> Amber line: the CPU package. Blue line: the cores inside it, never above the package.</>}
         </Hint>
       </div>
       {h.err && !browser && <div className="err">{h.err}</div>}
@@ -238,7 +282,7 @@ export function EnergyTab() {
       <label className="chk"><input type="checkbox" checked={ai} onChange={(e) => useHW.getState().setAiInBrowser(e.target.checked)} /> include a real language model running in this page (downloads ~120 MB once)</label>
     </div>
   )
-  if (!power) return <div className="stack">{settings}<p className="hint">No test yet<Hint>Press Test all. Every test is recorded with its power, and afterwards the whole run replays in 3D.</Hint></p></div>
+  if (!power) return <div className="stack">{settings}<p className="hint">No test yet<Hint>Press Test your system. Every test is recorded with its power, and afterwards the whole run replays in 3D.</Hint></p></div>
   const S = power.summary
   // the device's own Test all results stand in for the older companion bench entries
   const own = { ...(results.cpun ? { matmul_n: { gflops: results.cpun.value } } : {}), ...(results.cpu1 ? { matmul_1: { gflops: results.cpu1.value } } : {}), ...(results.ram ? { dram: { copy_gbps: results.ram.value } } : {}) }

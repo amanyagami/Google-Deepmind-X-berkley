@@ -454,10 +454,19 @@ export const checks = [
       const pkg = 8 + rnd() * 60, f = 0.5 + rnd(), k = i % 4 === 3 ? 1.4 : i % 4 === 2 ? 1.05 : f   // every 4th sample: grossly over; every 4th+2: mildly over
       const core = Array.from({ length: 8 }, () => (pkg * k) / 8)
       await pg.evaluate((x) => { const tel = Array.from({ length: 4 }, (_, j) => ({ t: x.i + j * 0.1, cpu: [], power: { pkg_w: x.pkg, core_w: x.core } })); window.__hw.setState({ telemetry: tel }) }, { i, pkg, core })
-      await pg.waitForTimeout(270)   // the card re-renders at most 4 times a second
+      await pg.waitForTimeout(420)   // the card re-renders at most 4 times a second, plus the store's own 2 Hz telemetry
       check(await read(), `live #${i} (cores ${(k * 100).toFixed(0)}% of pkg)`, k > 1.15 ? 'unavailable' : k > 1 ? 'scaled' : 'ok')
     }
     return ok(!bad.length, `${seen.ok} ok, ${seen.scaled} scaled, ${seen.unavailable} unavailable; ${bad.length} violations${bad[0] ? ' e.g. ' + bad.slice(0, 2).join('; ') : ''}`) } },
+  { id: 'A45', title: 'browser mode: at least 4 machine labels show live numbers, and at least 3 of them change within 3.5 s, with no click and no test', run: async (env) => {
+    const p = await env.open(); await p.goto('#machine', 1200); const pg = p.page
+    // each scene label has a name (<b>) and a live line (.lv); only the live line counts
+    const read = () => pg.evaluate(() => [...document.querySelectorAll('#sec-power .nsc')].filter(__h.vis).map((e) => ({ k: e.querySelector('b')?.textContent.trim() ?? '', t: e.querySelector('.lv')?.textContent.trim() ?? '' })).filter((x) => /\d/.test(x.t)))
+    const seen = new Map()
+    for (let i = 0; i < 8; i++) { for (const x of await read()) { const k = x.k; (seen.get(k) ?? seen.set(k, new Set()).get(k)).add(x.t) } await pg.waitForTimeout(500) }
+    const withNum = [...seen.keys()], changing = withNum.filter((k) => seen.get(k).size > 1)
+    const clicks = 0, sentence = await pg.evaluate(() => /Test all to estimate|power sensor in the browser|estimated in your browser|Weakest/i.test(document.body.innerText))
+    return ok(withNum.length >= 4 && changing.length >= 3 && !sentence, `${withNum.length} labels with numbers (${withNum.join(', ')}); changing: ${changing.join(', ') || 'none'}; clicks ${clicks}; old no-sensor sentence ${sentence ? 'PRESENT' : 'gone'}`) } },
   { id: 'L1', title: '3D canvas is drawing in the model, zoo and machine views', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500); const res = []
     for (const sec of ['model', 'zoo', 'power', 'machine']) { const c = p.page.locator(`#sec-${sec} canvas, [data-sec=${sec}] canvas`).first(); if (!(await c.count())) continue

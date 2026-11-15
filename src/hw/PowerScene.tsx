@@ -45,7 +45,15 @@ export function liveOf(k: LiveKey, s: any): string {
   const companion = s.source === 'companion'
   const prog = s.running ? s.progress : null
   const bw = (id: string) => (s.running === id && prog?.value != null ? `${prog.value >= 100 ? Math.round(prog.value) : prog.value.toFixed(1)} ${prog.unit ?? ''}`.trim() : '')
-  if (k === 'psu') { const w = powerNow(s).s?.pkg_w; return w != null && w > 0 ? `${w.toFixed(1)} W` : '' }
+  const bl = s.bl as import('./liveBrowser').BrowserLive | null
+  const gb = (b: number) => (b >= 1e11 ? `${Math.round(b / 2 ** 30)}` : b >= 1e10 ? (b / 2 ** 30).toFixed(1) : (b / 2 ** 30).toFixed(2))
+  const kbs = (b: number) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : `${Math.round(b / 1e3)} KB/s`)
+  if (k === 'psu') {
+    if (!companion && bl?.battery) return bl.battery.charging ? 'plugged in' : `battery ${Math.round(bl.battery.level * 100)}%`
+    const w = powerNow(s).s?.pkg_w
+    return w != null && w > 0 && (companion || s.benchRunning) ? `${w.toFixed(1)} W` : ''
+  }
+  if (k === 'screen' && !companion) return bl?.fps != null ? `${bl.fps} fps` : ''
   if (k === 'kbd' || k === 'screen') {
     if (s.pMode !== 'journey' || !s.journey) return ''
     const id = s.tl?.segs?.[locate(s.tl, s.playhead).i]?.id
@@ -56,21 +64,11 @@ export function liveOf(k: LiveKey, s: any): string {
     if (k === 'ram') { const b = bw('ram'); return t && b ? `${t} · ${b}` : t }
     return t
   }
-  if (k === 'cpu') {
-    if (!s.benchRunning) return ''
-    const w = powerNow(s).s?.pkg_w
-    const threads = s.caps?.cores ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 8) ?? 8
-    const stage = s.benchStage as string
-    const pct = stage === 'matmul_n' || stage === 'dram' ? 100 : stage === 'idle' ? 0 : Math.round(100 / threads)
-    return [`≈${pct}% busy`, w != null ? `≈${w.toFixed(1)} W` : ''].filter(Boolean).join(' · ')
-  }
-  if (k === 'ram') {
-    const heap = typeof performance !== 'undefined' ? (performance as any).memory?.usedJSHeapSize : null
-    const b = bw('ram')
-    return [heap ? `${(heap / 2 ** 30).toFixed(2)} GB in use` : '', b].filter(Boolean).join(' · ')
-  }
-  if (k === 'ssd') return bw('storage') || (s.running === 'storage' ? '' : 'idle')
-  if (k === 'nic') { const v = s.running === 'net' && prog?.value != null ? prog.value * 125 : null; return v != null ? `${Math.round(v)} KB/s` : '' }
+  if (!bl) return ''
+  if (k === 'cpu') return bl.cpu != null ? `${bl.cpu}% busy · ${bl.cores} cores` : `${bl.cores} cores`
+  if (k === 'ram') return [bl.memBytes ? `${gb(bl.memBytes)} GB used` : '', bw('ram')].filter(Boolean).join(' · ')
+  if (k === 'ssd') return [bl.storUsage != null ? `${gb(bl.storUsage)} GB used` : '', bw('storage')].filter(Boolean).join(' · ')
+  if (k === 'nic') return `↓ ${kbs(bl.netBps)}`
   return ''
 }
 

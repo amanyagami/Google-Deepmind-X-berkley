@@ -58,6 +58,7 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 | L3 | round 3 (owner): live power readout is a pure function of the sensor samples; no replay mode | | S5 |
 | L4 | round 3 (owner): no recorded-run or journey button in browser mode; one component Test gives a result, the strip says 1 / 6 and shows no number yet | | S3, S5 |
 | A41 | round 3 (D19): power card `data-pkg/cores/rest/split` over 200 live samples with cores 50-150 % of the package: cores <= package, rest >= 0, cores + rest = package, split state scaled/unavailable as expected (the recorded pack is covered by vitest) | | S5 |
+| A45 | round 3 (owner): in browser mode at least 4 scene labels show live numbers (CPU load, memory, frame rate, network, storage, battery) and at least 3 change within 3.5 s, with no click and no test; the old no-sensor sentence is gone | | S5 |
 | L5 | five networks each produce an output (was `zoo`) | | S6 |
 | L6 | companion idle watts, page open vs blank, information only (was `idlecost`; tier 3) | | |
 | T1, T2 | tier 3 smoke: real Hub reachable, real companion answers, first real score | | |
@@ -83,7 +84,7 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 Extra hooks: `window.__studio.getState().autoStart` (S4), `window.__hw.getState().runAll()` and `benchRunning` (S5), `[data-drawer]` with `data-open="true|false"`, `[data-drawer-toggle]`, `[data-hero]`, `[data-pillar]`, `[data-score-strip]`, `[data-namecard]`, `[data-theme-toggle]`, `[data-explainer]`, `[data-explainer-bulb]`, `[data-pad]`, `[data-pad-result]`, `[data-lang-picker]`, `[data-prompt]`, `[data-token]`, `performance.mark('ns:first-frame')`.
 
 ## Hooks the owners expose (selectors and window APIs the checks use)
-- S1: `[data-topbar]`, `[data-dock]` (all dock controls inside it), `[data-primary]` on the main action, `[data-panel]` on side-by-side panels, `[data-testall]` on Test all.
+- S1: `[data-topbar]`, `[data-dock]` (all dock controls inside it), `[data-primary]` on the main action, `[data-panel]` on side-by-side panels, `[data-testall]` on Test your system.
 - S3: `window.__score = { components: string[], final(results: Record<componentId, number>) => number | {score:number} }`.
 - S4/S6: `[data-start]` (text carries the size, e.g. "Start · 82 MB · about 20 s"), `[role=progressbar]` with `aria-valuenow/min/max`, `[data-cached]` once cached, `[data-picker]` on the model picker, `window.__zoo.getState().select({kind:'block',layer:0,index:0,name:'w'})` opening the tensor inspector.
 - S5: `[data-test]` on every Test button (`data-test=gpu`, `data-test=mic`, ...), `b[data-score]` on the device score once a first score exists (ZooUI also sets `data-score` on a `<p>`: pick another name there), `.card` or `[data-card]` on cards, `[data-est]` on estimated W/J values, `[data-share]` (starts a PNG download), `[data-error]` (message plus a button) for failures, `[data-detail]` for text exempt from the diet.
