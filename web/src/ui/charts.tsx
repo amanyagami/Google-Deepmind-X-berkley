@@ -1135,3 +1135,7 @@ if (typeof window !== 'undefined') {
     },
   }
 }
+
+/* ROUND 2 CONTRACT (owner S7): floating explainer for one animation. Shows itself for ~6 s on every page refresh, then a
+ * bulb stays: hover or click shows it, it vanishes as soon as the mouse leaves the bulb. 2-3 short plain lines as children. */
+export function Explainer(_p: { id: string; children: React.ReactNode; placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' }): React.ReactElement | null { return null }

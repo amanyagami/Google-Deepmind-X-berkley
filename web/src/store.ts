@@ -38,6 +38,16 @@ export function jumpTo(id: AppView, smooth = true) {
 const DETAILS_KEY = 'ns.machine.details'
 const readDetails = () => { try { return localStorage.getItem(DETAILS_KEY) === '1' } catch { return false } }
 interface S {
+  /** ROUND 2 CONTRACT (frozen in the gate; owner S4, implemented small here so every lane can use it today) */
+  /** drawer open state per section, remembered (ns.rail) */
+  railOpen: Record<'model' | 'machine', boolean>
+  setRail: (id: 'model' | 'machine', open: boolean) => void
+  /** the visitor's name: stays on this device (ns.name); '' until the name card is answered */
+  name: string
+  setName: (n: string) => void
+  /** theme choice (ns.theme): 'system' follows the OS */
+  theme: 'system' | 'light' | 'dark'
+  setTheme: (t: 'system' | 'light' | 'dark') => void
   /** the section the page is scrolled to (most of the screen) */
   appView: AppView
   setAppView: (v: AppView) => void
@@ -145,6 +155,12 @@ export const canRun = (s: Pick<S, 'mode' | 'pack' | 'fit' | 'probe' | 'running' 
   return !!s.probe?.graph?.runnable
 }
 
+
+// ---- round 2 contract helpers: tiny, defensive localStorage (private windows throw)
+const lsGet = (k: string): string | null => { try { return localStorage.getItem(k) } catch { return null } }
+const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* private window */ } }
+const loadRail = (): Record<'model' | 'machine', boolean> => { try { const j = JSON.parse(lsGet('ns.rail') ?? '{}'); return { model: !!j.model, machine: !!j.machine } } catch { return { model: false, machine: false } } }
+
 export const useStore = create<S>((set, get) => {
   function startReveal() {
     if (timer) clearInterval(timer)
@@ -213,6 +229,12 @@ export const useStore = create<S>((set, get) => {
   }
 
   return {
+    railOpen: loadRail(),
+    setRail: (id, open) => set((s) => { const railOpen = { ...s.railOpen, [id]: open }; lsSet('ns.rail', JSON.stringify(railOpen)); return { railOpen } }),
+    name: lsGet('ns.name') ?? '',
+    setName: (n) => { const name = n.trim().slice(0, 40); lsSet('ns.name', name); set({ name }) },
+    theme: (lsGet('ns.theme') as 'system' | 'light' | 'dark') || 'system',
+    setTheme: (theme) => { lsSet('ns.theme', theme); set({ theme }) },
     appView: location.hash === '#machine' || location.hash === '#journey' ? 'journey' : location.hash === '#power' ? 'power' : 'model',
     setAppView: (appView: AppView) => set({ appView } as any),
     visible: { model: true }, setVisible: (visible) => set({ visible } as any),

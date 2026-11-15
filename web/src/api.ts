@@ -1176,3 +1176,16 @@ export async function activation(q: { repo: string; input: TaskInput; layer: num
   } catch (e: any) { return { available: false, reason: `The browser could not read this layer: ${e?.message ?? e}` } }
 }
 /* ================================================================== */
+
+/* ROUND 2 CONTRACT (owner S4): the model runs in a Web Worker so download, compile and inference never block the page.
+ * Page -> worker */
+export type ModelWorkerIn =
+  | { type: 'load'; id: number; spec: ModelSpec; device: 'webgpu' | 'wasm'; dtype?: string }
+  | { type: 'run'; id: number; spec: ModelSpec; input: TaskInput; device: 'webgpu' | 'wasm'; dtype?: string }
+  | { type: 'cancel'; id: number }
+/** Worker -> page (frames carry transferable buffers) */
+export type ModelWorkerOut =
+  | { type: 'progress'; id: number; done: number; total: number | null; file?: string }
+  | { type: 'frame'; id: number; frame: any }
+  | { type: 'done'; id: number; stats: BrowserRunStats }
+  | { type: 'error'; id: number; code: 'oom' | 'unsupported' | 'degenerate' | 'offline' | 'gated' | 'quota' | 'cancelled' | 'unknown'; message: string }

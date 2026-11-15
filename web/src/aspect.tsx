@@ -39,3 +39,7 @@ export function FpsCap({ fps }: { fps: number }) {
   }, [fps, invalidate])
   return null
 }
+
+/* ROUND 2 CONTRACT (owner S1): the resolved theme for 3D scenes. S1 makes it follow data-theme / the OS setting. */
+export type ThemeName = 'light' | 'dark'
+export function useTheme(): ThemeName { return 'dark' }
