@@ -81,7 +81,7 @@ export function PowerHUD() {
             {mode === 'live' && <>Averaged over {SMOOTH_S} s. </>}
             {mode === 'recording' && <>Test all records the power of every test as it runs. </>}
             {sp.state !== 'ok' && sp.ratio != null && isFinite(sp.ratio) ? <>The core sensors read {pct(sp.ratio)} of the package. On some chips they are not a strict part of it. </> : null}
-            Rest of chip = package minus cores (graphics, caches, memory controller).
+            Rest of chip = package minus cores (graphics, caches, memory controller). The power of RAM, storage and network is not metered on this computer.
           </Hint>
         </p>
       </>} />
