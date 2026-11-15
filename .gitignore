@@ -1,6 +1,6 @@
 # dependencies and builds (recreated by npm install / pip install / npm run build)
 node_modules/
-web/dist/
+dist/
 server/.venv/
 __pycache__/
 *.pyc
@@ -11,6 +11,6 @@ __pycache__/
 server/hw_*.txt
 examples/
 *.png
-!web/public/**/*.png
+!public/**/*.png
 # editor settings
 .vscode/

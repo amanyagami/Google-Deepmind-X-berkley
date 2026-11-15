@@ -9,8 +9,8 @@ five kinds of neural network (MLP, CNN, RNN, ViT, VLM) computing in the page.
 | Mode | How | What you get |
 | --- | --- | --- |
 | **Companion** (full) | `.\start.ps1`, open http://127.0.0.1:8000 | live runs of real Hub models, OS telemetry, native benchmarks, **measured** CPU power (RAPL, per core) |
-| **Web app + companion** | host `web/dist` anywhere, run `start.ps1` on the PC | same as above: the page finds the companion on 127.0.0.1:8000 by itself |
-| **Web app only** | host `web/dist` anywhere (any static server, any sub-path) | benchmarks from inside the browser (WebAssembly SIMD, Web Workers, browser storage, WebGPU), a real language model running in the page on the GPU, the network zoo, recorded runs. Power is an **estimate** (browsers cannot read power sensors) |
+| **Web app + companion** | host `dist` anywhere, run `start.ps1` on the PC | same as above: the page finds the companion on 127.0.0.1:8000 by itself |
+| **Web app only** | host `dist` anywhere (any static server, any sub-path) | benchmarks from inside the browser (WebAssembly SIMD, Web Workers, browser storage, WebGPU), a real language model running in the page on the GPU, the network zoo, recorded runs. Power is an **estimate** (browsers cannot read power sensors) |
 
 Add `?browser` to the URL to force web-app-only mode. If the companion is started with `NEURAL_STUDIO_TOKEN`, open
 the page with `?token=...`.
@@ -19,11 +19,11 @@ the page with `?token=...`.
 # once
 python -m venv server\.venv
 server\.venv\Scripts\python -m pip install -r server\requirements.txt psutil scikit-learn pillow pytest
-cd web ; npm install ; npm run build ; cd ..
+npm install ; npm run build
 
 # every time
 .\start.ps1                                         # companion + app on http://127.0.0.1:8000
-python -m http.server 5180 --directory web\dist     # or: the app alone, as a static web app
+python -m http.server 5180 --directory dist     # or: the app alone, as a static web app
 ```
 
 ### In VS Code
@@ -38,8 +38,8 @@ Open the `neural-studio` folder (File > Open Folder), then:
 ## Deploy to Cloud Run
 
 Cloud Run serves the web app (browser mode) and the score leaderboard from one container. The `Dockerfile` builds
-`web/` and runs `server-web/server.mjs`, one small Node 22 server (no framework) on port 8080. It serves `web/dist`
-with the headers of `web/public/_headers` (it reads that file, so there is one place to change them), and the
+the repo root and runs `server-web/server.mjs`, one small Node 22 server (no framework) on port 8080. It serves `dist`
+with the headers of `public/_headers` (it reads that file, so there is one place to change them), and the
 leaderboard API. Scores are stored in Firestore in the same project. Replace `PROJECT_ID` and `REGION`
 (for example `europe-west1`).
 
@@ -76,7 +76,7 @@ than `(default)`, `KUNDALI_RATE_DEVICE`, `KUNDALI_RATE_IP`, `KUNDALI_ORIGINS` (e
 Run it on this PC without Google Cloud, and test it:
 
 ```powershell
-cd web ; npm run build ; cd ..\server-web ; npm install
+npm run build ; npm run install:server ; cd server-web
 $env:KUNDALI_STORE='memory'; $env:PORT='8090'; node server.mjs     # open http://127.0.0.1:8090
 node --test server.test.mjs                                        # validation, upsert, ranking, limits, headers
 ```
@@ -128,11 +128,11 @@ Each has a **Details** drawer, closed until you open it (Esc or a click outside 
 | `server/app/power.py` | RAPL package and per-core power, effective clock, thermal zone (Windows performance counters) |
 | `server/train_zoo.py` | trains and exports the five zoo networks |
 | `server/make_examples.py` | records the replay packs the web app plays without a companion; `python make_examples.py machine` rewrites the Machine fixture used by the unit tests (`web/tests/fixtures/machine.json`) |
-| `web/src/hw` | machine view: timeline, scenes, score, power, browser benchmarks (`wasmKernel.ts`: hand-written WASM SIMD) |
-| `web/src/zoo` | network zoo: forward passes and stress tests (`nets.ts`), state (`zooStore.ts`), 3D scene, UI (`ZooUI.tsx`, including the comparison and robustness cards) |
+| `src/hw` | machine view: timeline, scenes, score, power, browser benchmarks (`wasmKernel.ts`: hand-written WASM SIMD) |
+| `src/zoo` | network zoo: forward passes and stress tests (`nets.ts`), state (`zooStore.ts`), 3D scene, UI (`ZooUI.tsx`, including the comparison and robustness cards) |
 | `server-web/server.mjs` | Cloud Run server: static files with the security headers, leaderboard API, Firestore or memory store |
-| `web/src/board.tsx`, `web/src/ui/Leaderboard.tsx` | leaderboard: device ID, opt-out, submit after Test all; the dialog (loaded on first open) |
-| `web/tests`, `server/tests` | unit tests (`npm test`, `pytest`); `web/tests/e2e` drives the real app in Edge |
+| `src/board.tsx`, `src/ui/Leaderboard.tsx` | leaderboard: device ID, opt-out, submit after Test all; the dialog (loaded on first open) |
+| `tests`, `server/tests` | unit tests (`npm test`, `pytest`); `tests/e2e` drives the real app in Edge |
 
 ## Checked on the test PC (Ryzen 7 8745HS, Radeon 780M, DDR5-5600, NVMe Gen4 x4)
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from app import runner
 from app.main import do_probe, tensor
 
-OUT = Path(__file__).resolve().parents[1] / "web" / "public" / "examples"
+OUT = Path(__file__).resolve().parents[1] / "public" / "examples"
 OUT.mkdir(parents=True, exist_ok=True)
 
 EXAMPLES = [

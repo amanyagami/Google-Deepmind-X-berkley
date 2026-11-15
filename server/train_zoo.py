@@ -9,7 +9,7 @@
 
 Everything the browser shows is recomputed there from these weights; `reference` holds PyTorch's own
 activations for a few test images so the browser implementation can be checked number for number.
-Writes web/public/zoo/<name>.json and web/public/zoo/digits.json.
+Writes public/zoo/<name>.json and public/zoo/digits.json.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from sklearn.datasets import load_digits
 
 torch.manual_seed(0)
 np.random.seed(0)
-OUT = Path(__file__).resolve().parents[1] / "web" / "public" / "zoo"
+OUT = Path(__file__).resolve().parents[1] / "public" / "zoo"
 OUT.mkdir(parents=True, exist_ok=True)
 
 d = load_digits()

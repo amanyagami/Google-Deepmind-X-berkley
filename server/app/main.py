@@ -420,6 +420,6 @@ async def ws_run(ws: WebSocket):
             pass
 
 
-_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+_DIST = Path(__file__).resolve().parents[2] / "dist"
 if _DIST.exists():
     app.mount("/", StaticFiles(directory=_DIST, html=True), name="web")

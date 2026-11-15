@@ -2,16 +2,43 @@
   "name": "kundali",
   "private": true,
   "version": "0.1.0",
-  "description": "Kundali: see a real model as a 3D machine and test your own computer. Builds web/ and serves it with the leaderboard server.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run tests/",
+    "start": "node server-web/server.mjs",
+    "prestart": "node -e \"process.exit(require('fs').existsSync('dist/index.html')&&require('fs').existsSync('server-web/node_modules')?0:1)\" || (npm --prefix server-web ci && npm run build)",
+    "test:server": "npm --prefix server-web test",
+    "install:server": "npm --prefix server-web ci"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "@react-three/drei": "^10.0.0",
+    "@react-three/fiber": "^9.0.0",
+    "@react-three/postprocessing": "^3.2.2",
+    "@types/d3": "^7.4.3",
+    "d3": "^7.9.2",
+    "framer-motion": "^14.14.0",
+    "postprocessing": "^6.39.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.170.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.170.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "playwright-core": "^1.65.1",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.2.7"
+  },
+  "description": "Kundali: see a real model as a 3D machine, run it in your browser, and test your own computer.",
   "engines": {
     "node": ">=22"
-  },
-  "scripts": {
-    "install:all": "npm --prefix web ci && npm --prefix server-web ci",
-    "build": "npm --prefix web run build",
-    "start": "node server-web/server.mjs",
-    "dev": "npm --prefix web run dev",
-    "test": "npm --prefix web test && npm --prefix server-web test",
-    "prestart": "node -e \"process.exit(require('fs').existsSync('web/dist/index.html')&&require('fs').existsSync('server-web/node_modules')?0:1)\" || (npm run install:all && npm run build)"
   }
 }

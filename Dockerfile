@@ -1,11 +1,11 @@
 # Kundali for Google Cloud Run: the web app (browser mode, no companion) and the score leaderboard API,
 # served by one small Node server (server-web/server.mjs). Scores are kept in Firestore.
-# Stage 1: build web/ with Node.
+# Stage 1: build the web app (repo root) with Node.
 FROM node:22-alpine AS build
 WORKDIR /app/web
-COPY web/package.json web/package-lock.json ./
+COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY web/ ./
+COPY . ./
 # dist/_headers stays: the server reads its security headers from it (and never serves it)
 RUN npx vite build \
  && find dist -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.wasm' -o -name '*.svg' \) \

@@ -1,9 +1,9 @@
 // Kundali on Cloud Run: one small Node server, no framework.
-//  - serves web/dist with the same headers, caching, types, gzip and single-page rules the old nginx config had
+//  - serves dist/ with the same headers, caching, types, gzip and single-page rules the old nginx config had
 //  - the score leaderboard: POST /api/scores, GET /api/leaderboard, GET /api/leaderboard/me
 // Storage: Firestore (collection "scores", one doc per device, id = sha256 of the device ID) or, for local runs and
 // tests, memory (KUNDALI_STORE=memory, or no GOOGLE_CLOUD_PROJECT / K_SERVICE in the environment).
-// Security headers come from dist/_headers (copied from web/public/_headers by the build), so there is one source.
+// Security headers come from dist/_headers (copied from public/_headers by the build), so there is one source.
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -175,7 +175,7 @@ function plain(res, sec, status, text, extra = {}) {
 /* ------------------------------------------------------------------ validation */
 
 export const PILLARS = ['compute', 'memory', 'gpu', 'storage', 'model']
-// same weights and "untested counts as 50" rule as web/src/hw/score.ts finalScore
+// same weights and "untested counts as 50" rule as src/hw/score.ts finalScore
 const PILLAR_WEIGHT = { compute: 0.35, memory: 0.25, gpu: 0.15, storage: 0.10, model: 0.15 }
 export const MAX_SCORE = 20000
 const UUID4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -441,7 +441,7 @@ export function createHandler({ dist, store, ...opts }) {
 }
 
 async function main() {
-  const dist = path.resolve(process.env.KUNDALI_DIST || path.join(HERE, '..', 'web', 'dist'))
+  const dist = path.resolve(process.env.KUNDALI_DIST || path.join(HERE, '..', 'dist'))
   const store = await pickStore()
   const onCloudRun = !!process.env.K_SERVICE
   const handler = createHandler({
