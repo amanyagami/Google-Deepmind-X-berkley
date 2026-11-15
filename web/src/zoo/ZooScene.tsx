@@ -180,9 +180,9 @@ type Reg = Map<HTMLElement, Item>
 const KitCtx = createContext<Reg | null>(null)
 
 const obstCache = new WeakMap<HTMLElement, { n: number; els: Element[] }>()
-function layout(reg: Reg, cv: HTMLElement, top: number) {
+function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   const cr = cv.getBoundingClientRect(), W = cr.width, H = cr.height
-  if (W < 10 || H < 10) return
+  if (W < 10 || H < 10) return false
   type B = { it: Item; ax: number; ay: number; w: number; h: number; p: number; x: number; y: number }
   const chips: B[] = [], words: B[] = []
   for (const it of reg.values()) {
@@ -232,9 +232,11 @@ function layout(reg: Reg, cv: HTMLElement, top: number) {
     if (b.it.show) placed.push(b)
   }
   // writes
+  let moved = false
   for (const b of chips) {
     const dx = Math.round(b.x - b.ax), dy = Math.round(b.y - b.ay), it = b.it
-    if (dx !== it.dx || dy !== it.dy) { it.dx = dx; it.dy = dy; it.el.style.transform = dx || dy ? `translate(${dx}px,${dy}px)` : '' }
+    if (it.el.style.visibility) it.el.style.visibility = ''
+    if (dx !== it.dx || dy !== it.dy) { moved = true; it.dx = dx; it.dy = dy; it.el.style.transform = dx || dy ? `translate(${dx}px,${dy}px)` : '' }
     const far = Math.hypot(dx, dy) > 26
     const lead = far ? `${Math.hypot(dx, dy).toFixed(0)}|${(Math.atan2(-dy, -dx) * 180 / Math.PI).toFixed(1)}` : ''
     if (lead !== it.lead) {
@@ -243,7 +245,8 @@ function layout(reg: Reg, cv: HTMLElement, top: number) {
       if (ld) { if (far) { ld.style.display = 'block'; ld.style.width = `${Math.hypot(dx, dy)}px`; ld.style.transform = `rotate(${(Math.atan2(-dy, -dx) * 180 / Math.PI).toFixed(1)}deg)` } else ld.style.display = 'none' }
     }
   }
-  for (const b of words) { const v = b.it.show ? '' : 'hidden'; if (b.it.el.style.visibility !== v) b.it.el.style.visibility = v }
+  for (const b of words) { const v = b.it.show ? '' : 'hidden'; if (b.it.el.style.visibility !== v) { b.it.el.style.visibility = v; moved = true } }
+  return moved
 }
 
 /** Wrap everything inside the <Canvas> in this. It runs the chip layout ~30 times a second. */
@@ -257,7 +260,7 @@ export function KitProvider({ children, top = 48 }: { children: ReactNode; top?:
     const e = camera.matrixWorld.elements, now = performance.now()
     const s = `${e[12].toFixed(2)},${e[13].toFixed(2)},${e[14].toFixed(2)},${e[0].toFixed(3)},${e[6].toFixed(3)}|${size.width}x${size.height}|${reg.size}`
     if (now - at.current < 50 || (s === sig.current && now - at.current < 500)) return
-    sig.current = s; at.current = now; layout(reg, gl.domElement, top)
+    sig.current = layout(reg, gl.domElement, top) ? '' : s; at.current = now // a pass that moved something runs again next frame, until it settles
   })
   return <KitCtx.Provider value={reg}>{children}</KitCtx.Provider>
 }
@@ -273,6 +276,7 @@ export function Chip(p: ChipProps) {
   const reg = useContext(KitCtx)
   const setRef = useCallback((el: HTMLElement | null) => {
     if (!el || !reg) return
+    el.style.visibility = 'hidden' // shown once the first layout pass has placed it inside the stage
     reg.set(el, { el, kind: 'chip', dx: 0, dy: 0, show: true, lead: '' })
     return () => { reg.delete(el) }
   }, [reg])
@@ -307,6 +311,7 @@ export function Word({ pos, elRef, hidden, prio = 1, children }: { pos: [number,
   const setRef = useCallback((el: HTMLDivElement | null) => {
     er.current?.(el)
     if (!el || !reg) return
+    el.style.visibility = 'hidden'
     reg.set(el, { el, kind: 'word', dx: 0, dy: 0, show: true, lead: '' })
     return () => { reg.delete(el); er.current?.(null) }
   }, [reg])
@@ -1080,6 +1085,7 @@ export function ZooScene() {
             </Environment>
             <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}><meshPhysicalMaterial color={light ? '#dfe3f5' : '#0a1122'} metalness={light ? 0 : 0.4} roughness={0.7} /></RoundedBox>
             <Stage />
+            <Chip pos={[-9.2, 0.2, 6.6]} name="▲ positive  ○ negative" sub="amber is above zero, blue is below zero" prio={0.3} />
             <Outlines />
             <Rig />
             {st.bloom && !light && (
