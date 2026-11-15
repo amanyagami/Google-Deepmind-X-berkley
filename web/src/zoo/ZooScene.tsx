@@ -3,7 +3,7 @@
 // Amber = positive, blue = negative, brightness = size. Double-click any unit to see how its number was computed.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
-import { WheelScrollsPage } from '../aspect'
+import { useTheme, WheelScrollsPage } from '../aspect'
 import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
@@ -23,11 +23,17 @@ const NetCtx = createContext<NetId>('mlp')
 const useActive = () => { const me = useContext(NetCtx); return useZoo((s) => s.net === me) }
 const useMe = () => useContext(NetCtx)
 
+/** Light theme flag for the drawing loops (set by the stage each render). In light mode values read as deeper amber/blue on a pale ground, no glow. */
+const TH = { light: false }
+const L_INK = new THREE.Color('#d5daf0'), L_AMBER = new THREE.Color('#f08a00'), L_BLUE = new THREE.Color('#2f7be6')
 function valueColor(v: number, max: number, out: THREE.Color, lit = 1) {
   const x = Math.max(-1, Math.min(1, v / (max || 1)))
+  if (TH.light) return out.copy(L_INK).lerp(x >= 0 ? L_AMBER : L_BLUE, Math.min(1, Math.abs(x) * 1.15) * lit)
   out.copy(INK).lerp(x >= 0 ? AMBER : BLUE, Math.min(1, Math.abs(x) * 1.15) * lit)
   return out.multiplyScalar(1 + Math.abs(x) * 1.6 * lit)
 }
+/** Write a label's text only when it changed (a same-text write still replaces the DOM node, 60 times a second). */
+export function setText(el: HTMLElement | null, t: string) { if (el && (el as any).__t !== t) { (el as any).__t = t; el.textContent = t } }
 
 /* ============================================================== stage kit (shared with PowerScene)
  * Label chips that stay inside the stage and never overlap, one resize path, a DPR that backs off when frames are slow,
@@ -37,7 +43,7 @@ function valueColor(v: number, max: number, out: THREE.Color, lit = 1) {
 const CSS = `
 .nsc{position:relative;pointer-events:auto;display:flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:0;padding:0;margin:0;font:inherit;color:var(--fg,#e8ecf8);cursor:pointer;touch-action:manipulation}
 .nsc.ns-static{pointer-events:none;min-height:0;min-width:0;cursor:default}
-.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;background:rgba(6,9,19,.78);border:1px solid var(--line,#27314f);border-radius:9px;padding:3px 9px;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.25 var(--body,system-ui,sans-serif);text-align:center}
+.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;background:color-mix(in srgb,var(--bg,#060913) 82%,transparent);border:1px solid var(--line,#27314f);border-radius:9px;padding:3px 9px;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.25 var(--body,system-ui,sans-serif);text-align:center}
 .nsc b{font-weight:600;font-size:12px;display:block}
 .nsc .g{opacity:.85;margin-right:4px}
 .nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:11.5px}
@@ -50,7 +56,7 @@ const CSS = `
 .nsc:focus-visible .box{outline:2px solid var(--fg,#e8ecf8);outline-offset:1px}
 .nsc .lead{position:absolute;left:50%;top:50%;height:0;border-top:1px dashed rgba(154,165,199,.7);transform-origin:0 0;pointer-events:none;display:none;z-index:-1}
 .nsc .lead::after{content:"";position:absolute;right:-2px;top:-3px;width:5px;height:5px;border-radius:50%;background:#9aa5c7}
-.nsw{font:500 11.5px var(--mono,ui-monospace,monospace);color:var(--fg,#e8ecf8);background:rgba(6,9,19,.92);border-radius:6px;padding:0 5px;white-space:nowrap;pointer-events:none}
+.nsw{font:500 11.5px var(--mono,ui-monospace,monospace);color:var(--fg,#e8ecf8);background:color-mix(in srgb,var(--bg,#060913) 94%,transparent);border-radius:6px;padding:0 5px;white-space:nowrap;pointer-events:none}
 .nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 11.5px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
 .nssr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 `
@@ -88,7 +94,8 @@ export function useStage(shown = true) {
   const [vis, setVis] = useState(typeof document === 'undefined' || !document.hidden)
   const [onScreen, setOn] = useState(true)
   const [lite, setLite] = useState(false)
-  const [slow, setSlow] = useState(false)
+  const [level, setLevel] = useState(0) // 0 full, 1 DPR 1, 2 DPR 1 and no bloom: steps down fast, back up slowly
+  const ups = useRef(0)
   const phone = useMq('(max-width: 600px), (pointer: coarse) and (max-width: 900px)')
   useEffect(() => { let ok = true; getLite().then((l) => { if (ok) setLite(l) }); return () => { ok = false } }, [])
   useEffect(() => { const f = () => setVis(!document.hidden); document.addEventListener('visibilitychange', f); return () => document.removeEventListener('visibilitychange', f) }, [])
@@ -97,24 +104,26 @@ export function useStage(shown = true) {
     const io = new IntersectionObserver((e) => { for (const x of e) setOn(x.isIntersecting) }); io.observe(el)
     return () => io.disconnect()
   }, [])
-  const cap = slow || lite ? 1 : phone ? 1.5 : 2
+  const cap = level >= 1 || lite ? 1 : phone ? 1.5 : 2
   SCENE.dprCap = cap
   // while the window is being dragged the buffers render at DPR 1 (cheap), then settle at the capped DPR
   const [rz, setRz] = useState(false)
   useEffect(() => { let t = 0; const f = () => { setRz(true); window.clearTimeout(t); t = window.setTimeout(() => setRz(false), 250) }; window.addEventListener('resize', f); return () => { window.removeEventListener('resize', f); window.clearTimeout(t) } }, [])
   const dpr = rz ? 1 : Math.min(typeof devicePixelRatio === 'number' ? devicePixelRatio : 1, cap)
-  const onSlow = useCallback(() => setSlow(true), [])
-  return { wrap, run: shown && vis && onScreen, dpr, lite, onSlow }
+  const step = useCallback((d: 1 | -1) => setLevel((l) => { const n = Math.max(0, Math.min(2, l + d)); if (d < 0 && n < l) ups.current++; return d < 0 && ups.current > 3 ? l : n }), [])
+  return { wrap, run: shown && vis && onScreen, dpr, lite, level, step, bloom: !lite && level < 2 }
 }
 
-/** Counts frames slower than 24 ms; after 30 in a row it asks for DPR 1. Ignores the first second and tab switches. */
-export function SlowWatch({ onSlow }: { onSlow: () => void }) {
-  const n = useRef(0), age = useRef(0)
+/** Adaptive quality: 10 frames over 28 ms in a row steps down (DPR 1, then no bloom); 6 s of frames under 20 ms steps
+ *  back up one level. Ignores the first second and tab switches. */
+export function SlowWatch({ onStep }: { onStep: (d: 1 | -1) => void }) {
+  const slow = useRef(0), good = useRef(0), age = useRef(0)
   useFrame((_, dt) => {
     age.current += dt
-    if (age.current < 1 || dt > 0.5) { n.current = 0; return }
-    n.current = dt > 0.024 ? n.current + 1 : 0
-    if (n.current >= 30) { n.current = 0; onSlow() }
+    if (age.current < 1 || dt > 0.5) { slow.current = 0; return }
+    if (dt > 0.028) { slow.current++; good.current = 0 } else if (dt < 0.02) { good.current += dt; slow.current = 0 } else slow.current = 0
+    if (slow.current >= 10) { slow.current = 0; onStep(1) }
+    else if (good.current > 6) { good.current = 0; onStep(-1) }
   })
   return null
 }
@@ -177,7 +186,7 @@ function layout(reg: Reg, cv: HTMLElement, top: number) {
   }
   // other controls that sit over the stage (timeline, prompt dock, buttons): chips keep clear of them
   let oc = obstCache.get(cv)
-  if (!oc || oc.n++ > 20) { oc = { n: 0, els: [...document.querySelectorAll('button,select,input,textarea,a[href],[role=button],[role=slider]')].filter((e) => !cv.parentElement?.contains(e)) }; obstCache.set(cv, oc) }
+  if (!oc || oc.n++ > 3) { oc = { n: 0, els: [...document.querySelectorAll('button,select,input,textarea,a[href],[role=button],[role=slider]')].filter((e) => !cv.parentElement?.contains(e)) }; obstCache.set(cv, oc) }
   const obst: B[] = []
   for (const e of oc.els) {
     const r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue
@@ -234,8 +243,15 @@ function layout(reg: Reg, cv: HTMLElement, top: number) {
 export function KitProvider({ children, top = 48 }: { children: ReactNode; top?: number }) {
   const reg = useRef<Reg>(new Map()).current
   const gl = useThree((s) => s.gl)
-  const n = useRef(0)
-  useFrame(() => { if (n.current++ & 1) return; layout(reg, gl.domElement, top) })
+  const sig = useRef(''), at = useRef(0)
+  // The layout reads many boxes, so it runs when the camera, the stage size or the label set changed (at most 20 times a
+  // second) and otherwise twice a second to catch text and page changes.
+  useFrame(({ camera, size }) => {
+    const e = camera.matrixWorld.elements, now = performance.now()
+    const s = `${e[12].toFixed(2)},${e[13].toFixed(2)},${e[14].toFixed(2)},${e[0].toFixed(3)},${e[6].toFixed(3)}|${size.width}x${size.height}|${reg.size}`
+    if (now - at.current < 50 || (s === sig.current && now - at.current < 500)) return
+    sig.current = s; at.current = now; layout(reg, gl.domElement, top)
+  })
   return <KitCtx.Provider value={reg}>{children}</KitCtx.Provider>
 }
 
@@ -298,16 +314,16 @@ export function Word({ pos, elRef, hidden, prio = 1, children }: { pos: [number,
 export type LayerTypeId = 'embed' | 'mlp' | 'attention' | 'conv' | 'recurrent' | 'pool' | 'norm' | 'output'
 /** The layer types of the 3D scenes (TODO 6.3). Shape is the first cue, the glyph the second, the faint plate tint the
  *  third; tints are never applied to nodes, so amber/blue keep meaning positive/negative. `plate: false` = no plate.
- *  Listed in the order that passes the palette check (adjacent CVD delta E >= 8.2 on #0a0e19); a legend should keep it. */
+ *  Vivid hues (R2-13), listed in the order that passes the palette validator on #0a0e19 (all checks); a legend should keep it. */
 export const LAYER_TYPES: { id: LayerTypeId; label: string; glyph: string; tint: string; plate: boolean; shape: string }[] = [
-  { id: 'embed', label: 'Embedding / input', glyph: '▦', tint: '#7d8bb0', plate: true, shape: 'flat tiles' },
-  { id: 'mlp', label: 'MLP / dense', glyph: '●', tint: '#c9a46a', plate: true, shape: 'spheres' },
-  { id: 'attention', label: 'Attention', glyph: '◎', tint: '#7b86e0', plate: true, shape: 'head teeth and arcs' },
-  { id: 'conv', label: 'Convolution', glyph: '▣', tint: '#3fb3a6', plate: true, shape: 'cell grid and kernel frame' },
-  { id: 'recurrent', label: 'Recurrent', glyph: '↻', tint: '#a68bd8', plate: true, shape: 'spheres and loop ring' },
-  { id: 'pool', label: 'Pooling', glyph: '▫', tint: '#8fd1c8', plate: true, shape: 'flatter cells' },
+  { id: 'embed', label: 'Embedding / input', glyph: '▦', tint: '#22d3ee', plate: true, shape: 'flat tiles' },
+  { id: 'attention', label: 'Attention', glyph: '◎', tint: '#8b6cff', plate: true, shape: 'head teeth and arcs' },
+  { id: 'mlp', label: 'MLP / dense', glyph: '●', tint: '#ffb02e', plate: true, shape: 'spheres' },
+  { id: 'conv', label: 'Convolution', glyph: '▣', tint: '#14b8a6', plate: true, shape: 'cell grid and kernel frame' },
+  { id: 'output', label: 'Output', glyph: '▮', tint: '#a3e635', plate: true, shape: 'bars' },
+  { id: 'recurrent', label: 'Recurrent', glyph: '↻', tint: '#ff7ab6', plate: true, shape: 'spheres and loop ring' },
+  { id: 'pool', label: 'Pooling', glyph: '▫', tint: '#6ee7b7', plate: true, shape: 'flatter cells' },
   { id: 'norm', label: 'Norm', glyph: '○', tint: '#8a95b8', plate: false, shape: 'thin outline ring' },
-  { id: 'output', label: 'Output', glyph: '▮', tint: '#7d8bb0', plate: true, shape: 'bars' },
 ]
 const LT = Object.fromEntries(LAYER_TYPES.map((t) => [t.id, t])) as Record<LayerTypeId, (typeof LAYER_TYPES)[number]>
 
@@ -387,7 +403,7 @@ function Plate({ g, def }: { g: Group; def?: SceneDef }) {
   } : {}
   return (
     <group position={[cx, 0, cz]}>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={0.1} depthWrite={false} toneMapped={false} /></mesh>
+      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={0.14} depthWrite={false} toneMapped={false} /></mesh>
       <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></lineSegments>
       {extra && <lineSegments geometry={extra} position-y={0.01}><lineBasicMaterial color={t.tint} transparent opacity={g.type === 'conv' ? 0.3 : 0.55} toneMapped={false} /></lineSegments>}
       {g.type === 'recurrent' && <mesh rotation-x={-Math.PI / 2} position-y={0.05} scale={[w / 2 - 0.2, d / 2 - 0.1, 1]}><torusGeometry args={[1, 0.018, 6, 64]} /><meshBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></mesh>}
@@ -577,8 +593,8 @@ function Bars({ origin, stage, along = 'z', labels }: { origin: [number, number,
       const h = 0.05 + pr[i] * 3.2 * r
       const off = (i - 4.5) * 0.62
       d.position.set(origin[0] + (along === 'x' ? off : 0), origin[1] + h / 2, origin[2] + (along === 'z' ? off : 0)); d.scale.set(0.42, h, 0.42); d.updateMatrix(); m.current.setMatrixAt(i, d.matrix)
-      c.copy(i === best && r > 0.5 ? AMBER : INK).multiplyScalar((i === best && r > 0.5 ? 2.4 : 1.6) * dm); m.current.setColorAt(i, c)
-      const el = tags.current[i]; if (el) { el.textContent = `${s.out?.labels?.[i] ?? labels?.[i] ?? i}${r > 0.6 ? ` · ${(pr[i] * 100).toFixed(0)}%` : ''}`; el.dataset.prio = i === best ? '2' : pr[i] > 0.05 ? '1' : '0.4'; el.style.color = i === best || pr[i] > 0.05 ? '' : '#aab4d2' }
+      if (TH.light) c.copy(i === best && r > 0.5 ? L_AMBER : L_INK).multiplyScalar(dm < 1 ? 0.75 : 1); else c.copy(i === best && r > 0.5 ? AMBER : INK).multiplyScalar((i === best && r > 0.5 ? 2.4 : 1.6) * dm); m.current.setColorAt(i, c)
+      const el = tags.current[i]; if (el) { setText(el, `${s.out?.labels?.[i] ?? labels?.[i] ?? i}${r > 0.6 ? ` · ${(pr[i] * 100).toFixed(0)}%` : ''}`); el.dataset.prio = i === best ? '2' : pr[i] > 0.05 ? '1' : '0.4'; el.style.color = i === best || pr[i] > 0.05 ? '' : 'var(--muted,#aab4d2)' }
     }
     m.current.instanceMatrix.needsUpdate = true; if (m.current.instanceColor) m.current.instanceColor.needsUpdate = true
   })
@@ -755,7 +771,7 @@ function VlmScene() {
       const on = k < shown && k < ids.length
       d.position.set(wordX(k), 0.08, 3.2); if (on) d.scale.set(0.78, 0.1, 0.34); else d.scale.setScalar(0.0001); d.updateMatrix(); pills.current.setMatrixAt(k, d.matrix)
       if (k === shown - 1) c.copy(AMBER).multiplyScalar(2.2); else c.copy(INK).lerp(BLUE, 0.45); pills.current.setColorAt(k, c)
-      const el = wordsRef.current[k]; if (el) { el.style.display = on ? '' : 'none'; el.textContent = on ? vocab[ids[k]] ?? '' : '' }
+      const el = wordsRef.current[k]; if (el) { el.style.display = on ? '' : 'none'; setText(el, on ? vocab[ids[k]] ?? '' : '') }
     }
     pills.current.instanceMatrix.needsUpdate = true; if (pills.current.instanceColor) pills.current.instanceColor.needsUpdate = true
   })
@@ -860,15 +876,16 @@ function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
   const marker = useRef<THREE.Mesh>(null!)
   const blockTag = useRef<HTMLElement | null>(null)
   const blockAt = () => { const s = Z(); return Math.min(L - 1, Math.floor(reach('llm', s.t, 'blocks') * L)) }
-  useFrame(() => {
+  useFrame(({ clock }) => {
     if (Z().net !== 'llm') return
     const s = Z(), r = reach('llm', s.t, 'blocks'), k = blockAt()
     if (!marker.current) return
+    ;(marker.current.material as THREE.MeshBasicMaterial).opacity = reduceMotion ? 0.55 : 0.4 + 0.25 * Math.sin(clock.elapsedTime * 6)
     marker.current.visible = r > 0 && r < 1
     marker.current.position.x = colX(k)
-    if (blockTag.current) blockTag.current.textContent = r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`
+    setText(blockTag.current, r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
     const toks: string[] = s.out?.tokens ?? []
-    for (let t = 0; t < MAXT; t++) { const el = words.current[t]; if (el) { el.style.display = t < T ? '' : 'none'; if (t < T) { el.textContent = (toks[t] ?? '').replace(/\n/g, '⏎') || '·'; const on = reach('llm', s.t, 'input') > (t + 0.5) / T; el.dataset.prio = on ? '1' : '0.5'; el.style.color = on ? '' : '#aab4d2' } } }
+    for (let t = 0; t < MAXT; t++) { const el = words.current[t]; if (el) { el.style.display = t < T ? '' : 'none'; if (t < T) { setText(el, (toks[t] ?? '').replace(/\n/g, '⏎') || '·'); const on = reach('llm', s.t, 'input') > (t + 0.5) / T; el.dataset.prio = on ? '1' : '0.5'; el.style.color = on ? '' : 'var(--muted,#aab4d2)' } } }
   })
   const span = z(T - 1) - z(0) + 1.4
   const norm = useMemo(() => {
@@ -1011,7 +1028,7 @@ function Outlines() {
   useFrame(() => { put(hov.current, isInspectOn() ? useUI.getState().hover?.box : null); put(sel.current, selBox) })
   return (
     <>
-      <lineSegments ref={hov} geometry={UNIT} visible={false} renderOrder={5}><lineBasicMaterial color="#ffffff" transparent opacity={0.7} depthTest={false} toneMapped={false} /></lineSegments>
+      <lineSegments ref={hov} geometry={UNIT} visible={false} renderOrder={5}><lineBasicMaterial color={TH.light ? '#1a2342' : '#ffffff'} transparent opacity={0.7} depthTest={false} toneMapped={false} /></lineSegments>
       <lineSegments ref={sel} geometry={UNIT} visible={false} renderOrder={5}><lineBasicMaterial color="#ffa94d" depthTest={false} toneMapped={false} /></lineSegments>
     </>
   )
@@ -1024,6 +1041,8 @@ function Tip() {
 }
 
 export function ZooScene() {
+  const theme = useTheme(), light = theme === 'light'
+  TH.light = light
   const shown = useStore((s) => !!s.visible.model)
   const st = useStage(shown)
   const net = useZoo((s) => s.net)
@@ -1043,19 +1062,19 @@ export function ZooScene() {
         onPointerMissed={(e) => { if (e.type === 'dblclick') Z().select(null); else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
-            <color attach="background" args={['#060913']} />
+            <color attach="background" args={[light ? '#eef0fb' : '#060913']} />
             <WheelScrollsPage />
-            <fog attach="fog" args={['#060913', 30, 56]} />
-            <SlowWatch onSlow={st.onSlow} />
+            <fog attach="fog" args={[light ? '#eef0fb' : '#060913', 30, 56]} />
+            <SlowWatch onStep={st.step} />
             <ambientLight intensity={0.4} />
             <Environment resolution={64} environmentIntensity={0.5}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
             </Environment>
-            <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}><meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} /></RoundedBox>
+            <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}><meshPhysicalMaterial color={light ? '#dfe3f5' : '#0a1122'} metalness={light ? 0 : 0.4} roughness={0.7} /></RoundedBox>
             <Stage />
             <Outlines />
             <Rig />
-            {!st.lite && (
+            {st.bloom && !light && (
               <EffectComposer multisampling={st.dpr > 1 ? 4 : 0}>
                 <Bloom mipmapBlur luminanceThreshold={0.85} luminanceSmoothing={0.2} intensity={0.9} radius={0.7} />
                 <Vignette eskil={false} offset={0.25} darkness={0.7} />

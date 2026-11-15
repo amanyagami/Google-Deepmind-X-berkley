@@ -7,13 +7,13 @@
 // (blue) light as the prompt goes keyboard -> CPU <-> RAM -> screen, while the copper rails (amber) carry the power.
 import { useContext, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { aspectFit, FpsCap, WheelScrollsPage } from '../aspect'
+import { aspectFit, FpsCap, useTheme, WheelScrollsPage } from '../aspect'
 import { CameraControls, Environment, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { peaksOf, powerNow, useHW, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
-import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
+import { Chip, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
@@ -177,6 +177,7 @@ function Hot({ pos, id, children }: { pos: THREE.Vector3; id: string; children: 
   )
 }
 
+const PT = { light: false }
 function Pcb() {
   const geo = useMemo(() => {
     const pts: number[] = []
@@ -187,9 +188,9 @@ function Pcb() {
   return (
     <group>
       <RoundedBox args={[20.5, 0.3, 13]} radius={0.2} smoothness={4} position={[0, -0.15, 0.25]}>
-        <meshPhysicalMaterial color="#08101f" metalness={0.4} roughness={0.65} clearcoat={0.4} />
+        <meshPhysicalMaterial color={PT.light ? '#cfd6ee' : '#08101f'} metalness={PT.light ? 0.1 : 0.4} roughness={0.65} clearcoat={0.4} />
       </RoundedBox>
-      <lineSegments geometry={geo}><lineBasicMaterial color="#17223f" transparent opacity={0.5} /></lineSegments>
+      <lineSegments geometry={geo}><lineBasicMaterial color={PT.light ? '#aab4d6' : '#17223f'} transparent opacity={0.5} /></lineSegments>
     </group>
   )
 }
@@ -302,11 +303,14 @@ function CpuChip() {
   const col = useMemo(() => new THREE.Color(), [])
   const HEAT = 14
   const arcGeo = useMemo(() => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(nCores * 2 * 6 * 2 * 3), 3)); return g }, [nCores])
-  const lastArc = useRef(0)
+  const lastArc = useRef(0), lastTxt = useRef(0), hot = useRef(-1)
   useFrame(({ clock }) => {
     const s = currentSample().s
     const time = clock.elapsedTime
     const cw = s?.core_w ?? []
+    const doText = time - lastTxt.current > 0.25 // label text at 4 Hz
+    if (doText) { lastTxt.current = time; let mx = 0.5; hot.current = -1; for (let i = 0; i < cw.length; i++) if ((cw[i] ?? 0) > mx) { mx = cw[i]; hot.current = i } }
+    const pulse = reduceMotion ? 1 : 1 + 0.18 * Math.sin(time * 5)
     const coreSum = cw.reduce((a, b) => a + (b ?? 0), 0)
     ring.current.color.copy(AMBER).multiplyScalar(0.3 + 2.4 * Math.min(1, (s?.pkg_w ?? 0) / 65))
     soc.current.emissiveIntensity = 0.05 + 1.2 * Math.min(1, Math.max(0, ((s?.pkg_w ?? 0) - coreSum) / 25))
@@ -314,7 +318,7 @@ function CpuChip() {
       const w = cw[c.k] ?? 0
       const h = 0.1 + Math.min(1.4, w * 0.15)
       d.position.set(c.x, 0.3 + h / 2, c.z); d.scale.set(1, h, 1); d.updateMatrix(); tiles.current.setMatrixAt(c.k, d.matrix)
-      heat(w, col); tiles.current.setColorAt(c.k, col.clone().multiplyScalar(1 + Math.min(2.2, w / 3)))
+      heat(w, col); tiles.current.setColorAt(c.k, col.multiplyScalar((1 + Math.min(2.2, w / 3)) * (c.k === hot.current ? pulse : 1)))
       for (let i = 0; i < HEAT; i++) {
         const life = ((time * (0.25 + w * 0.06) + i / HEAT + c.k * 0.37) % 1)
         const on = i < Math.round(HEAT * Math.min(1, w / 8))
@@ -322,7 +326,7 @@ function CpuChip() {
         d.scale.setScalar(on && !reduceMotion ? 0.05 * (1 - life) + 0.01 : 0.0001); d.updateMatrix(); heatM.current.setMatrixAt(c.k * HEAT + i, d.matrix)
       }
       const el = labels.current[c.k]
-      if (el) { el.textContent = `${w.toFixed(1)} W`; el.style.outline = c.k === deepCore ? '1px solid #ffa94d' : '' }
+      if (el && doText) { setText(el, `${w.toFixed(1)} W`); el.style.outline = c.k === deepCore ? '1px solid #ffa94d' : '' }
     }
     tiles.current.instanceMatrix.needsUpdate = true; tiles.current.instanceColor!.needsUpdate = true; heatM.current.instanceMatrix.needsUpdate = true
     // sparks: short jagged arcs from the power ring into each busy core, redrawn ~15 times a second
@@ -595,6 +599,8 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   // paused for the one-second idle baseline only, so the cost of drawing can be measured against it
   const baseline = useHW((s) => s.benchRunning && s.benchStage === 'idle' && s.source === 'companion')
   const st = useStage(active)
+  const light = useTheme() === 'light'
+  PT.light = light
   const summary = useHW((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`)
   useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true })
   return (
@@ -604,10 +610,10 @@ export function PowerScene({ active = true }: { active?: boolean }) {
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
             {st.run && recording && !baseline && <FpsCap fps={30} />}
-            <SlowWatch onSlow={st.onSlow} />
-            <color attach="background" args={['#05080f']} />
+            <SlowWatch onStep={st.step} />
+            <color attach="background" args={[light ? '#eef0fb' : '#05080f']} />
             <WheelScrollsPage />
-            <fog attach="fog" args={['#05080f', 26, 54]} />
+            <fog attach="fog" args={[light ? '#eef0fb' : '#05080f', 26, 54]} />
             <ambientLight intensity={0.3} />
             <directionalLight position={[6, 12, 8]} intensity={1.3} />
             <Environment resolution={64} environmentIntensity={0.6}>
@@ -621,7 +627,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
             <LanesHost />
             <Rails />
             <Rig />
-            {!st.lite && (
+            {st.bloom && !light && (
               <EffectComposer multisampling={recording || st.dpr <= 1 ? 0 : 4}>
                 <Bloom mipmapBlur luminanceThreshold={0.8} luminanceSmoothing={0.2} intensity={1.15} radius={0.8} />
                 <Vignette eskil={false} offset={0.25} darkness={0.8} />
