@@ -1200,11 +1200,14 @@ const idDelay = (id: string) => (strSeed(id) % 5) * 30
 /** True for ~`ms` after mount (after a small per-id delay so several explainers do not pop together). Restarts on refresh. */
 export function useExplainerIntro(id: string, ms = 5000): boolean {
   const [on, setOn] = useState(false)
+  // on a first visit the name card is modal: hold the intro until it is answered
+  const named = useStore((st) => !!st.name)
   useEffect(() => {
+    if (!named) { setOn(false); return }
     const a = window.setTimeout(() => setOn(true), idDelay(id))
     const b = window.setTimeout(() => setOn(false), idDelay(id) + ms)
     return () => { clearTimeout(a); clearTimeout(b) }
-  }, [id, ms])
+  }, [id, ms, named])
   return on
 }
 

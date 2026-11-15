@@ -598,7 +598,8 @@ h1, h2, h3, .hero { letter-spacing: -0.015em; }
 /* name card: a lit panel */
 .namewall { backdrop-filter: blur(6px); }
 .namecard { box-shadow: var(--sh-2), 0 0 0 1px color-mix(in srgb, var(--brand-1) 28%, transparent), 0 0 70px -16px var(--glow); }
-.namecard h2, .namecard h3 { font-size: var(--t2); }
+.namecard h2, .namecard h3 { display: flex; align-items: center; gap: var(--s2); margin: 0; font: 700 24px/1.2 var(--display); letter-spacing: -0.02em; }
+.namecard .dockprompt { font: 500 var(--t1) var(--body); }
 
 /* entrance: stages and the score strip ease in once; no layout shift (opacity and transform only) */
 .pair > .sect { animation: ns-fade .5s var(--ease) both; }

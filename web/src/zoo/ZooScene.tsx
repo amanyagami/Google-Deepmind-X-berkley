@@ -83,7 +83,13 @@ function valueColor(v: number, max: number, out: THREE.Color, lit = 1) {
   return out.multiplyScalar(1 + Math.abs(x) * 1.6 * lit)
 }
 /** Write a label's text only when it changed (a same-text write still replaces the DOM node, 60 times a second). */
-export function setText(el: HTMLElement | null, t: string) { if (el && (el as any).__t !== t) { (el as any).__t = t; el.textContent = t } }
+export function setText(el: HTMLElement | null, t: string) {
+  if (!el || (el as any).__t === t) return
+  const grew = t.length > ((el as any).__t ?? el.textContent ?? '').length
+  ;(el as any).__t = t; el.textContent = t
+  // a label that got wider may now touch a neighbour: hide it until the next layout pass places it again (runs next frame)
+  if (grew && el.classList.contains('nsw')) { el.style.visibility = 'hidden'; KIT_DIRTY.v = true }
+}
 
 /* ============================================================== stage kit (shared with PowerScene)
  * Label chips that stay inside the stage and never overlap, one resize path, a DPR that backs off when frames are slow,
@@ -234,6 +240,7 @@ interface Item { el: HTMLElement; kind: 'chip' | 'word'; dx: number; dy: number;
 type Reg = Map<HTMLElement, Item>
 const KitCtx = createContext<Reg | null>(null)
 
+const KIT_DIRTY = { v: false }
 const obstCache = new WeakMap<HTMLElement, { n: number; els: Element[] }>()
 function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   const cr = cv.getBoundingClientRect(), W = cr.width, H = cr.height
@@ -331,7 +338,8 @@ export function KitProvider({ children, top = 48 }: { children: ReactNode; top?:
   useFrame(({ camera, size }) => {
     const e = camera.matrixWorld.elements, now = performance.now()
     const s = `${e[12].toFixed(2)},${e[13].toFixed(2)},${e[14].toFixed(2)},${e[0].toFixed(3)},${e[6].toFixed(3)}|${size.width}x${size.height}|${reg.size}`
-    if (now - at.current < 50 || (s === sig.current && now - at.current < 500)) return
+    if (now - at.current < 50 || (s === sig.current && now - at.current < 500 && !KIT_DIRTY.v)) return
+    KIT_DIRTY.v = false
     sig.current = layout(reg, gl.domElement, top) ? '' : s; at.current = now // a pass that moved something runs again next frame, until it settles
   })
   // also while frames are paused (a test baseline, a hidden-then-shown stage): page controls and cards still move
