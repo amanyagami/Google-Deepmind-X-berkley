@@ -23,3 +23,16 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+performance.mark('ns:shell')
+
+// Offline shell: register the service worker in production. A waiting new version raises an event the page shows as a strip.
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then((reg) => {
+      ;(window as any).__sw = reg
+      const waiting = () => reg.waiting && navigator.serviceWorker.controller && dispatchEvent(new CustomEvent('ns-sw-update', { detail: reg }))
+      waiting(); reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', waiting))
+    }).catch(() => { /* no service worker: the app still works */ })
+  })
+}

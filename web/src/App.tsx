@@ -164,6 +164,14 @@ class Guard extends Component<{ children: React.ReactNode }, { err: boolean }> {
   render() { return this.state.err ? <ErrorBox message="This part did not load. Check your connection, then try again." onAction={() => this.setState({ err: false })} /> : this.props.children }
 }
 
+/** "New version · Reload": shown when a new service worker is waiting. */
+function UpdateStrip() {
+  const [reg, setReg] = useState<ServiceWorkerRegistration | null>(null)
+  useEffect(() => { const f = (e: Event) => setReg((e as CustomEvent).detail); addEventListener('ns-sw-update', f); return () => removeEventListener('ns-sw-update', f) }, [])
+  if (!reg) return null
+  return <div className="offline-strip update-strip" role="status">New version <button className="t5link" onClick={() => { navigator.serviceWorker.addEventListener('controllerchange', () => location.reload()); reg.waiting?.postMessage('skip') }}>Reload</button></div>
+}
+
 function OfflineStrip() {
   const [on, setOn] = useState(typeof navigator === 'undefined' || navigator.onLine)
   useEffect(() => { const f = () => setOn(navigator.onLine); addEventListener('online', f); addEventListener('offline', f); return () => { removeEventListener('online', f); removeEventListener('offline', f) } }, [])
@@ -286,6 +294,7 @@ export default function App() {
     <div className="app">
       <TopBar view={view} />
       <OfflineStrip />
+      <UpdateStrip />
       <div className="flow" ref={flow}>
         <div id="score-strip-slot" data-score-strip />
         <Guard><div className="pair">
