@@ -1232,18 +1232,20 @@ function useBulbCorner(wrap: { current: HTMLDivElement | null }, want: Corner): 
         if (k) { pick = { corner: k, off }; found = true; break }
       }
       if (!found) pick = { corner: want, off: 0 }
+      w.setAttribute('data-p', pick.corner); w.style.setProperty('--off', `${pick.off}px`) // at once, before the next paint
       setC((cur) => (cur.corner === pick.corner && cur.off === pick.off ? cur : pick))
     }
     const kick = () => { if (!raf) raf = requestAnimationFrame(compute) }
-    kick()
+    compute()
     const ro = new ResizeObserver(kick); ro.observe(parent)
     // controls elsewhere (dock, picker strip) can appear later: watch the whole page, re-check at most every 150 ms
     let last = 0, tm = 0
-    const slow = () => { const n = performance.now(); if (n - last > 150) { last = n; kick() } else if (!tm) tm = window.setTimeout(() => { tm = 0; last = performance.now(); kick() }, 150) }
+    const slow = () => { const n = performance.now(); if (n - last > 40) { last = n; compute() } else if (!tm) tm = window.setTimeout(() => { tm = 0; last = performance.now(); compute() }, 40) }
     const mo = new MutationObserver(slow); mo.observe(document.body, { childList: true, subtree: true })
-    const iv = window.setInterval(kick, 1000)
+    const iv = window.setInterval(kick, 400)
     window.addEventListener('resize', kick)
-    return () => { cancelAnimationFrame(raf); clearTimeout(tm); ro.disconnect(); mo.disconnect(); clearInterval(iv); window.removeEventListener('resize', kick) }
+    document.addEventListener('transitionend', slow, true); document.addEventListener('animationend', slow, true)
+    return () => { cancelAnimationFrame(raf); clearTimeout(tm); ro.disconnect(); mo.disconnect(); clearInterval(iv); window.removeEventListener('resize', kick); document.removeEventListener('transitionend', slow, true); document.removeEventListener('animationend', slow, true) }
   }, [wrap, want])
   return c
 }
