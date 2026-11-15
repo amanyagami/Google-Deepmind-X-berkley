@@ -386,7 +386,7 @@ input[type=range] { width: 100%; accent-color: var(--pos); }
 .machine .stagebottom { z-index: 8; }
 
 /* ---- network zoo ----------------------------------------------------------------------------- */
-.zoohud { top: calc(var(--zoo-tabs-b, 56px) + 8px); left: 14px; right: auto; z-index: 6; width: min(300px, calc(100% - 28px)); padding: 10px 16px; gap: 0; }
+.main.zoo .stage .zoohud { top: calc(var(--zoo-tabs-b, 56px) + 8px); left: 14px; right: auto; z-index: 6; width: min(300px, calc(100% - 28px)); padding: 10px 16px; gap: 0; }
 .zoohud p { margin: 0; }
 .zoohud-sum { font: 500 14px/1.4 var(--body); color: var(--fg); }
 .zoohud-sum b { color: var(--pos-ink); font-weight: 650; }

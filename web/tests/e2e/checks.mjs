@@ -295,7 +295,7 @@ export const checks = [
     // the net card (rest and opened) never touches the tab row, at every width, for a small and a long card
     for (const w of [1600, 1480, 1100, 820, 700, 390]) for (const net of ['cnn', 'vlm']) {
       const o = await env.open({ w, touch: w < 600 }); await o.goto('#zoo', 1200); await o.page.evaluate((n) => window.__zoo?.getState().setNet(n), net); await o.page.waitForTimeout(900); await o.page.evaluate(() => window.__zoo?.getState().pause?.())
-      const hit = await o.page.evaluate(() => { const tb = document.querySelector('[data-zoo-tabs]'), pk = document.querySelector('[data-peek]'); if (!tb || !pk || !__h.vis(pk)) return 'missing'
+      const hit = await o.page.evaluate(() => { const tb = document.querySelector('[data-zoo-tabs]'), pk = document.querySelector('[data-hud="net"]'); if (!tb || !pk || !pk.closest('.stage') || !__h.vis(pk)) return 'missing'
         const x = tb.getBoundingClientRect(), st = pk.closest('.stage').getBoundingClientRect(), box = () => [pk, pk.querySelector('[data-peek-details]')].filter((e) => e && __h.vis(e)).map((e) => e.getBoundingClientRect())
         const bad = (rs) => rs.some((r) => r.left < x.right && r.right > x.left && r.top < x.bottom && r.bottom > x.top)
         const clip = (rs) => rs.some((r) => r.left < st.left - 0.5 || r.right > st.right + 0.5 || r.bottom > st.bottom + 0.5), rest = bad(box()), restClip = clip(box()); pk.querySelector('.nspeek-tog').focus(); return new Promise((res) => setTimeout(() => res(rest ? 'rest overlaps tabs' : restClip ? 'rest clipped by the stage edge' : bad(box()) ? 'open panel overlaps tabs' : clip(box()) ? 'open panel clipped by the stage edge' : ''), 300)) })
@@ -318,13 +318,13 @@ export const checks = [
     const c1 = await p.page.evaluate(() => window.__cls)
     // phone, touch
     const q = await env.open({ w: 390, touch: true }); await q.goto('#zoo', 1500); await setNet(q.page); await q.page.waitForTimeout(900); await q.page.evaluate(cls)
-    const tr = await q.page.evaluate(probe); let c2 = 0
+    const tr = (await q.page.evaluate(probe)).filter((x) => x.name === 'net'); let c2 = 0
     if (!tr.length) bad.push('390: no visible [data-peek] card')
-    else { const tg = q.page.locator('[data-peek]').filter({ visible: true }).first().locator('.nspeek-tog')
+    else { const tg = q.page.locator('[data-hud="net"]').filter({ visible: true }).first().locator('.nspeek-tog')
       if (tr[0].lines > 2) bad.push(`390: ${tr[0].lines} lines at rest`)
-      await tg.tap(); await q.page.waitForTimeout(700); const t1 = (await q.page.evaluate(probe))[0]; if (!t1.open) bad.push('390: tap does not open'); if (t1.h !== tr[0].h) bad.push('390: box changed on tap')
-      await tg.tap(); await q.page.waitForTimeout(700); if ((await q.page.evaluate(probe))[0].open) bad.push('390: second tap does not close')
-      await tg.tap(); await q.page.waitForTimeout(700); await q.page.touchscreen.tap(366, 240); await q.page.waitForTimeout(700); if ((await q.page.evaluate(probe))[0].open) bad.push('390: tap outside does not close')
+      await tg.tap(); await q.page.waitForTimeout(700); const t1 = ((await q.page.evaluate(probe)).filter((x) => x.name === 'net'))[0]; if (!t1.open) bad.push('390: tap does not open'); if (t1.h !== tr[0].h) bad.push('390: box changed on tap')
+      await tg.tap(); await q.page.waitForTimeout(700); if (((await q.page.evaluate(probe)).filter((x) => x.name === 'net'))[0].open) bad.push('390: second tap does not close')
+      await tg.tap(); await q.page.waitForTimeout(700); await q.page.touchscreen.tap(366, 240); await q.page.waitForTimeout(700); if (((await q.page.evaluate(probe)).filter((x) => x.name === 'net'))[0].open) bad.push('390: tap outside does not close')
       c2 = await q.page.evaluate(() => window.__cls); out.push(`390 ${tr[0].lines} line(s)`) }
     if (c1 > 0.0005 || c2 > 0.0005) bad.push(`CLS ${c1.toFixed(4)} / ${c2.toFixed(4)} ${JSON.stringify(await q.page.evaluate(() => window.__cs ?? []))}`)
     return ok(!bad.length, `${out.join('; ')}; CLS ${c1.toFixed(4)} (1480) ${c2.toFixed(4)} (390)${bad.length ? ' | ' + bad.join('; ') : ''}`) } },
@@ -387,10 +387,11 @@ export const checks = [
     await p.page.locator('[data-namecard] input').first().fill(NAME); await p.page.keyboard.press('Enter'); await p.page.waitForTimeout(600)
     const gone = !(await p.page.evaluate(() => { const c = document.querySelector('[data-namecard]'); return !!c && __h.vis(c) }))
     await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(1500); const again = await p.page.evaluate(() => { const c = document.querySelector('[data-namecard]'); return !!c && __h.vis(c) })
-    await openFor(p.page, '[data-test=cpu1]'); await p.page.locator('[data-test=cpu1]').first().click().catch(() => {}); await p.page.waitForSelector(SCORE, { timeout: 30000 }).catch(() => {})
+    // the hero and Share appear once every test is done (C11/C1): run Test all, then open the drawer for the hero
+    await p.page.locator('[data-testall]').first().click({ timeout: 15000 }).catch(() => {}); await p.page.waitForFunction(() => document.querySelector('b[data-score]') && !document.querySelector('[data-testall][disabled]'), null, { timeout: 240000, polling: 500 }).catch(() => {}); await openFor(p.page, '[data-hero]')
     const hero = await p.page.evaluate((n) => (document.querySelector('[data-hero]')?.innerText ?? '').toLowerCase().includes(n.toLowerCase()), NAME)
     const leaks = p.reqs.filter((r) => (decodeURIComponent(r.url) + r.post).includes('Zelda') || (r.url + r.post).includes('Quux')).length
-    let png = 'share not checked'; const sb = p.page.locator('[data-share]').first(); if (await sb.count()) { const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 10000 }).catch(() => null), sb.click()]); if (d) { const f = path.join(OUT, 'share-name.png'); await d.saveAs(f); png = 'PNG text is not machine-read (pixel text); file saved for review' } }
+    let png = 'share not checked'; const sb = p.page.locator('[data-share]:not([disabled])').first(); if (await sb.count()) { const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 10000 }).catch(() => null), sb.click()]); if (d) { const f = path.join(OUT, 'share-name.png'); await d.saveAs(f); png = 'PNG text is not machine-read (pixel text); file saved for review' } }
     return ok(card && gone && !again && hero && !leaks, `name card first ${card}; hides after answer ${gone}; back after reload ${again}; name in hero ${hero}; ${leaks} requests carry it; ${png}`) } },
 
   { id: 'A32', title: 'draw pad: a stroked 3 gives a result <= 300 ms that says 3; pad >= 280 px at 390; Clear/Undo; touch', run: async (env) => {
