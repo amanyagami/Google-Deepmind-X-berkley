@@ -205,10 +205,14 @@ export const useZoo = create<Z>((set, get) => ({
       const p = await (await fetch(base() + `${net}.json`)).json()
       set((s) => ({ packs: { ...s.packs, [net]: p } }))
     }
+    const was = get().net
     set({ net, sel: null, t: 0, real: net === 'vit' || net === 'vlm' ? { ...NO_REAL, net } : NO_REAL })
     get().recompute()
     if (!get().out?.draft) get().play()
-    if (net === 'vit' || net === 'vlm') realKick(false)
+    // leaving a real vision model frees it: one real session at a time, nothing kept warm for a tab nobody looks at
+    if (was !== net) { if (dwell) { clearTimeout(dwell); dwell = null } if (was === 'vit' || was === 'vlm') { realCtl?.abort(); void api.releaseVision() } }
+    // a real model is only loaded once the tab has been looked at for a second (or when the user taps), so flicking through the tabs loads nothing
+    if (net === 'vit' || net === 'vlm') { armed = false; dwell = setTimeout(() => { dwell = null; if (useZoo.getState().net === net) { armed = true; realKick(false) } }, DWELL_MS); if (net === 'vlm') realKick(false) }
     else if (net === 'llm') llmAgain()
   },
 
@@ -357,6 +361,9 @@ useStore.subscribe((s, p) => {
 /* ------------------------------------------------------------------ the real counterparts (never recorded: each answer is computed just now) */
 let realCtl: AbortController | null = null
 let realBusy = false
+const DWELL_MS = 1000
+let dwell: ReturnType<typeof setTimeout> | null = null
+let armed = false
 let realDirty = false
 const realSpecs = new Map<string, Promise<{ spec: ModelSpec; fit: Fit }>>()
 const specFor = (repo: string) => {
@@ -381,6 +388,8 @@ function realKick(tap: boolean) {
   const net = useZoo.getState().net
   if (net !== 'vit' && net !== 'vlm') return
   if (net === 'vlm' && !tap && !lsHas(VLM_ASKED)) { const m = REAL_VLM; setReal({ net, state: 'ask', title: m.title, repo: m.repo, size: m.size }); return }
+  if (!tap && !armed) return
+  if (tap) armed = true
   if (realBusy) { realDirty = true; return }
   void realLoop(net)
 }
