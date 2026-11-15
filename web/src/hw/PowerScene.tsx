@@ -13,7 +13,8 @@ import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { peaksOf, powerNow, useHW, useHWThrottled, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
-import { Backdrop, Chip, FirstFrame, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
+import { createGuide, type Guide } from '../ui/camera'
+import { Backdrop, Chip, FirstFrame, ResetView, SCENE, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
@@ -550,6 +551,13 @@ function Rig() {
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
   const scene = useThree((s) => s.scene)
   const last = useRef({ w: 0, h: 0, key: '' })
+  const guide = useRef<Guide | null>(null)
+  useEffect(() => {
+    const c = ctl.current; if (!c) return
+    const g = createGuide(c, 'machine', () => MACHINE_BOX)
+    guide.current = g; SCENE.cams.machine = g
+    return () => { g.dispose(); if (SCENE.cams.machine === g) SCENE.cams.machine = undefined }
+  }, [])
   useEffect(() => {
     const c = ctl.current, L = last.current; if (!c) return
     const key = `${path.join('/')}|${follow}|${stage}`
@@ -569,7 +577,8 @@ function Rig() {
       let pos: number[], tgt: number[]
       if (overview) {
         const dir = new THREE.Vector3()
-        if (resize && c.distance > 1e-3) { c.getPosition(_p); c.getTarget(_t); dir.copy(_p).sub(_t) } else dir.set(OVERVIEW[0][0] - OVERVIEW[1][0], OVERVIEW[0][1] - OVERVIEW[1][1], OVERVIEW[0][2] - OVERVIEW[1][2])
+        const P = guide.current?.pose
+        if (resize && P) { dir.set(P.pos[0] - P.target[0], P.pos[1] - P.target[1], P.pos[2] - P.target[2]) } else dir.set(OVERVIEW[0][0] - OVERVIEW[1][0], OVERVIEW[0][1] - OVERVIEW[1][1], OVERVIEW[0][2] - OVERVIEW[1][2])
         if (dir.lengthSq() < 1e-6) dir.set(0, 0.65, 0.76)
         const b = MACHINE_BOX.clone(); b.min.x -= 2 * dx; b.max.z += 2 * dz // widening the box shifts the view target left/forward, clear of the cards
         const f = fitBox(b, dir, camera.fov, size.width, size.height, 56)
@@ -580,7 +589,8 @@ function Rig() {
       }
       const animate = !reduceMotion && !resize
       if (animate) markTween(1200)
-      c.setLookAt(pos[0], pos[1], pos[2], tgt[0], tgt[1], tgt[2], animate)
+      if (guide.current) guide.current.set(pos, tgt, animate, path.length > 0)
+      else c.setLookAt(pos[0], pos[1], pos[2], tgt[0], tgt[1], tgt[2], animate)
     })
     return () => cancelAnimationFrame(id)
   }, [path, follow, stage, size.width, size.height, camera])
@@ -589,8 +599,7 @@ function Rig() {
     ctl.current.getTarget(_t); const d = camera.position.distanceTo(_t)
     f.near = d * 0.97 + 8; f.far = d * 2.0 + 24
   })
-  return <CameraControls ref={ctl} makeDefault smoothTime={0.8} minDistance={1.5} maxDistance={102} maxPolarAngle={Math.PI * 0.49}
-    onStart={() => { const h = useHW.getState(); if (h.follow && !h.path.length) h.setFollow(false) }} />
+  return <CameraControls ref={ctl} makeDefault smoothTime={0.8} />
 }
 
 export function PowerScene({ active = true }: { active?: boolean }) {
@@ -603,11 +612,12 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   const light = useTheme() === 'light'
   PT.light = light
   const summary = useHWThrottled((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`, 1000)
-  useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true })
+  const reset = () => { const h = useHW.getState(); if (h.path.length) { let n = h.path.length; while (n-- > 0) useHW.getState().back() } else SCENE.cams.machine?.home() }
+  useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true }, reset)
   return (
     <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
       <Canvas frameloop={!st.run || baseline ? 'never' : recording ? 'demand' : 'always'} dpr={recording ? 1 : st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [0.2, 13.6, 15.8], fov: 38 }} gl={{ antialias: false, powerPreference: 'high-performance' }}
-        onPointerMissed={(e) => { if (e.type === 'click') { const h = useHW.getState(); let n = h.path.length; while (n-- > 0) useHW.getState().back() } }}>
+        onPointerMissed={(e) => { if (e.type === 'dblclick') reset(); else if (e.type === 'click') { const h = useHW.getState(); let n = h.path.length; while (n-- > 0) useHW.getState().back() } }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
             {st.run && recording && !baseline && <FpsCap fps={30} />}
@@ -639,6 +649,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
           </KitProvider>
         </LiteCtx.Provider>
       </Canvas>
+      <ResetView scene="machine" onReset={reset} />
       <div className="nssr" role="img" aria-label={summary} />
     </div>
   )

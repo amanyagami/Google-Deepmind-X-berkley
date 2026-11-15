@@ -268,6 +268,31 @@ export const checks = [
     const fr = await p.page.evaluate(() => __fr), lt = await p.page.evaluate(() => __lt), q = p95(fr), mx = Math.max(0, ...lt)
     return ok(q <= 33 && mx <= 100 && idleP <= 20, `idle p95 ${idleP.toFixed(1)} ms; runAll p95 ${q.toFixed(1)} ms over ${fr.length} frames; longest task ${mx.toFixed(0)} ms`) } },
 
+  { id: 'A39', title: 'camera: peek springs back <= 900 ms, drags stay in limits, focus survives release, Reset view and Home restore', run: async (env) => {
+    const p = await env.open(); await p.goto('', 2500); const pg = p.page
+    await pg.evaluate(async () => { await window.__zoo?.getState().setNet('mlp'); document.querySelector('[data-stage]')?.scrollIntoView() }); await pg.waitForTimeout(2000)
+    const pose = () => pg.evaluate(() => { const g = window.__scene?.cams?.model; if (!g || !g.pose) return null; const n = g.now(), h = g.pose, d = Math.hypot(...n.pos.map((v, i) => v - h.pos[i])) + Math.hypot(...n.target.map((v, i) => v - h.target[i]))
+      const o = n.pos.map((v, i) => v - n.target[i]), r = Math.hypot(...o); return { d, polar: Math.acos(o[1] / r), az: Math.atan2(o[0], o[2]), dist: r, lim: g.limits, focused: g.focused } })
+    if (!(await pose())) return F('no camera guide (window.__scene.cams.model)')
+    const b = await pg.locator('[data-stage] canvas').first().boundingBox(), cx = b.x + b.width / 2, cy = b.y + b.height / 2
+    const drag = async (dx, dy, probe) => { await pg.mouse.move(cx, cy); await pg.mouse.down(); for (let i = 1; i <= 8; i++) { await pg.mouse.move(cx + (dx * i) / 8, cy + (dy * i) / 8); if (probe) await probe() } await pg.mouse.up() }
+    let moved = 0; await drag(220, 60, async () => { moved = Math.max(moved, (await pose()).d) }); const t0 = Date.now(); let back = await pose(); while (back.d > 0.3 && Date.now() - t0 < 900) { await pg.waitForTimeout(50); back = await pose() }
+    const backMs = Date.now() - t0
+    let out = 0, worst = ''
+    const probe = async () => { const q = await pose(), e = 0.03, az = q.az; const [a0, a1] = q.lim.azimuth
+      const azOk = a0 === -Infinity || ((az >= a0 - e && az <= a1 + e) || (az + 2 * Math.PI >= a0 - e && az + 2 * Math.PI <= a1 + e) || (az - 2 * Math.PI >= a0 - e && az - 2 * Math.PI <= a1 + e))
+      if (q.polar < q.lim.polar[0] - e || q.polar > q.lim.polar[1] + e || q.dist < q.lim.dist[0] - 0.5 || q.dist > q.lim.dist[1] + 0.5 || !azOk) { out++; worst = `polar ${(q.polar * 57.3).toFixed(0)} dist ${q.dist.toFixed(1)}` } }
+    for (let k = 0; k < 5; k++) await drag((Math.random() - 0.5) * 900, (Math.random() - 0.5) * 600, probe)
+    await pg.waitForTimeout(900)
+    await pg.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'h1' })); await pg.waitForTimeout(900)
+    const f0 = await pose(); await drag(160, 0); await pg.waitForTimeout(900); const f1 = await pose()
+    const focusKept = f0.focused && f1.focused && (await pg.evaluate(() => !!window.__zoo.getState().inspect))
+    await pg.locator('[data-reset-view="model"]').click(); await pg.waitForTimeout(900); const r1 = await pose()
+    const resetOk = !r1.focused && r1.d < 0.3 && !(await pg.evaluate(() => window.__zoo.getState().inspect))
+    await pg.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'h2' })); await pg.waitForTimeout(700); await pg.mouse.move(b.x + 40, cy); await pg.keyboard.press('Home'); await pg.waitForTimeout(900)
+    const r2 = await pose(), homeOk = !r2.focused && r2.d < 0.3
+    return ok(moved > 0.5 && backMs <= 900 && back.d <= 0.3 && !out && focusKept && resetOk && homeOk, `peek moved ${moved.toFixed(1)}, back in ${backMs} ms (off ${back.d.toFixed(2)}); ${out} samples outside limits ${worst}; focus kept ${focusKept}; Reset view ${resetOk}; Home ${homeOk}`) } },
+
   { id: 'A29', title: 'theme: toggle flips data-theme, persists across reload, no dark leftovers in light mode', needs: ['theme'], run: async (env) => {
     const p = await env.open({ theme: undefined }); await p.goto(); const tg = p.page.locator('[data-theme-toggle]').first(); const seen = []
     // the toggle lives in the profile menu (D14): open the menu when it is not on screen
