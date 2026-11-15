@@ -519,7 +519,7 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 @media (max-width: 900px) { .themelbl { display: none; } }
 @media (max-width: 440px) { .themebtn { padding: 0 8px; } }
 
-#dock-slot { flex-wrap: nowrap; } #dock-slot > * { min-width: 0; }
+#dock-slot { flex-wrap: wrap; } #dock-slot > * { min-width: 0; }
 
 /* name card, name chip */
 .namewall { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 82%, transparent); }
@@ -532,8 +532,7 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 .update-strip { background: var(--brand-fill); color: #0a0e19; } .offline-strip .t5link, .update-strip .t5link { color: #0a0e19; min-height: 0; font-weight: 700; }
 
 .app { --strip: 52px; }
-#dock-slot * { flex-wrap: nowrap; }
-#dock-slot { overflow: hidden; }
+@media (min-width: 1000px) { #dock-slot, #dock-slot * { flex-wrap: nowrap; } }
 @media (max-width: 480px) {
   .topbar { gap: 4px; padding: 0 8px; }
   .pickbtn { max-width: 88px; padding: 6px; }
@@ -549,11 +548,18 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 #dock-slot { min-height: var(--dock); }
 @media (max-width: 999px) {
   :root { --dock-h: 100px; }
-  .dock-details { display: inline-flex; position: relative; width: calc(100% + 2 * var(--s4)); margin: 0 calc(-1 * var(--s4)); writing-mode: horizontal-tb; align-items: center; justify-content: center; min-height: 44px; min-width: 0; padding: 0 14px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; translate: none; right: auto; top: auto; transform: none !important; }
+  .dock-details { display: inline-flex; position: relative; width: calc(100% + 2 * var(--s3)); margin: 0 calc(-1 * var(--s3)); writing-mode: horizontal-tb; align-items: center; justify-content: center; min-height: 44px; min-width: 0; padding: 0 14px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; translate: none; right: auto; top: auto; transform: none !important; }
   .sect .drawer-tab { display: none; }
   #dock-slot .s6float { position: static; margin: 6px 0; }
 }
 @media (max-width: 999px) {
   /* the dock covers the start of the next section while the first fills the window: keep that section's content below the dock, whatever its height */
-  .sect + .sect { padding-top: calc(var(--dock-h) + var(--s2)); }
+  .sect + .sect { margin-top: calc(var(--dock-h) - var(--bar) + var(--s2)); }
 }
+
+@media (max-width: 640px) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']), textarea, .s6in { min-height: var(--hit); }
+  .dock { overflow-x: clip; }
+}
+
+.app > .dock { order: 99; }

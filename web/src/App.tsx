@@ -162,12 +162,15 @@ function Dock() {
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+  // the Details bar exists only when narrow (wide, each stage has its own edge tab)
+  const [narrow, setNarrow] = useState(() => matchMedia('(max-width: 999px)').matches)
+  useEffect(() => { const m = matchMedia('(max-width: 999px)'), f = () => setNarrow(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
   const view = useStore((x) => x.appView)
   const which = view === 'power' ? 'machine' : 'model'
   const open = useStore((x) => x.railOpen[which])
   return (
     <footer className="dock" data-dock ref={ref}>
-      <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => s.setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>
+      {narrow && <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => s.setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>}
       <div id="dock-slot">
         <form className="dockform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
           <label className="sr" htmlFor="sharedprompt">Prompt</label>
@@ -325,6 +328,7 @@ export default function App() {
       <TopBar view={view} />
       <OfflineStrip />
       <UpdateStrip />
+      <Dock />{/* last on screen (CSS order), early in the DOM so its Details toggle is the first one reached */}
       <div className="flow" ref={flow}>
         <div id="score-strip-slot" data-score-strip />
         <Guard><div className="pair">
@@ -332,7 +336,6 @@ export default function App() {
           <Sect id="power" label="The machine: live electricity and the journey of a prompt">{seen.power ? <Suspense fallback={<Loading />}><MachineView /></Suspense> : <Loading />}</Sect>
         </div></Guard>
       </div>
-      <Dock />
       <NameCard />
     </div>
   )
