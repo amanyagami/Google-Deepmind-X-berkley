@@ -914,11 +914,8 @@ export function ZooView() {
         <Picker />
         <div className="vswitch seg zoonets" role="group" aria-label="Network">
           <button className={`real ${net === 'llm' ? 'on' : ''}`} onClick={() => useZoo.getState().setNet('llm')} title={`${short}: a real language model, on your prompt`}>{short.replace(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i, '')}<span className="sfx">{short.match(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i)?.[0] ?? ''}</span></button>
-          {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} data-net-tab={n.id} onClick={() => {
-            void useZoo.getState().setNet(n.id as NetId)
-            // wide, the pad opens beside the scene so drawing and the 3D input are seen together
-            if (matchMedia('(min-width: 1000px)').matches) useStore.getState().setRail('model', true)
-          }} title={n.id === 'vlm' ? 'A tiny network that looks at a digit and finishes your words about it' : 'A tiny network that reads 8×8 handwritten digits'}>{n.short}</button>)}
+          {/* the pad stays one tap away (Draw in the dock): an open drawer would cover this tab row and half the scene */}
+          {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} data-net-tab={n.id} onClick={() => void useZoo.getState().setNet(n.id as NetId)} title={n.id === 'vlm' ? 'A tiny network that looks at a digit and finishes your words about it' : 'A tiny network that reads 8×8 handwritten digits'}>{n.short}</button>)}
           <button className="more" data-more-models onClick={() => window.dispatchEvent(new CustomEvent('ns-open-picker', { detail: { link: true } }))} title="Load another model from a Hugging Face link">More…</button>
         </div>
         {p && (

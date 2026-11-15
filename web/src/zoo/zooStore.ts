@@ -18,7 +18,7 @@ export const NETS: { id: DigitNet; short: string }[] = [
 export const STAGES: Record<NetId, { id: string; label: string; dur: number }[]> = {
   llm: [{ id: 'input', label: 'Words', dur: 1.4 }, { id: 'blocks', label: 'Blocks', dur: 7.5 }, { id: 'out', label: 'Guess', dur: 2.0 }],
   mlp: [{ id: 'input', label: 'Pixels', dur: 1.2 }, { id: 'h1', label: 'Layer 1', dur: 2.2 }, { id: 'h2', label: 'Layer 2', dur: 1.8 }, { id: 'out', label: 'Guess', dur: 1.6 }],
-  cnn: [{ id: 'input', label: 'Pixels', dur: 1.0 }, { id: 'conv1', label: 'Filters 1', dur: 3.2 }, { id: 'pool1', label: 'Pool', dur: 1.0 }, { id: 'conv2', label: 'Filters 2', dur: 2.6 }, { id: 'pool2', label: 'Pool', dur: 0.9 }, { id: 'out', label: 'Guess', dur: 1.4 }],
+  cnn: [{ id: 'input', label: 'Pixels', dur: 1.0 }, { id: 'conv1', label: 'Filters 1', dur: 3.2 }, { id: 'pool1', label: 'Pool 1', dur: 1.0 }, { id: 'conv2', label: 'Filters 2', dur: 2.6 }, { id: 'pool2', label: 'Pool 2', dur: 0.9 }, { id: 'out', label: 'Guess', dur: 1.4 }],
   rnn: [{ id: 'input', label: 'Pixels', dur: 0.8 }, ...Array.from({ length: 8 }, (_, t) => ({ id: `t${t}`, label: `Row ${t + 1}`, dur: 0.9 })), { id: 'out', label: 'Guess', dur: 1.4 }],
   vit: [{ id: 'input', label: 'Pixels', dur: 1.0 }, { id: 'patch', label: 'Patches', dur: 1.6 }, { id: 'embed', label: 'Tokens', dur: 1.4 }, { id: 'attn', label: 'Attention', dur: 3.0 }, { id: 'mlp', label: 'MLP', dur: 1.2 }, { id: 'out', label: 'Guess', dur: 1.4 }],
   vlm: [{ id: 'input', label: 'Pixels', dur: 0.8 }, { id: 'vision', label: 'Vision', dur: 2.0 }, { id: 'connect', label: 'Connect', dur: 1.2 }, { id: 'write', label: 'Writing', dur: 7.0 }],
@@ -260,14 +260,26 @@ function llmOut() {
   const st = useStore.getState()
   const real = llmReal()
   const typed = st.input.kind === 'text' ? st.input.text : ''
-  if (!norm(typed) || (real && norm(typed) === norm(ranText))) return real
+  const same = norm(typed) === norm(ranText)
+  if (!norm(typed) || (real && same)) return real
+  // a browser run gives tokens and the next-word scores but no inside view: show its real tokens, blocks left dark
+  if (same && st.tokens.length) return shell(st.tokens.slice(0, MAX_DRAFT).map((t: string) => t.trim() || '·'), `ran|${st.tokens.join('')}`, { noInside: true, done: !!st.final })
+  // while a run or its download is under way the scene waits for the real tokens (no draft that is about to be replaced)
+  if (st.running || st.download || st.pendingDownload || st.probing) return real
   // the user typed something that has not been run: their words become the prompt tiles, the blocks wait for Run
-  const tokens = draftPieces(typed, useZoo.getState().lang)
+  return shell(draftPieces(typed, useZoo.getState().lang), `draft|${typed}`, { draft: true })
+}
+
+/** The real-model scene's data with no block values: the prompt tiles only (a draft, or a run without an inside view). */
+function shell(tokens: string[], id: string, extra: Record<string, unknown>) {
+  const st = useStore.getState()
   const T = tokens.length, { L, nh } = lastShape
+  const top = extra.noInside ? (st.final?.topk ?? []).slice(0, 10) : []
   return {
-    id: `draft|${typed}`, draft: true, running: st.running, T, L, nh, tokens, emb: tokens.map(() => 0.6), resid: new Array(T * L).fill(0),
+    id, T, L, nh, tokens, emb: tokens.map(() => 0.6), resid: new Array(T * L).fill(0),
     heads: new Array(L * nh).fill(0), attn: Array.from({ length: L }, () => new Array(T).fill(0)), done: false,
-    probs: new Array(10).fill(0), labels: new Array(10).fill(''),
+    probs: Array.from({ length: 10 }, (_, i) => top[i]?.p ?? 0), labels: Array.from({ length: 10 }, (_, i) => (top[i]?.token ?? '').replace(/\n/g, '⏎')),
+    ...extra,
   }
 }
 
@@ -301,7 +313,7 @@ useStore.subscribe((s, p) => {
   const z = useZoo.getState()
   // new tokens belong to the prompt that was sent (the box may change again while it runs)
   if (s.tokens !== p.tokens && s.tokens.length) ranText = s.input.kind === 'text' ? s.input.text : s.prompt
-  if (z.net !== 'llm' || (s.layers === p.layers && s.final === p.final && s.tokens === p.tokens && s.input === p.input && s.running === p.running)) return
+  if (z.net !== 'llm' || (s.layers === p.layers && s.final === p.final && s.tokens === p.tokens && s.input === p.input && s.running === p.running && !s.download === !p.download && !s.pendingDownload === !p.pendingDownload && s.probing === p.probing)) return
   z.recompute()
   if (s.final && s.final !== p.final) { z.pause(); useZoo.setState({ t: 0 }); z.play() }
 })
