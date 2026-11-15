@@ -563,3 +563,50 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 }
 
 .app > .dock { order: 99; }
+
+/* ===== visual polish (S8): depth, hover/press/focus, hierarchy, entrance. Styles only; every rule is a refinement of a token. ===== */
+:root {
+  --sh-1: 0 1px 0 light-dark(rgba(255,255,255,.7), rgba(255,255,255,.04)) inset, 0 8px 24px -14px light-dark(rgba(60,70,150,.35), rgba(0,0,0,.65));
+  --sh-2: 0 20px 50px -18px light-dark(rgba(50,60,140,.4), rgba(0,0,0,.8));
+  --glow: color-mix(in srgb, var(--brand-1) 42%, transparent);
+}
+@keyframes ns-fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes ns-up { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+
+/* depth: one shadow language for every raised surface */
+.card, .pop, .tlbar, .errbox { box-shadow: var(--sh-1); }
+.drawer, .rail, .inspector, .pop { box-shadow: var(--sh-2); }
+.topbar { box-shadow: 0 1px 0 var(--line), 0 12px 30px -24px light-dark(rgba(50,60,140,.45), rgba(0,0,0,.9)); }
+.card { transition: border-color var(--d2) var(--ease), box-shadow var(--d2) var(--ease); }
+.card:hover { border-color: color-mix(in srgb, var(--brand-1) 38%, var(--line)); }
+
+/* buttons: lift on hover, press on active, one focus ring */
+.btn, .btn2, .drawer-tab, .seg button, .themebtn, .pickbtn { transition: transform var(--d1) var(--ease), box-shadow var(--d2) var(--ease), background-color var(--d1) var(--ease), border-color var(--d1) var(--ease), filter var(--d1) var(--ease); }
+.btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 20px -8px var(--glow); }
+.btn.primary:hover:not(:disabled) { box-shadow: 0 8px 26px -6px color-mix(in srgb, var(--brand-2) 55%, transparent); }
+.btn:active:not(:disabled), .btn2:active:not(:disabled), .seg button:active { transform: translateY(0) scale(.98); filter: brightness(.96); box-shadow: none; }
+.btn2:hover:not(:disabled), .themebtn:hover, .pickbtn:hover { border-color: color-mix(in srgb, var(--brand-1) 55%, var(--line)); box-shadow: 0 6px 18px -10px var(--glow); }
+.seg button:hover:not(.on) { background: color-mix(in srgb, var(--brand-1) 12%, transparent); }
+.drawer-tab:hover { background: var(--surface2); box-shadow: 0 0 18px -4px var(--glow); }
+:where(a, button, select, input, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--brand-2); outline-offset: 2px; }
+
+/* hierarchy: tighter display type, tabular numbers wherever numbers change */
+h1, h2, h3, .hero { letter-spacing: -0.015em; }
+.hero, .gnum b, .mono, .prow b, .tm { font-variant-numeric: tabular-nums; }
+.eyebrow { letter-spacing: 0.09em; }
+
+/* name card: a lit panel */
+.namewall { backdrop-filter: blur(6px); }
+.namecard { box-shadow: var(--sh-2), 0 0 0 1px color-mix(in srgb, var(--brand-1) 28%, transparent), 0 0 70px -16px var(--glow); }
+.namecard h2, .namecard h3 { font-size: var(--t2); }
+
+/* entrance: stages and the score strip ease in once; no layout shift (opacity and transform only) */
+.pair > .sect { animation: ns-fade .5s var(--ease) both; }
+.pair > .sect:nth-child(2) { animation-delay: 90ms; }
+#score-strip-slot > * { animation: ns-up .45s var(--ease) both; }
+.hero-score, .namecard { animation: ns-up .45s var(--ease) both; }
+@media (prefers-reduced-motion: reduce) {
+  .pair > .sect, #score-strip-slot > *, .hero-score, .namecard { animation: none; }
+  .btn, .btn2, .drawer-tab, .seg button, .card { transition: none; }
+  .btn:hover:not(:disabled) { transform: none; }
+}
