@@ -1,0 +1,13 @@
+# Only web/ is needed to build the image.
+**/node_modules
+.git
+.gitignore
+.vscode
+web/dist
+server
+examples
+TODO.md
+start.ps1
+**/*.log
+**/*.png
+!web/public/**/*.png

@@ -35,6 +35,28 @@ Open the `neural-studio` folder (File > Open Folder), then:
 - **F5** opens it in Edge with the debugger attached (full WebGPU).
 - Terminal > Run Task has the build, the unit tests, the web-app-only server and the live 3D browser test.
 
+## Deploy to Cloud Run
+
+Cloud Run serves the web app only (browser mode). The `Dockerfile` builds `web/` and serves it with nginx on port
+8080, with the same headers as `web/public/_headers` (set in `nginx.conf.template`; keep the two in step).
+Replace `PROJECT_ID` and `REGION` (for example `europe-west1`).
+
+```powershell
+gcloud auth login
+gcloud config set project PROJECT_ID
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
+gcloud run deploy neural-studio --source . --region REGION --allow-unauthenticated --port 8080 --memory 512Mi --cpu 1 --min-instances 0
+```
+
+The last command prints the app's URL. Run it again to ship a new version.
+
+Test the image on this PC first (needs Docker Desktop):
+
+```powershell
+docker build -t neural-studio .
+docker run --rm -p 8080:8080 -e PORT=8080 neural-studio   # open http://127.0.0.1:8080
+```
+
 ## What you see
 
 One page, no tabs. **Model** (left) and **Machine** (right) sit side by side on a wide screen and stack on a phone.
