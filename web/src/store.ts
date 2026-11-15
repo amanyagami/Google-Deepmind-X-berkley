@@ -255,10 +255,26 @@ export const useStore = create<S>((set, get) => {
     }
   }
 
+  /** Can this browser hand out the memory a model needs? Tries a tiny WebAssembly memory and, for WebGPU, a device. Fails fast, before any download. */
+  async function deviceProblem(where: 'webgpu' | 'wasm'): Promise<string | null> {
+    try {
+      new WebAssembly.Memory({ initial: 1, maximum: 1 })
+      if (where === 'webgpu' && (navigator as any).gpu) {
+        const ad = await (navigator as any).gpu.requestAdapter()
+        if (ad) { const dev = await Promise.race([ad.requestDevice(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))]); (dev as any)?.destroy?.() }
+      }
+      return null
+    } catch (e: any) {
+      return /timeout/.test(String(e?.message)) ? null : 'This device ran out of memory. Try a smaller model.'
+    }
+  }
+
   /** A live run in the browser: starts the download at once when the files are not saved, then runs. Never asks. */
   async function beginBrowser(o: { recordedFirst?: boolean }) {
     const s = get()
     const where = s.fit!.where as 'webgpu' | 'wasm'
+    const bad = await deviceProblem(where)
+    if (bad) { set({ ...resetRun, running: false, download: null, pendingDownload: null, tab: 'run', runErr: bad, runErrCode: 'oom' } as any); return }
     let plan: DownloadPlan
     try { plan = await planDownload(s.spec!, { device: where }) } catch (e: any) { set({ ...resetRun, tab: 'run', runErr: e.message ?? String(e) }); return }
     const mb = plan.bytes ? `${Math.round(plan.bytes / 1048576)} MB` : 'a model'
