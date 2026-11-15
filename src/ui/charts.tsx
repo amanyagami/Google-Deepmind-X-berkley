@@ -752,12 +752,16 @@ export function Heatmap({ m, rows, cols, stride = 1, pooledOnly = false, label, 
       if (used) { e.preventDefault(); e.stopPropagation() }
     }
     c.addEventListener('keydown', key)
-    const obs = new ResizeObserver(() => { const was = st.s <= st.minS * 1.02; measure(); place(was ? { s: st.minS, ox: 0, oy: 0 } : st); sched() })
+    let roRaf = 0
+    const obs = new ResizeObserver(() => {
+      cancelAnimationFrame(roRaf)
+      roRaf = requestAnimationFrame(() => { const was = st.s <= st.minS * 1.02; measure(); place(was ? { s: st.minS, ox: 0, oy: 0 } : st); sched() })
+    })
     obs.observe(b)
     if (window.__ns7) window.__ns7.hm = api
     curHm = { api, name: label }
     return () => {
-      cancelAnimationFrame(st.raf); st.raf = 0; obs.disconnect()
+      cancelAnimationFrame(roRaf); cancelAnimationFrame(st.raf); st.raf = 0; obs.disconnect()
       c.removeEventListener('wheel', wheel); c.removeEventListener('pointerdown', down); c.removeEventListener('pointermove', move); c.removeEventListener('pointerup', up); c.removeEventListener('pointercancel', up); c.removeEventListener('pointerleave', leave); c.removeEventListener('keydown', key)
       if (apiRef) apiRef.current = null
       if (window.__ns7 && window.__ns7.hm === api) window.__ns7.hm = null

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run tests/",
     "start": "node server-web/server.mjs",
-    "prestart": "node -e \"const fs=require('fs'),cp=require('child_process');const run=c=>cp.execSync(c,{stdio:'inherit'});if(!fs.existsSync('server-web/node_modules/@google-cloud/firestore'))run('npm --prefix server-web install --omit=dev --no-audit --no-fund');if(!fs.existsSync('dist/index.html'))run('npm run build');\"",
+    "prestart": "node -e \"const fs=require('fs'),cp=require('child_process');const run=c=>cp.execSync(c,{stdio:'inherit'});if(!fs.existsSync('server-web/node_modules/@google-cloud/firestore'))run('npm --prefix server-web install --omit=dev --no-audit --no-fund');if(!fs.existsSync('dist/index.html')||!fs.existsSync('dist/_headers'))run('npm run build');\"",
     "test:server": "npm --prefix server-web test",
     "install:server": "npm --prefix server-web install --omit=dev --no-audit --no-fund"
   },

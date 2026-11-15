@@ -328,7 +328,14 @@ export async function firestoreStore() {
 export async function pickStore(env = process.env) {
   const want = (env.KUNDALI_STORE || '').toLowerCase()
   if (want === 'memory') return memoryStore()
-  if (want === 'firestore' || env.GOOGLE_CLOUD_PROJECT || env.K_SERVICE) return firestoreStore()
+  if (want === 'firestore') return firestoreStore()
+  if (env.GOOGLE_CLOUD_PROJECT || env.K_SERVICE) {
+    try { return await firestoreStore() }
+    catch (err) {
+      console.error('Firestore unavailable, falling back to memory store:', err?.message ?? err)
+      return memoryStore()
+    }
+  }
   return fileStore(env.KUNDALI_DATA_FILE || path.join(HERE, '..', '.kundali-scores.json'))
 }
 
@@ -465,14 +472,17 @@ export function createApi({ store, trustProxy = false, proxyHops = 1, origins = 
 
 export function createHandler({ dist, store, ...opts }) {
   dist = path.resolve(dist)
-  const sec = readSecurityHeaders(path.join(dist, '_headers'))
+  const headersPath = fs.existsSync(path.join(dist, '_headers')) ? path.join(dist, '_headers') : path.join(HERE, '..', 'public', '_headers')
+  const sec = readSecurityHeaders(headersPath)
   const serve = createStatic(dist, sec)
-  const api = createApi({ store, ...opts })
+  const getStore = typeof store?.then === 'function' ? () => store : () => Promise.resolve(store)
+  let apiReady = null
+  const getApi = () => (apiReady ??= getStore().then((s) => createApi({ store: s, ...opts })))
   return async (req, res) => {
     let url
     try { url = new URL(req.url ?? '/', 'http://x') } catch { return plain(res, sec, 400, 'Bad request') }
     try {
-      if (url.pathname === '/api' || url.pathname.startsWith('/api/')) return await api(req, res, url, sec)
+      if (url.pathname === '/api' || url.pathname.startsWith('/api/')) return await (await getApi())(req, res, url, sec)
       return serve(req, res, url.pathname)
     } catch (e) {
       console.error(JSON.stringify({ severity: 'ERROR', message: 'request failed', path: url.pathname, error: String(e?.message ?? e) }))
@@ -483,10 +493,10 @@ export function createHandler({ dist, store, ...opts }) {
 
 async function main() {
   const dist = path.resolve(process.env.KUNDALI_DIST || path.join(HERE, '..', 'dist'))
-  const store = await pickStore()
   const onCloudRun = !!process.env.K_SERVICE
+  const storePromise = pickStore()
   const handler = createHandler({
-    dist, store,
+    dist, store: storePromise,
     trustProxy: onCloudRun || process.env.KUNDALI_TRUST_PROXY === '1',
     proxyHops: +(process.env.KUNDALI_PROXY_HOPS || 1),
     origins: (process.env.KUNDALI_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean),
@@ -494,9 +504,16 @@ async function main() {
   })
   const srv = http.createServer(handler)
   srv.requestTimeout = 30000; srv.headersTimeout = 15000; srv.keepAliveTimeout = 65000
-  const port = +(process.env.PORT || 8080)
-  srv.listen(port, process.env.HOST || '0.0.0.0', () => console.log(JSON.stringify({ severity: 'INFO', message: `kundali on :${port}`, store: store.kind, dist })))
-  if (store.kind === 'memory' && onCloudRun) console.warn(JSON.stringify({ severity: 'WARNING', message: 'memory store on Cloud Run: scores are lost on restart' }))
+  srv.on('error', (err) => { console.error(err); process.exit(1) })
+  const port = Number(process.env.PORT) || 8080
+  const host = onCloudRun ? '0.0.0.0' : (process.env.HOST || '0.0.0.0')
+  srv.listen(port, host, () => {
+    console.log(`kundali listening on http://${host}:${port} (dist=${dist})`)
+    storePromise.then((store) => {
+      console.log(JSON.stringify({ severity: 'INFO', message: `kundali on :${port}`, store: store.kind, dist }))
+      if (store.kind === 'memory' && onCloudRun) console.warn(JSON.stringify({ severity: 'WARNING', message: 'memory store on Cloud Run: scores are lost on restart' }))
+    }).catch((err) => console.error(err))
+  })
   const stop = () => srv.close(() => process.exit(0))
   process.on('SIGTERM', stop); process.on('SIGINT', stop)
 }

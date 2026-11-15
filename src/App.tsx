@@ -214,10 +214,24 @@ function Dock() {
     if (!el) return
     // only when narrow: wide, the dock keeps its fixed height and strips float above it, so nothing shifts
     const narrow = matchMedia('(max-width: 999px)')
-    const ro = new ResizeObserver(() => { if (narrow.matches) { const h = Math.ceil(el.getBoundingClientRect().height), st = document.documentElement.style; st.setProperty('--dock-core', `${h}px`); st.setProperty('--dock-h', `${h + 44}px`) } else { const st = document.documentElement.style; st.removeProperty('--dock-core'); st.removeProperty('--dock-h') } })
-    narrow.addEventListener('change', () => { ro.disconnect(); ro.observe(el) })
+    let raf = 0, last: string | null = null
+    const apply = () => {
+      const st = document.documentElement.style
+      if (narrow.matches) {
+        const h = `${Math.ceil(el.getBoundingClientRect().height)}`
+        if (last !== h) { last = h; st.setProperty('--dock-core', `${h}px`); st.setProperty('--dock-h', `${+h + 44}px`) }
+      } else if (last !== '') {
+        last = ''
+        st.removeProperty('--dock-core'); st.removeProperty('--dock-h')
+      }
+    }
+    const sched = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(apply) }
+    const ro = new ResizeObserver(sched)
+    const onMq = () => { last = null; sched() }
+    narrow.addEventListener('change', onMq)
     ro.observe(el)
-    return () => ro.disconnect()
+    apply()
+    return () => { cancelAnimationFrame(raf); narrow.removeEventListener('change', onMq); ro.disconnect() }
   }, [])
   return (
     <footer className="dock" data-dock ref={ref}>
