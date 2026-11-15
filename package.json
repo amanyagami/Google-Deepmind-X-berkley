@@ -5,15 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
-    "build": "tsc --noEmit && vite build && node -e \"if(!require('fs').existsSync('server-web/node_modules/@google-cloud/firestore'))try{require('child_process').execSync('npm --prefix server-web install --omit=dev --no-audit --no-fund',{stdio:'inherit'})}catch(e){console.warn('server-web install skipped:',e.message)}\"",
+    "build": "vite build",
+    "gcp-build": "vite build",
+    "lint": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run tests/",
     "start": "node server-web/server.mjs",
-    "prestart": "node -e \"const fs=require('fs'),cp=require('child_process');const run=c=>cp.execSync(c,{stdio:'inherit'});if(!fs.existsSync('server-web/node_modules/@google-cloud/firestore')){try{run('npm --prefix server-web install --omit=dev --no-audit --no-fund')}catch(e){console.warn('server-web install skipped:',e.message)}}if(!fs.existsSync('dist/index.html')||!fs.existsSync('dist/_headers'))run('npm run build');\"",
+    "prestart": "node -e \"const fs=require('fs'),cp=require('child_process');if(!fs.existsSync('dist/index.html')||!fs.existsSync('dist/_headers')){if(fs.existsSync('node_modules/vite/bin/vite.js'))cp.execSync(process.execPath+' node_modules/vite/bin/vite.js build',{stdio:'inherit'});else throw new Error('dist missing; run npm run build before start');}\"",
     "test:server": "npm --prefix server-web test",
     "install:server": "npm --prefix server-web install --omit=dev --no-audit --no-fund"
   },
   "dependencies": {
+    "@google-cloud/firestore": "^9.4.1",
     "@huggingface/transformers": "^4.3.2",
     "@react-three/drei": "^10.0.0",
     "@react-three/fiber": "^9.0.0",

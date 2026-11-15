@@ -6,6 +6,7 @@
 // Security headers come from dist/_headers (copied from public/_headers by the build), so there is one source.
 import http from 'node:http'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import crypto from 'node:crypto'
@@ -63,8 +64,8 @@ function createStatic(dist, sec) {
   const loadIndex = () => {
     const f = path.join(dist, 'index.html'), st = fs.statSync(f)
     if (index && index.mtimeMs === st.mtimeMs) return index
-    // the page carries a marker so the app knows this host has the leaderboard (no probe request, no console noise elsewhere)
-    const html = fs.readFileSync(f, 'utf8').replace('</head>', `  ${BOARD_META}\n  </head>`)
+    const raw = fs.readFileSync(f, 'utf8')
+    const html = raw.includes('kundali-board') ? raw : raw.replace('</head>', `  ${BOARD_META}\n  </head>`)
     const body = Buffer.from(html)
     return (index = { mtimeMs: st.mtimeMs, body, gz: zlib.gzipSync(body, { level: 9 }), etag: `"${crypto.createHash('sha1').update(body).digest('hex').slice(0, 16)}"`, mtime: st.mtimeMs })
   }
@@ -75,7 +76,7 @@ function createStatic(dist, sec) {
     const hidden = p.split('/').some((s) => s.startsWith('.') || s === '_headers')
     if (!hidden) {
       const abs = path.join(dist, p)
-      if (abs.startsWith(dist)) {
+      if (abs === dist || abs.startsWith(dist + path.sep)) {
         const st = statFile(abs)
         if (st && st !== 'dir') return abs === indexFile ? { index: true, uri: '/index.html' } : { abs, st, uri: p }
         if (st === 'dir') {
@@ -336,7 +337,10 @@ export async function pickStore(env = process.env) {
       return memoryStore()
     }
   }
-  return fileStore(env.KUNDALI_DATA_FILE || path.join(HERE, '..', '.kundali-scores.json'))
+  const defaultDir = path.join(HERE, '..')
+  let writable = false
+  try { fs.accessSync(defaultDir, fs.constants.W_OK); writable = true } catch { writable = false }
+  return fileStore(env.KUNDALI_DATA_FILE || path.join(writable ? defaultDir : os.tmpdir(), '.kundali-scores.json'))
 }
 
 /* ------------------------------------------------------------------ rate limits (per instance, in memory) */
@@ -470,14 +474,22 @@ export function createApi({ store, trustProxy = false, proxyHops = 1, origins = 
 
 /* ------------------------------------------------------------------ server */
 
+const DEFAULT_SEC = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'credentialless',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://huggingface.co https://*.hf.co; media-src 'self' data: blob:; font-src 'self'; connect-src 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.hf.co http://127.0.0.1:8000 ws://127.0.0.1:8000; object-src 'none'; base-uri 'self'; form-action 'self'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+}
+
 export function createHandler({ dist, store, ...opts }) {
   dist = path.resolve(dist)
   const headersPath = fs.existsSync(path.join(dist, '_headers')) ? path.join(dist, '_headers') : path.join(HERE, '..', 'public', '_headers')
-  const sec = readSecurityHeaders(headersPath)
+  const sec = fs.existsSync(headersPath) ? readSecurityHeaders(headersPath) : { ...DEFAULT_SEC }
   const serve = createStatic(dist, sec)
   const getStore = typeof store?.then === 'function' ? () => store : () => Promise.resolve(store)
   let apiReady = null
-  const getApi = () => (apiReady ??= getStore().then((s) => createApi({ store: s, ...opts })))
+  const getApi = () => (apiReady ??= getStore().then((s) => createApi({ store: s, ...opts })).catch((err) => { apiReady = null; throw err }))
   return async (req, res) => {
     let url
     try { url = new URL(req.url ?? '/', 'http://x') } catch { return plain(res, sec, 400, 'Bad request') }
