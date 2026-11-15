@@ -248,7 +248,7 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   }
   // other controls that sit over the stage (timeline, prompt dock, buttons): chips keep clear of them
   let oc = obstCache.get(cv)
-  if (!oc || oc.n++ > 3) { oc = { n: 0, els: [...document.querySelectorAll('button,select,input,textarea,a[href],[role=button],[role=slider],.phud,.zoohud,.mcol>*,.tlbar,[data-obstacle]')].filter((e) => !cv.parentElement?.contains(e)) }; obstCache.set(cv, oc) }
+  if (!oc || oc.n++ > 3) { oc = { n: 0, els: [...document.querySelectorAll('button,select,input,textarea,a[href],[role=button],[role=slider],.phud,.zoohud,.mcol>*,.tlbar,[data-obstacle]')].filter((e) => !cv.parentElement?.contains(e) && !e.closest('.nsc')) } /* chips are never obstacles (not even another scene's): they would chase their own tails */; obstCache.set(cv, oc) }
   const obst: B[] = []
   for (const e of oc.els) {
     const r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue
