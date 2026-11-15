@@ -618,7 +618,9 @@ function Rig() {
 export function PowerScene({ active = true }: { active?: boolean }) {
   // Live while tests run too. Drawing has a small cost of its own; it is the same in every stage, so it sits
   // inside the idle baseline the other stages are compared with.
-  const recording = useHW((s) => s.benchRunning)
+  // the lighter drawing mode (30 fps, 1x pixels, no multisampling) only matters where watts are measured; in a browser
+  // it would just rebuild the effect passes at the start of Test all (a 400 ms stall)
+  const recording = useHW((s) => s.benchRunning && s.source === 'companion')
   // paused for the one-second idle baseline only, so the cost of drawing can be measured against it
   // and during the memory test of Test all, where drawing would compete for the memory bandwidth being measured
   const baseline = useHW((s) => s.benchRunning && ((s.benchStage === 'idle' && s.source === 'companion') || (!!s.running && s.benchStage === 'dram')))

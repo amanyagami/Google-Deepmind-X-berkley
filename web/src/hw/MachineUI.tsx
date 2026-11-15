@@ -626,10 +626,8 @@ function usePlay() {
   const tl = useHW((s) => s.tl)
   const playhead = useHW((s) => s.playhead)
   const live = useHW(useShallow((s) => ({ info: s.info, bench: s.bench })))
-  const rec = useHW((s) => (s.recorded ? s.recordedPack : null))
-  // a recorded journey is shown with the hardware facts of the machine it was recorded on
-  const { info, bench } = rec ?? live
-  const peaks = useMemo(() => peaksOf({ recorded: !!rec, recordedPack: rec, bench, info }), [rec, bench, info])
+  const { info, bench } = live
+  const peaks = useMemo(() => peaksOf({ bench, info }), [bench, info])
   const act = useMemo(() => (journey ? activityAt(journey, tl, playhead, peaks, info?.cpu?.cores ?? 8) : null), [journey, tl, playhead, peaks, info])
   return { journey, act, peaks, info, bench }
 }
@@ -637,7 +635,6 @@ function usePlay() {
 function Caption() {
   const { journey, act, peaks, info } = usePlay()
   const dive = useHW((s) => s.dive)
-  const recorded = useHW((s) => s.recorded)
   const mode = useHW((s) => s.pMode)
   if (!journey || !act || mode !== 'journey') return null
   const c = captionFor(journey, act, peaks, info)
@@ -646,7 +643,6 @@ function Caption() {
       <Peek label="This stage" summary={<span className="ctitle"><span className="stg">{act.stage}</span><h3>{c.title}</h3></span>} details={<>
         <p className="t5-line">{c.text}</p>
         <div className="cnums">{c.nums.map((n) => <div key={n.k}><span>{n.k}</span><b className="mono">{n.v}</b></div>)}</div>
-        {recorded && <span className="t5-dim">Recorded on the test PC.</span>}
         {c.dive && <button className="btn2 sm" onClick={() => dive(c.dive!.path)}>{c.dive.label} ›</button>}
       </>} />
     </div>
@@ -730,7 +726,6 @@ function DiveCard() {
   const path = useHW((s) => s.path)
   const { journey: j, act, peaks, info, bench } = usePlay()
   const res = useResults()
-  const recorded = useHW((s) => s.recorded)
   const latest = useHWThrottled((s) => s.latest, 250)
   const sc = useScores()
   const power = currentSample().s
@@ -824,7 +819,7 @@ function DiveCard() {
   return (
     <div className="caption dive">
       <Peek label={title} summary={<span className="ctitle"><h3>{title}</h3>{head ? <b className="mono chipscore">{head}</b> : null}</span>} details={<>
-        {recorded ? <span className="t5-dim">Recorded on the test PC.</span> : extra ? <span className="t5-dim">Score {extra}</span> : null}
+        {extra ? <span className="t5-dim">Score {extra}</span> : null}
         {body}
         {comp === 'cpu' && gp && <p className="hint small mono">GPU (WebGPU): {gp.gflops} GFLOP/s · {gp.adapter}<Hint>PyTorch here uses the CPU.</Hint></p>}
       </>} />
@@ -1009,6 +1004,7 @@ function useSelectToCard() {
 export function MachineView() {
   useMachineBoot()
   // the empty leaderboard offers Test all
+  useEffect(() => { const on = () => { void testAll() }; window.addEventListener('ns-test-all', on); return () => window.removeEventListener('ns-test-all', on) }, [])
   useEffect(() => { useBoard.setState({ testAll: () => { closeLeaderboard(); void testAll() } }); return () => useBoard.setState({ testAll: null }) }, [])
   useSelectToCard()
   // B7: a finished model run fills the Model pillar; "Your score" in the Model drawer opens the score here

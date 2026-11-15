@@ -22,7 +22,7 @@ export const coresOf = (s: PowerSample) => Math.min(s.pkg_w, fixSplit(s).core_w.
 
 function useNow(): { s: PowerSample | null; mode: PowerMode; energy: number } {
   const live = useHWThrottled((st) => ({ powerLive: st.powerLive, telemetry: st.telemetry }), 250, (a, b) => a.powerLive === b.powerLive && a.telemetry === b.telemetry)
-  const h0 = useHW(useShallow((st) => ({ power: st.power, benchRunning: st.benchRunning, pHead: st.pHead, pMode: st.pMode, journey: st.journey, tl: st.tl, playhead: st.playhead, info: st.info, recorded: st.recorded, recordedPack: st.recordedPack, bench: st.bench })))
+  const h0 = useHW(useShallow((st) => ({ power: st.power, benchRunning: st.benchRunning, pHead: st.pHead, pMode: st.pMode, journey: st.journey, tl: st.tl, playhead: st.playhead, info: st.info, bench: st.bench })))
   const h = { ...h0, ...live }
   return useMemo(() => {
     const { s, mode } = powerNow(h)
@@ -34,32 +34,35 @@ function useNow(): { s: PowerSample | null; mode: PowerMode; energy: number } {
   }, [h])
 }
 
-/** The power card. At rest: "52.7 W · CPU" and a mode dot. On hover, focus or tap: where the watts go (D16, D19). */
+/** Asks the machine view to run Test all (the one batch lives in MachineUI). */
+export const askTestAll = () => window.dispatchEvent(new CustomEvent('ns-test-all'))
+
+/** The power card. At rest: "52.7 W · CPU" and a mode dot. On hover, focus or tap: where the watts go (D16, D19).
+ *  No badge. Without data: the name "CPU power" and one action (D16, owner). */
 export function PowerHUD() {
   const { s, mode, energy } = useNow()
   const info = useHW((st) => st.info)
   const power = useHW((st) => st.power)
+  const busy = useHW((st) => st.benchRunning)
   const browser = info?.source === 'browser'
-  const est = mode !== 'live' && mode !== 'journey' && !power?.reference && (s?.estimated || power?.estimated || info?.power?.measured === false)
+  const est = mode !== 'live' && mode !== 'journey' && (s?.estimated || power?.estimated || info?.power?.measured === false)
   const sp = splitOf(s)
-  const label = mode === 'recording' ? 'Recording' : mode === 'replay' ? (power?.reference ? 'Replay of the test PC' : 'Replay') : mode === 'journey' ? 'Journey' : 'Live'
-  const kind = mode === 'journey' ? 'modelled' : est ? 'estimated' : 'measured'
+  const source = mode === 'journey' ? 'Modelled from what each part does.' : est || browser ? 'Estimated from the power class. A browser cannot read power sensors.' : 'Measured by the CPU itself.'
   const pct = (x: number) => `${Math.round(x * 100)}%`
   const data = sp ? { 'data-pkg': sp.pkg.toFixed(2), 'data-cores': sp.cores != null ? sp.cores.toFixed(2) : '', 'data-rest': sp.rest != null ? sp.rest.toFixed(2) : '', 'data-split': sp.state } : {}
   if (!s || !sp) {
-    // no sensor and nothing recorded: no badge, one plain line (C3)
     return (
       <div className="phud" aria-live="polite" data-mode="none">
-        <Peek label="Power" summary={<span className="psub">{browser ? 'No power sensor' : 'Waiting for sensors…'}</span>} details={<>
-          <p className="t5-line">{browser ? 'No power sensor in the browser. Test all to estimate.' : 'Waiting for the power sensors.'}</p>
-        </>} />
+        <Peek label="CPU power" summary={<>
+          <span className="psub">CPU power</span>
+          {browser && !busy && <button type="button" className="btn sm" data-test-system onClick={askTestAll}>Test system</button>}
+        </>} details={<p className="t5-line">{browser ? 'No power sensor in the browser. Test all to estimate.' : 'Waiting for the power sensors.'}</p>} />
       </div>
     )
   }
   return (
     <div className="phud" aria-live="polite" data-mode={mode} {...data}>
-      <Peek label="Where the watts go" summary={<><i className={`pdot ${mode}`} aria-label={`${label}, ${kind}`} /><b className="pbig mono">{s.pkg_w.toFixed(1)}<small> W</small></b><span className="psub">· CPU</span></>} details={<>
-        <div className="pbadge"><i className={mode} />{label}<span>{kind}</span></div>
+      <Peek label="Where the watts go" summary={<><i className={`pdot ${mode}`} aria-hidden="true" /><b className="pbig mono">{s.pkg_w.toFixed(1)}<small> W</small></b><span className="psub">· CPU</span></>} details={<>
         {s.stage && s.stage !== 'live' && mode !== 'journey' && <div className="psub"><b style={{ color: STAGE_COL[s.stage] }}>{STAGE_NAME[s.stage] ?? s.stage}</b></div>}
         <div className="prow mono">
           {sp.state === 'unavailable'
@@ -74,10 +77,9 @@ export function PowerHUD() {
         <p className="t5-line">
           {sp.state === 'unavailable' ? 'The core sensors disagree with the package, so only the package is shown.' : sp.state === 'scaled' ? 'Cores scaled to fit inside the package.' : 'Cores are part of the package.'}
           <Hint label="About these numbers">
-            {mode === 'live' && <>Straight from the CPU's own sensors, averaged over {SMOOTH_S} s. </>}
+            {source}{' '}
+            {mode === 'live' && <>Averaged over {SMOOTH_S} s. </>}
             {mode === 'recording' && <>Test all records the power of every test as it runs. </>}
-            {mode === 'replay' && <>Averaged over {SMOOTH_S} s. Drag along the chart to rewind.{power?.reference ? ` Measured on ${power.reference.cpu}, not on this computer.` : ''} </>}
-            {mode === 'journey' && <>The journey records work, not power, so these watts are modelled from what each part does. </>}
             {sp.state !== 'ok' && sp.ratio != null && isFinite(sp.ratio) ? <>The core sensors read {pct(sp.ratio)} of the package. On some chips they are not a strict part of it. </> : null}
             Rest of chip = package minus cores (graphics, caches, memory controller).
           </Hint>
@@ -87,18 +89,18 @@ export function PowerHUD() {
   )
 }
 
-/** The one bar under the machine. Its power chart is always there; what it scrubs depends on the mode:
- *  live (the last 15 s), the prompt's journey (stages, with modelled watts) or the recorded power test.
+/** The one bar under the machine. It shows live data only: the CPU power of the last 15 s (companion), the estimate
+ *  from the last Test all (browser), or the stages of the prompt's journey (companion, started by Run).
  *  At rest it shows play and the current stage; the other controls open on hover, focus or tap (D16). */
 export function MachineTimeline() {
   const live = useHWThrottled((s) => ({ powerLive: s.powerLive, telemetry: s.telemetry }), 250, (a, b) => a.powerLive === b.powerLive && a.telemetry === b.telemetry)
-  const h0 = useHW(useShallow((s) => ({ power: s.power, running: s.benchRunning, pHead: s.pHead, pPlaying: s.pPlaying, pSpeed: s.pSpeed, pMode: s.pMode, journey: s.journey, tl: s.tl, playhead: s.playhead, playing: s.playing, speed: s.speed, expanded: s.expanded, follow: s.follow, info: s.info, recorded: s.recorded, recordedPack: s.recordedPack, bench: s.bench, source: s.source, busy: s.journeyBusy, err: s.journeyErr })))
+  const h0 = useHW(useShallow((s) => ({ power: s.power, running: s.benchRunning, pMode: s.pMode, journey: s.journey, tl: s.tl, playhead: s.playhead, playing: s.playing, speed: s.speed, expanded: s.expanded, follow: s.follow, info: s.info, bench: s.bench, source: s.source, busy: s.journeyBusy, err: s.journeyErr })))
   const h = { ...h0, ...live }
   const { power, running, journey, tl } = h
   const hw = useHW.getState()
   const browser = h.source !== 'companion'
-  const hasLive = h.source === 'companion' && h.info?.power?.measured !== false
-  const m = running ? 'rec' : h.pMode === 'journey' && journey ? 'journey' : h.pMode === 'live' || !power ? 'live' : 'replay'
+  const hasLive = !browser && h.info?.power?.measured !== false
+  const m = running ? 'rec' : h.pMode === 'journey' && journey && !browser ? 'journey' : 'live'
   const resume = useRef(false)
   // callback ref: the chart unmounts while it has no samples, so the observer must follow the element it is on
   const [box, setBox] = useState<HTMLDivElement | null>(null)
@@ -108,7 +110,7 @@ export function MachineTimeline() {
     const upd = () => { if (box.clientWidth > 0) setW(box.clientWidth) }
     upd(); const ro = new ResizeObserver(upd); ro.observe(box); return () => ro.disconnect()
   }, [box])
-  // keys: space plays or pauses, arrows step between journey stages, Escape goes back out of a dive
+  // keys: space plays or pauses the journey, arrows step between its stages, Escape goes back out of a dive
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
@@ -116,30 +118,34 @@ export function MachineTimeline() {
       const g = useHW.getState()
       if (e.code === 'Escape') g.back()
       if (g.benchRunning) return
-      if (e.code === 'Space') { e.preventDefault(); if (g.pMode === 'journey' && g.journey) g.toggle(); else if (g.power && g.pMode === 'replay') (g.pPlaying ? g.pPause() : g.pPlay()) }
-      if (g.pMode === 'journey' && g.journey) { if (e.code === 'ArrowRight') g.step(1); if (e.code === 'ArrowLeft') g.step(-1) }
+      if (g.pMode === 'journey' && g.journey) {
+        if (e.code === 'Space') { e.preventDefault(); g.toggle() }
+        if (e.code === 'ArrowRight') g.step(1)
+        if (e.code === 'ArrowLeft') g.step(-1)
+      }
     }
     window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k)
   }, [])
   const jsamples = useMemo(() => {
     if (m !== 'journey' || !journey) return []
-    const st = { journey, tl, info: h.info, power, recorded: h.recorded, recordedPack: h.recordedPack, bench: h.bench }
+    const st = { journey, tl, info: h.info, power, bench: h.bench }
     return Array.from({ length: 97 }, (_, i) => journeyPowerAt(st, (i / 96) * tl.total)!)
-  }, [m, journey, tl, h.info, power, h.recorded, h.recordedPack, h.bench])
+  }, [m, journey, tl, h.info, power, h.bench])
   const liveSamples = useMemo(() => {
     if (m !== 'live') return []
     const pts = h.telemetry.filter((x) => x?.power?.pkg_w != null)
     const t0 = pts.length ? pts[pts.length - 1].t : 0
     return pts.map((x) => ({ t: 15 + x.t - t0, stage: 'live', pkg_w: x.power.pkg_w, core_w: x.power.core_w ?? [], mhz: null, util: [] } as PowerSample)).filter((x) => x.t >= 0)
   }, [m, h.telemetry])
-  const samples = m === 'rec' ? h.powerLive : m === 'journey' ? jsamples : m === 'live' ? liveSamples : power?.samples ?? []
+  // browser: no live sensor, so the chart shows the estimate Test all just made
+  const lastRun = m === 'live' && !liveSamples.length && power?.samples.length ? power.samples : null
+  const samples = m === 'rec' ? h.powerLive : m === 'journey' ? jsamples : lastRun ?? liveSamples
   const name = (st: string) => (m === 'journey' ? (LABEL as Record<string, string[]>)[st]?.[1] : STAGE_NAME[st]?.replace('CPU · ', '')) ?? st
   const cur = locate(tl, h.playhead)
-  const canSeek = m === 'journey' || m === 'replay'
+  const canSeek = m === 'journey'
   const chart = (() => {
-    // C3: a browser has no power sensor, so there is no live chart to wait for
     if (!samples.length) return <div className="pchart empty">{m === 'live' && browser ? 'No power sensor in the browser. Test all to estimate.' : m === 'live' ? 'Waiting for power samples…' : 'Recording…'}</div>
-    const T = m === 'live' ? 15 : m === 'journey' ? tl.total : Math.max(1, samples[samples.length - 1].t)
+    const T = m === 'live' && !lastRun ? 15 : m === 'journey' ? tl.total : Math.max(1, samples[samples.length - 1].t)
     const H = 84
     const maxW = Math.max(20, ...samples.map((s) => s.pkg_w)) * 1.1
     const x = scaleLinear().domain([0, T]).range([0, w]), y = scaleLinear().domain([0, maxW]).range([H - 16, 6])
@@ -148,11 +154,11 @@ export function MachineTimeline() {
     const bands: { st: string; a: number; b: number }[] = []
     if (m === 'journey') for (const sg of tl.segs) bands.push({ st: sg.id, a: sg.v0, b: sg.v1 })
     else for (const s of samples) { const l = bands[bands.length - 1]; if (l && l.st === s.stage) l.b = s.t; else bands.push({ st: s.stage, a: s.t, b: s.t }) }
-    const head = m === 'journey' ? h.playhead : m === 'replay' ? h.pHead : samples[samples.length - 1].t
-    const seek = (cx: number) => { if (!box) return; const r = box.getBoundingClientRect(); const t = ((cx - r.left) / r.width) * T; if (m === 'journey') hw.setPlayhead(t); else hw.setPHead(t) }
+    const head = m === 'journey' ? h.playhead : samples[samples.length - 1].t
+    const seek = (cx: number) => { if (!box) return; const r = box.getBoundingClientRect(); const t = ((cx - r.left) / r.width) * T; hw.setPlayhead(t) }
     return (
       <div className="pchart" ref={setBox} style={{ cursor: canSeek ? 'ew-resize' : undefined }}
-        onPointerDown={(e) => { if (!canSeek) return; if (m === 'journey') { resume.current = hw.playing; hw.pause() } else hw.pPause(); (e.target as HTMLElement).setPointerCapture?.(e.pointerId); seek(e.clientX) }}
+        onPointerDown={(e) => { if (!canSeek) return; resume.current = hw.playing; hw.pause(); (e.target as HTMLElement).setPointerCapture?.(e.pointerId); seek(e.clientX) }}
         onPointerMove={(e) => { if (e.buttons && canSeek) seek(e.clientX) }}
         onPointerUp={() => { if (m === 'journey' && resume.current) { resume.current = false; hw.play() } }}>
         <svg width={w} height={H} role="img" aria-label={m === 'journey' ? 'Journey stages with the modelled CPU power' : 'CPU package power, and the cores inside it'}>
@@ -165,67 +171,50 @@ export function MachineTimeline() {
           <path d={`${area} L${x(samples[samples.length - 1].t)} ${y(0)} L${x(samples[0].t)} ${y(0)} Z`} fill="var(--pos)" opacity={0.16} />
           <path d={area} fill="none" stroke="var(--pos)" strokeWidth={1.6} />
           <path d={cores} fill="none" stroke="var(--neg)" strokeWidth={1.1} opacity={0.85} />
-          <line x1={x(head)} x2={x(head)} y1={0} y2={H - 14} stroke="var(--fg)" strokeWidth={1.4} />
+          {!lastRun && <line x1={x(head)} x2={x(head)} y1={0} y2={H - 14} stroke="var(--fg)" strokeWidth={1.4} />}
         </svg>
       </div>
     )
   })()
-  // one recorded-run button (C7): the journey recorded on the test PC, plus its measured power run if this device has none
-  const playRecorded = async () => { if (browser && !useHW.getState().power) await hw.loadReferencePower(); await hw.loadRecorded() }
-  const startJourney = () => { const st = useStore.getState(); hw.runJourney(st.repo, st.prompt) }
-  const repo = useStore((s) => s.repo)
-  const T0 = m === 'journey' ? tl.total : samples.length ? samples[samples.length - 1].t : 0
-  const modes = [hasLive && 'live', journey && 'journey', power && 'replay'].filter(Boolean) as string[]
-  const stageNow = m === 'journey' ? tl.segs[cur.i]?.label ?? '' : m === 'replay' ? (STAGE_NAME[samples.find((s, i) => s.t >= h.pHead || i === samples.length - 1)?.stage ?? ''] ?? '') : ''
+  const stageNow = m === 'journey' ? tl.segs[cur.i]?.label ?? '' : ''
   return (
     <div className="mtl">
       <div className="tlctl">
         {m === 'rec' && <span className="livetag rec"><span className="pulse" />Recording the tests</span>}
         {m === 'journey' && <button className="ib big" aria-label={h.playing ? 'Pause' : 'Play'} onClick={() => hw.toggle()}>{h.playing ? '❚❚' : '▶'}</button>}
-        {m === 'replay' && <button className="ib big" aria-label={h.pPlaying ? 'Pause' : 'Play'} onClick={() => (h.pPlaying ? hw.pPause() : hw.pPlay())}>{h.pPlaying ? '❚❚' : '▶'}</button>}
         {m === 'live' && hasLive && <span className="livetag"><span className="livedot" />Live</span>}
-        {(m === 'journey' || m === 'replay') && (
-          <Peek className="tlpeek" label="Timeline controls" summary={<span className="tlstage">{stageNow || (m === 'journey' ? 'Journey' : 'Power run')}</span>} details={<>
-            {m === 'journey' && <>
-              <div className="t5-row">
-                <button className="ib" aria-label="Previous stage" onClick={() => hw.step(-1)}>⏮</button>
-                <button className="ib" aria-label="Next stage" onClick={() => hw.step(1)}>⏭</button>
-                <span className="mono tm">{mmss(h.playhead)} / {mmss(tl.total)}</span>
-                <select aria-label="Playback speed" value={h.speed} onChange={(e) => hw.setSpeed(+e.target.value)}>{[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}×</option>)}</select>
-              </div>
-              <div className="t5-row">
-                <label className="chk"><input type="checkbox" checked={h.expanded} onChange={(e) => hw.setExpanded(e.target.checked)} /> every block</label>
-                <label className="chk"><input type="checkbox" checked={h.follow} onChange={(e) => hw.setFollow(e.target.checked)} /> follow</label>
-              </div>
-            </>}
-            {m === 'replay' && <div className="t5-row">
-              <span className="mono tm">{h.pHead.toFixed(1)} s / {T0.toFixed(1)} s</span>
-              <select aria-label="Replay speed" value={h.pSpeed} onChange={(e) => hw.setPSpeed(+e.target.value)}>{[0.25, 0.5, 1, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}</select>
-            </div>}
+        {m === 'live' && browser && <span className="tlstage">{lastRun ? 'Estimate from Test all' : 'Live'}</span>}
+        {m === 'journey' && (
+          <Peek className="tlpeek" label="Timeline controls" summary={<span className="tlstage">{stageNow || 'Journey'}</span>} details={<>
+            <div className="t5-row">
+              <button className="ib" aria-label="Previous stage" onClick={() => hw.step(-1)}>⏮</button>
+              <button className="ib" aria-label="Next stage" onClick={() => hw.step(1)}>⏭</button>
+              <span className="mono tm">{mmss(h.playhead)} / {mmss(tl.total)}</span>
+              <select aria-label="Playback speed" value={h.speed} onChange={(e) => hw.setSpeed(+e.target.value)}>{[0.25, 0.5, 1, 2].map((s) => <option key={s} value={s}>{s}×</option>)}</select>
+            </div>
+            <div className="t5-row">
+              <label className="chk"><input type="checkbox" checked={h.expanded} onChange={(e) => hw.setExpanded(e.target.checked)} /> every block</label>
+              <label className="chk"><input type="checkbox" checked={h.follow} onChange={(e) => hw.setFollow(e.target.checked)} /> follow</label>
+            </div>
           </>} />
         )}
         <span className="tlgrow" />
-        {m !== 'rec' && modes.length > 1 && (
+        {m !== 'rec' && journey && !browser && (
           <div className="seg sm modes" role="group" aria-label="What the machine shows">
-            {hasLive && <button className={m === 'live' ? 'on' : ''} onClick={() => hw.goLive()}>Live</button>}
-            {journey && <button className={m === 'journey' ? 'on' : ''} onClick={() => hw.showJourney()}>Journey</button>}
-            {power && <button className={m === 'replay' ? 'on' : ''} onClick={() => hw.replay()}>Power</button>}
+            <button className={m === 'live' ? 'on' : ''} onClick={() => hw.goLive()}>Live</button>
+            <button className={m === 'journey' ? 'on' : ''} onClick={() => hw.showJourney()}>Journey</button>
           </div>
         )}
-        {m !== 'rec' && !journey && (browser
-          ? <button className="btn2 sm startj" data-recorded data-replay disabled={!!h.busy} onClick={playRecorded}>{h.busy ? 'Loading…' : 'Play recorded run'}</button>
-          : <button className="btn2 sm startj" disabled={!!h.busy || !repo} onClick={startJourney}>{h.busy ? 'Working…' : 'Start the journey'}</button>)}
-        {h.busy && h.source === 'companion' && <span className="busy mono"><span className="pulse" /> {h.busy}</span>}
+        {h.busy && !browser && <span className="busy mono"><span className="pulse" /> {h.busy}</span>}
         <Hint label="About the timeline">
           {m === 'journey' ? <>Each band is a stage of the prompt's journey; drag along the chart to scrub. The cores, RAM and the blue data rails light as the stage uses them. Watts are modelled from that activity.</>
-            : m === 'replay' ? <>Drag along the chart to rewind. Each band is one test; the 3D machine shows the watts recorded at that moment.</>
             : m === 'rec' ? <>Every test drives the 3D view as it runs, and is recorded.</>
-            : browser ? <>A web page cannot read power sensors. Test all records an estimate of every test. Play recorded run to see a run measured on the test PC.</>
-            : <>Package power right now, and the cores inside it. Start the journey to follow a prompt through the machine.</>}
+            : browser ? <>A web page cannot read power sensors. Test all records an estimate of every test.</>
+            : <>Package power right now, and the cores inside it. Press Run to follow a prompt through the machine.</>}
           {' '}Amber line: the CPU package. Blue line: the cores inside it, never above the package.
         </Hint>
       </div>
-      {h.err && <div className="err">{h.err}</div>}
+      {h.err && !browser && <div className="err">{h.err}</div>}
       {chart}
     </div>
   )
@@ -253,7 +242,7 @@ export function EnergyTab() {
   const S = power.summary
   // the device's own Test all results stand in for the older companion bench entries
   const own = { ...(results.cpun ? { matmul_n: { gflops: results.cpun.value } } : {}), ...(results.cpu1 ? { matmul_1: { gflops: results.cpu1.value } } : {}), ...(results.ram ? { dram: { copy_gbps: results.ram.value } } : {}) }
-  const B = power.reference ? power.reference.bench : { ...own, ...bench }
+  const B: any = { ...own, ...bench }
   const order = ['idle', 'draw', 'matmul_1', 'matmul_n', 'dram', 'cache', 'disk', 'net', 'gpu', 'ai_load', 'ai', 'cool'].filter((k) => S[k])
   const throttled: number | undefined = S._throttle?.seconds
   const idleW = S.idle?.avg_w ?? null
@@ -268,7 +257,7 @@ export function EnergyTab() {
   return (
     <div className="stack">
       <div>
-        <h4>Energy per test <small>{power.reference ? `measured on the test PC, ${power.reference.recorded}` : power.estimated ? 'estimated' : 'measured by the CPU (RAPL)'}</small></h4>
+        <h4>Energy per test <small>{power.estimated ? 'estimated' : 'measured by the CPU (RAPL)'}</small></h4>
         <table className="optab mono"><thead><tr><th>test</th><th>s</th><th>avg W</th><th>peak W</th><th>J</th></tr></thead>
           <tbody>{order.map((k) => <tr key={k} className={k === sel ? 'now' : ''} onClick={() => setSel(k)} style={{ cursor: 'pointer' }}><td><i className="dot" style={{ background: STAGE_COL[k] }} />{STAGE_NAME[k] ?? k}</td><td>{S[k].seconds}</td><td>{S[k].avg_w}</td><td>{S[k].peak_w}</td><td>{S[k].joules}</td></tr>)}</tbody></table>
         {!power.estimated && <p className={`hint small ${throttled ? 'warnline' : ''}`}>{throttled ? `throttled for ~${throttled.toFixed(1)} s` : 'no throttling'}<Hint>{throttled ? 'The thermal zone reported throttling during this run, so results may be lower than this machine reaches when cool.' : 'No thermal throttling was reported during this run.'}</Hint></p>}

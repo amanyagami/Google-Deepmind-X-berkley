@@ -183,9 +183,9 @@ export const checks = [
     // a complete set of results, so the score (and its ▲) shows (C11 hides it until every test ran)
     await p.page.evaluate(FULL)
     await p.page.waitForTimeout(600)
-    const g = await p.page.evaluate(() => { const sec = document.querySelector('.main.machine') ?? document.body, out = { tri: 0, triElse: [], circ: [] }
-      for (const { t, e } of __h.texts()) { if (t.includes('▲')) { if (e.closest('[data-score],.t5-score,.t5-ssc,[data-hero] .t5-big')) out.tri++; else if (sec.contains(e) || e.closest('[data-score-strip]')) out.triElse.push(t.slice(0, 24)) }
-        if (t.includes('○') && (sec.contains(e) || e.closest('[data-score-strip]'))) out.circ.push(t.slice(0, 24)) } return out })
+    const g = await p.page.evaluate(() => { const sec = document.querySelector('#sec-power') ?? document.body, out = { tri: 0, triElse: [], circ: [] }, inInspector = (e) => !!e.closest('[data-inspector]')
+      for (const { t, e } of __h.texts()) { if (t.includes('▲')) { if (e.closest('[data-score],.t5-score,.t5-ssc,[data-hero] .t5-big')) out.tri++; else if (!inInspector(e) && (sec.contains(e) || e.closest('[data-score-strip]'))) out.triElse.push(t.slice(0, 24)) }
+        if (t.includes('○') && !inInspector(e) && (sec.contains(e) || e.closest('[data-score-strip]'))) out.circ.push(t.slice(0, 24)) } return out })
     let pm = 'n/a (needs S7)'; if (f.S7) { await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' })); await openFor(p.page, '[data-inspector]'); await p.page.waitForTimeout(800)
       pm = /[+−]\d/.test(await p.page.locator('[data-inspector]').innerText().catch(() => '')) }
     return ok(g.tri > 0 && !g.triElse.length && !g.circ.length && pm !== false, `▲ on the score ${g.tri}×, elsewhere on the machine side ${g.triElse.length} (${g.triElse[0] ?? '-'}); ○ on the machine side ${g.circ.length} (${g.circ[0] ?? '-'}); +/− in heatmap ${pm}`) } },
@@ -425,7 +425,7 @@ export const checks = [
     const late = m.lt.filter(([s, d]) => s > m.ff && d > 50).length, kb = (n) => (n / 1024).toFixed(0)
     const mark = m.ff > 0 ? '' : ' (no performance.mark("ns:first-frame") yet: 3D frame and repeat not asserted)'
     return ok(first <= 90 * 1024 && three <= 280 * 1024 && m.fcp > 0 && m.fcp <= 1000 && (m.ff < 0 || (m.ff <= 2500 && rep <= 1000)) && heap <= 400 && late <= 3, `first JS ${kb(first)} kB, three ${kb(three)} kB gz; first paint ${Math.round(m.fcp)} ms; first 3D frame ${Math.round(m.ff)} ms; repeat ${Math.round(rep)} ms; ${late} long tasks > 50 ms after first frame; heap ${heap.toFixed(0)} MB${mark}`) } },
-  { id: 'A41', title: 'power card: cores <= package and rest >= 0 over 200 samples (recorded pack, and a synthetic live stream with cores > package)', run: async (env) => {
+  { id: 'A41', title: 'power card: cores <= package and rest >= 0 over 200 live samples with cores 50-150 % of the package (the recorded pack is covered by vitest)', run: async (env) => {
     const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
     const read = () => pg.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => { const e = document.querySelector('.phud'); res(e ? { ...e.dataset } : null) }))))
     const bad = [], seen = { ok: 0, scaled: 0, unavailable: 0 }
@@ -436,13 +436,9 @@ export const checks = [
       if (r.split === 'unavailable') { if (r.cores || r.rest) bad.push(`${where}: unavailable but shows a split`); return }
       const c = +r.cores, rest = +r.rest
       if (!(c <= pkg + 0.005) || !(rest >= 0) || Math.abs(c + rest - pkg) > 0.02) bad.push(`${where}: pkg ${pkg} cores ${c} rest ${rest}`) }
-    // 1) the recorded pack (measured on the test PC), scrubbed at 200 playheads
-    const b = pg.locator('[data-replay]').first(); if (!(await b.count())) return F('no recorded-run button')
-    await b.evaluate((e) => e.click()); const has = await pg.waitForFunction(() => window.__hw.getState().power?.samples?.length > 1, null, { timeout: 20000 }).then(() => true, () => false)
-    if (!has) return F('recorded power run did not load')
-    const T = await pg.evaluate(() => { const s = window.__hw.getState(); s.pause(); const x = s.power.samples; return x[x.length - 1].t })
-    for (let i = 0; i < 200; i++) { await pg.evaluate((t) => { const s = window.__hw.getState(); s.pPause(); s.pause(); s.setPHead(t) }, (i / 199) * T); check(await read(), `pack t=${((i / 199) * T).toFixed(1)}`) }
-    const pack = { ...seen }; for (const k in seen) seen[k] = 0
+    // no recorded run anywhere on the machine side (owner: live data only)
+    if (await pg.locator('[data-recorded],[data-replay]').count()) return F('a recorded-run button is still on the page')
+    const pack = { ok: 0, scaled: 0, unavailable: 0 }
     // 2) a synthetic live stream (as from the companion) whose cores add up to 50-150 % of the package
     let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
     await pg.evaluate(() => { const s = window.__hw.getState(); s.pause(); s.pPause(); window.__hw.setState({ power: null, journey: null, pMode: 'live', telemetry: [] }) })
@@ -453,7 +449,7 @@ export const checks = [
       await pg.waitForTimeout(270)   // the card re-renders at most 4 times a second
       check(await read(), `live #${i} (cores ${(k * 100).toFixed(0)}% of pkg)`, k > 1.15 ? 'unavailable' : k > 1 ? 'scaled' : 'ok')
     }
-    return ok(!bad.length, `pack: ${pack.ok} ok, ${pack.scaled} scaled, ${pack.unavailable} split unavailable; synthetic: ${seen.ok} ok, ${seen.scaled} scaled, ${seen.unavailable} unavailable; ${bad.length} violations${bad[0] ? ' e.g. ' + bad.slice(0, 2).join('; ') : ''}`) } },
+    return ok(!bad.length, `${seen.ok} ok, ${seen.scaled} scaled, ${seen.unavailable} unavailable; ${bad.length} violations${bad[0] ? ' e.g. ' + bad.slice(0, 2).join('; ') : ''}`) } },
   { id: 'L1', title: '3D canvas is drawing in the model, zoo and machine views', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500); const res = []
     for (const sec of ['model', 'zoo', 'power', 'machine']) { const c = p.page.locator(`#sec-${sec} canvas, [data-sec=${sec}] canvas`).first(); if (!(await c.count())) continue
@@ -464,20 +460,21 @@ export const checks = [
     for (const h of ['#zoo', '#machine', '#model']) { await p.page.evaluate((x) => { location.hash = x }, h); await p.page.waitForTimeout(800) }
     if (await p.page.evaluate(() => !!window.__zoo)) for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n); await p.page.waitForTimeout(500) }
     const e = await p.errCount(); return ok(e === 0, `${e} page errors`) } },
-  { id: 'L3', title: 'power replay: same playhead gives the same readout', run: async (env) => {
-    const p = await env.open(); await p.goto('#machine', 2500); const b = p.page.locator('#sec-power button:has-text("Play a recorded run"), [data-replay]').first()
-    if (!(await b.count())) return S('no replay button'); await b.evaluate((e) => e.click()); await p.page.waitForTimeout(1500)
-    const read = async (t) => { await p.page.evaluate((x) => { const s = window.__hw.getState(); s.pPause(); s.setPHead(x) }, t); await p.page.waitForTimeout(400); return p.page.locator('#sec-power .phud .pbig').first().innerText() }
-    const a = await read(3.3), m = await read(9.9), c = await read(3.3); return ok(a === c, `${a} / ${m} / ${c}`) } },
-  { id: 'L4', title: 'recorded run loads; one component Test gives a numeric result and the strip says 1 / 6 with no number yet (C11)', run: async (env) => {
+  { id: 'L3', title: 'live power readout: the same sensor samples give the same readout (no replay mode any more)', run: async (env) => {
     const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
-    const jb = pg.locator('[data-recorded]').first(); if (!(await jb.count())) return S('no recorded-run button')
-    await jb.evaluate((e) => e.click()); const j = await pg.waitForFunction(() => window.__hw.getState().journey?.stages?.length ?? !!window.__hw.getState().journey, null, { timeout: 30000 }).then(() => 1, () => 0)
+    const tel = (w) => Array.from({ length: 4 }, (_, j) => ({ t: j * 0.1, cpu: [], power: { pkg_w: w, core_w: Array(8).fill(w / 16) } }))
+    const read = async (w) => { await pg.evaluate((t) => window.__hw.setState({ power: null, journey: null, pMode: 'live', telemetry: t }), tel(w)); await pg.waitForTimeout(450); return pg.locator('#sec-power .phud .pbig').first().innerText() }
+    const a = await read(21.1), m = await read(40), c = await read(21.1)
+    const gone = !(await pg.locator('[data-recorded],[data-replay]').count())
+    return ok(a === c && a !== m && gone, `${a} / ${m} / ${c}; recorded-run buttons gone ${gone}`) } },
+  { id: 'L4', title: 'no recorded-run or journey button in browser mode; one component Test gives a numeric result and the strip says 1 / 6 with no number yet (C11)', run: async (env) => {
+    const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
+    const rec = await pg.evaluate(() => /recorded (run|journey)|Replay the test/i.test(document.body.innerText) || !!document.querySelector('[data-recorded],[data-replay]'))
     await openFor(pg, '[data-test=cpu1]'); await pg.locator('[data-test=cpu1]').first().click()
     const got = await pg.waitForFunction(() => window.__hw.getState().results.cpu1?.value, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null)
     await pg.waitForTimeout(400)
-    const strip = await pg.evaluate(() => ({ t: document.querySelector('[data-score-strip] .peek-sum')?.textContent ?? '', num: !!document.querySelector('b[data-score]') }))
-    return ok(j && +got > 0 && /1 \/ 6/.test(strip.t) && !strip.num, `journey ${j ? 'loaded' : 'MISSING'}; cpu1 ${got ?? 'none'}; strip "${strip.t}"; number shown ${strip.num}`) } },
+    const strip = await pg.evaluate(() => ({ t: document.querySelector('[data-score-strip] .nspeek-txt')?.textContent ?? '', num: !!document.querySelector('b[data-score]') }))
+    return ok(!rec && +got > 0 && /1 \/ 6/.test(strip.t) && !strip.num, `recorded buttons ${rec ? 'STILL THERE' : 'gone'}; cpu1 ${got ?? 'none'}; strip "${strip.t}"; number shown ${strip.num}`) } },
   { id: 'L5', title: 'five networks each produce an output', run: async (env) => {
     const p = await env.open(); await p.goto('#zoo', 2500); if (!(await p.page.evaluate(() => !!window.__zoo))) return S('no window.__zoo'); const res = []
     for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n)

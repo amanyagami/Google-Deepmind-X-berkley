@@ -199,8 +199,6 @@ interface HW {
   pSpeed: number
   tdp: number
   aiInBrowser: boolean
-  recorded: boolean          // the journey on screen is a recording, not this machine
-  recordedPack: { info: any; bench: any } | null
   // journey
   journey: any | null
   journeyBusy: string | null
@@ -218,8 +216,6 @@ interface HW {
   startTelemetry: () => void
   runBench: () => Promise<void>
   runJourney: (repo: string, prompt: string) => Promise<void>
-  loadRecorded: () => Promise<boolean>
-  loadReferencePower: () => Promise<void>
   loadMicro: (repo: string, prompt: string, layer?: number, row?: number) => Promise<void>
   peaks: () => Peaks
   setPlayhead: (t: number) => void
@@ -249,7 +245,7 @@ const pDuration = (p: PowerRun | null) => (p && p.samples.length ? p.samples[p.s
 export const useHW = create<HW>((set, get) => ({
   source: null, info: null, infoErr: null, telemetry: [], latest: null, bench: {}, benchRunning: false, benchErr: null, benchStage: null, benchLive: null, benchNote: null,
   ...(() => { const st = loadStored(); return { results: st.results, history: st.history } })(), running: null, progress: null, testErrors: {}, caps: null,
-  powerLive: [], power: null, pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: false, recorded: false, recordedPack: null,
+  powerLive: [], power: null, pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: false,
   journey: null, journeyBusy: null, journeyErr: null, micro: null,
   tl: buildTimeline(30, false), playhead: 0, playing: false, speed: 1, follow: true, expanded: false, path: [], hover: null,
 
@@ -381,7 +377,7 @@ export const useHW = create<HW>((set, get) => ({
   },
 
   /** Test all: every scored component with its default input, in a fixed order. No downloads, never `net`.
-   *  Power is recorded while it runs (the old separate "Test energy" run is folded in here): the live sensors with the
+   *  Power is recorded while it runs (the old separate energy run is folded in here): the live sensors with the
    *  companion, a labelled estimate in a browser. Each test gets its energy; the run replays on the machine afterwards. */
   async runAll(ids = RUN_ALL_ORDER) {
     if (current || get().benchRunning) return 0
@@ -425,7 +421,7 @@ export const useHW = create<HW>((set, get) => ({
         for (const id of done) { const S = power.summary[STAGE_OF[id] ?? id], r = get().results[id]; if (S && r) get().addResult({ ...r, energy: { joules: S.joules, estimated: !companion } }) }
         try { get().addResult(fromBench('power', power, { scale: companion ? 'native' : 'browser' })) } catch { /* the Energy row is optional */ }
       }
-      set({ benchRunning: false, benchStage: null, benchLive: null, power, powerLive: [], pMode: companion || !power ? 'live' : 'replay', pHead: power ? pDuration(power) : 0 })
+      set({ benchRunning: false, benchStage: null, benchLive: null, power, powerLive: [], pMode: 'live', pHead: power ? pDuration(power) : 0 })
       if (ran) get().snapshot()
     }
     return ran
@@ -436,7 +432,7 @@ export const useHW = create<HW>((set, get) => ({
   peaks() { return peaksOf(get()) },
 
   async runJourney(repo, prompt) {
-    if (get().source === 'browser') { await get().loadRecorded(); return }
+    if (get().source === 'browser') return                 // the journey needs PyTorch on this PC (the companion)
     set({ journeyErr: null, journeyBusy: 'Preparing…', playing: false })
     try {
       if (!get().bench.dram) { set({ journeyBusy: 'Measuring this machine first (about 30 s)…' }); await get().runBench(); get().pPause() }
@@ -445,38 +441,12 @@ export const useHW = create<HW>((set, get) => ({
       const r = await fetch(apiUrl('/api/hw/journey'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo, prompt, new_tokens: 24, peak_gflops: pk.gflops, peak_gbps: pk.gbps }) })
       const j = await r.json()
       if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
-      set({ journey: j, recorded: false, recordedPack: null, tl: buildTimeline(j.L, get().expanded), playhead: 0, path: [], micro: null, journeyBusy: null })
+      set({ journey: j, tl: buildTimeline(j.L, get().expanded), playhead: 0, path: [], micro: null, journeyBusy: null })
       get().play()
     } catch (e: any) { set({ journeyErr: e.message ?? String(e), journeyBusy: null }) }
   },
 
-  /** Browser-only mode: play a journey recorded on the test PC (clearly labelled as such). */
-  async loadRecorded() {
-    try {
-      set({ journeyBusy: 'Loading a recorded journey…', journeyErr: null })
-      const r = await fetch(`${import.meta.env.BASE_URL}examples/machine.json`)
-      if (!r.ok) throw new Error('No recorded journey is bundled with this build.')
-      const pack = await r.json()
-      set({ journey: pack.journey, micro: pack.micro, recorded: true, recordedPack: { info: pack.info, bench: pack.bench }, tl: buildTimeline(pack.journey.L, get().expanded), playhead: 0, path: [], journeyBusy: null })
-      get().play()
-      return true
-    } catch (e: any) { set({ journeyErr: e.message ?? String(e), journeyBusy: null }); return false }
-  },
-
-  /** Browser-only mode: replay the measured (RAPL) run recorded on the test PC, labelled as such. */
-  async loadReferencePower() {
-    try {
-      const r = await fetch(`${import.meta.env.BASE_URL}examples/machine.json`)
-      if (!r.ok) throw new Error('No recorded run is bundled with this build.')
-      const pack = await r.json()
-      get().pPause()
-      set({ power: { ...pack.power, samples: (pack.power.samples ?? []).map(fixSplit), source: `recorded on the test PC (${pack.info.cpu.name}), ${pack.power.source}`, reference: { recorded: pack.recorded, cpu: pack.info.cpu.name, bench: pack.bench } }, pHead: 0, pMode: 'replay' })
-      get().pPlay()
-    } catch (e: any) { set({ benchErr: e.message ?? String(e) }) }
-  },
-
   async loadMicro(repo, prompt, layer = 0, row = 0) {
-    if (get().recorded) return
     try {
       const r = await fetch(apiUrl('/api/hw/microscope'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo, prompt, layer, row }) })
       const m = await r.json()
@@ -619,13 +589,13 @@ export function telemetryPower(telemetry: any[]): PowerSample | null {
   })
 }
 
-/** Peak speeds of the machine a journey is judged against (the test PC for a recorded journey). */
-export function peaksOf(h: Pick<HW, 'recorded' | 'recordedPack' | 'bench' | 'info'>): Peaks {
-  const { bench, info } = h.recorded && h.recordedPack ? h.recordedPack : h
+/** Peak speeds of this machine, which a journey is judged against. */
+export function peaksOf(h: Pick<HW, 'bench' | 'info'>): Peaks {
+  const { bench, info } = h
   return { gflops: bench.matmul_n?.gflops ?? info?.cpu?.peak_gflops_est ?? 100, gbps: bench.dram?.copy_gbps ?? info?.ram?.peak_gbps_est ?? 20 }
 }
 
-type JourneyState = Pick<HW, 'journey' | 'tl' | 'info' | 'power' | 'recorded' | 'recordedPack' | 'bench'>
+type JourneyState = Pick<HW, 'journey' | 'tl' | 'info' | 'power' | 'bench'>
 /** Watts for the prompt's journey at visual time t. The journey is a recording of work, not of power, so the watts are
  *  modelled: each core idles near 0.2 W and rises to the per-core watts a full-load test measured here (or 6 W), and the
  *  rest of the chip (caches, memory controller) follows the cache activity. Labelled "modelled" wherever it is shown. */

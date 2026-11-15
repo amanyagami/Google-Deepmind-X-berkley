@@ -145,7 +145,7 @@ test('every producer keeps cores <= package and rest >= 0 over 200 samples: live
 })
 
 test('the recorded pack replays with cores <= package at every playhead', () => {
-  const pack = JSON.parse(readFileSync(new URL('../public/examples/machine.json', import.meta.url), 'utf8'))
+  const pack = JSON.parse(readFileSync(new URL('./fixtures/machine.json', import.meta.url), 'utf8'))
   const s: PowerSample[] = pack.power.samples
   const T = s[s.length - 1].t
   for (let i = 0; i <= 200; i++) { const p = powerAt(s, (i / 200) * T)!; expect(sumC(p)).toBeLessThanOrEqual(p.pkg_w + 1e-9); const sp = splitOf(p)!; if (sp.rest != null) expect(sp.rest).toBeGreaterThanOrEqual(0) }

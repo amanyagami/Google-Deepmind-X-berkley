@@ -74,7 +74,7 @@ export function computeScores(bench: Record<string, any>, journey: any, info: an
   const sys: Sub[] = [{ id: 'ai', comp: 'system', label: 'Language model speed', score: pts(aiTps, R.ai), value: aiTps ? `${aiTps} tokens/s` : bench.matmul_1 && !bench.ai ? 'not run' : '…',
     detail: aiTps ? `${aiModel} writing one word at a time.${bench.ai?.spread ? ` Spread over ${bench.ai.spread.n} words: ${bench.ai.spread.min}–${bench.ai.spread.max}.` : ''}` : 'A real small language model writing text.' }]
   const S = power?.summary
-  const measuredPower = power && !power.estimated && !power.reference
+  const measuredPower = power && !power.estimated 
   const effCpu = measuredPower && bench.matmul_n && S?.matmul_n?.avg_w ? bench.matmul_n.gflops / S.matmul_n.avg_w : null
   const effAi = measuredPower && aiTps && bench.ai && S?.ai?.avg_w ? (1000 * aiTps) / S.ai.avg_w : null
   const pw: Sub[] = [
@@ -107,7 +107,7 @@ export function computeScores(bench: Record<string, any>, journey: any, info: an
 export function useScores(): Scores {
   const bench = useHW((s) => s.bench)
   // a journey recorded on the test PC says nothing about this machine
-  const journey = useHW((s) => (s.recorded ? null : s.journey))
+  const journey = useHW((s) => s.journey)
   const info = useHW((s) => s.info)
   const power = useHW((s) => s.power)
   return useMemo(() => computeScores(bench, journey, info, power), [bench, journey, info, power])

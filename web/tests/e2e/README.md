@@ -55,9 +55,9 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 | A26 | visible strings of all sections plus every opened hint (prose lines only): avg sentence <= 12 words, max 20, FK grade <= 8, no banned word | | all (copy pass) |
 | L1 | 3D canvases in model/zoo/machine change between two grabs 300 ms apart (was `live`) | | S8 |
 | L2 | tour of sections and five networks, zero page errors (was `layouts`, `models`) | | all |
-| L3 | measured replay: same playhead, same readout (was `power`, `replay`) | | S5 |
-| L4 | round 3 (C7, C11): the one recorded-run button loads the journey; one Test gives a result, the strip says 1 / 6 and shows no number yet | | S3, S5 |
-| A41 | round 3 (D19): power card `data-pkg/cores/rest/split` over 200 playheads of the recorded pack and 200 synthetic live samples with cores 50-150 % of the package: cores <= package, rest >= 0, cores + rest = package, split state scaled/unavailable as expected | | S5 |
+| L3 | round 3 (owner): live power readout is a pure function of the sensor samples; no replay mode | | S5 |
+| L4 | round 3 (owner): no recorded-run or journey button in browser mode; one component Test gives a result, the strip says 1 / 6 and shows no number yet | | S3, S5 |
+| A41 | round 3 (D19): power card `data-pkg/cores/rest/split` over 200 live samples with cores 50-150 % of the package: cores <= package, rest >= 0, cores + rest = package, split state scaled/unavailable as expected (the recorded pack is covered by vitest) | | S5 |
 | L5 | five networks each produce an output (was `zoo`) | | S6 |
 | L6 | companion idle watts, page open vs blank, information only (was `idlecost`; tier 3) | | |
 | T1, T2 | tier 3 smoke: real Hub reachable, real companion answers, first real score | | |
