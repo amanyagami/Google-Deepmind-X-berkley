@@ -6,6 +6,9 @@ import { useStore } from './store'
 import { useHW } from './hw/hwStore'
 import { useZoo } from './zoo/zooStore'
 
+// Apply the saved theme before the first paint so there is no flash.
+try { const t = localStorage.getItem('ns.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t } catch { /* private mode */ }
+
 // Exposed so browser tests and the devtools console can drive the app.
 ;(window as any).__studio = useStore
 ;(window as any).__hw = useHW

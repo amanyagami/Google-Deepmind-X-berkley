@@ -14,6 +14,8 @@ const Loading = () => <div className="skeleton" role="status" aria-label="Loadin
 const Ico = ({ d, fill }: { d: string; fill?: boolean }) => (
   <svg className="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden fill={fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
 )
+const SUN = 'M12 7a5 5 0 100 10 5 5 0 000-10zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'
+const MOON = 'M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z', SCREEN = 'M3 5h18v11H3zM8 20h8M12 16v4'
 const PLAY = 'M7 4.5v15l12-7.5z', SHIELD = 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z', CHEV = 'M6 9l6 6 6-6'
 
 /** One prompt, one Run: the model runs it (Model section), then the Machine replays it on the hardware. */
@@ -60,6 +62,23 @@ function PickerFallback() {
   )
 }
 
+/** System / Light / Dark. Sets data-theme (System removes it), with a View Transition when the browser has one. */
+function useThemeApply() {
+  const theme = useStore((s) => s.theme)
+  useEffect(() => {
+    const el = document.documentElement
+    const apply = () => { if (theme === 'system') delete el.dataset.theme; else el.dataset.theme = theme }
+    const vt = (document as any).startViewTransition
+    if (vt && !matchMedia('(prefers-reduced-motion: reduce)').matches && el.dataset.theme !== (theme === 'system' ? undefined : theme)) vt.call(document, apply); else apply()
+  }, [theme])
+}
+function ThemeToggle() {
+  const theme = useStore((s) => s.theme), set = useStore((s) => s.setTheme)
+  const next = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
+  const label = theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark'
+  return <button className="btn2 themebtn" onClick={() => set(next)} aria-label={`Theme: ${label}. Switch to ${next}.`} title={`Theme: ${label}`}><Ico d={theme === 'light' ? SUN : theme === 'dark' ? MOON : SCREEN} /><span className="themelbl">{label}</span></button>
+}
+
 function TopBar({ view }: { view: AppView }) {
   const device = useDevice()
   return (
@@ -75,6 +94,7 @@ function TopBar({ view }: { view: AppView }) {
       </nav>
       <span className="grow" />
       <span className="tag devchip">{device}</span>
+      <ThemeToggle />
       <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device · nothing uploaded</span>
         <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded.</Hint></span>
     </header>
@@ -185,6 +205,7 @@ export default function App() {
   const flow = useRef<HTMLDivElement>(null)
   const seen = useSections(flow)
   useSheet()
+  useThemeApply()
   // stage and rail are the side-by-side panels: mark them so tests and styles can find them
   useEffect(() => {
     const mark = () => document.querySelectorAll('.main > .stage, .main > .rail, .main > .inspector').forEach((e) => e.setAttribute('data-panel', ''))
