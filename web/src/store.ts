@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, checkFit, clearModels, deviceBudget, loadInBrowser, loadSavedInput, parseRepo, persistAfterDownload, planDownload, resolveModel, runInBrowser, saveInput, savedInfo as savedInfoApi, streamRun } from './api'
+import { api, checkFit, multilingualFor, clearModels, deviceBudget, loadInBrowser, loadSavedInput, parseRepo, persistAfterDownload, planDownload, resolveModel, runInBrowser, saveInput, savedInfo as savedInfoApi, streamRun } from './api'
 import type { DownloadPlan, Fit, ModelSpec, RunStats, Task, TaskInput } from './api'
 
 export type Tab = 'model' | 'run' | 'layer' | 'calc' | 'edit'
@@ -95,6 +95,8 @@ interface S {
   /** the language of the prompt (ns.lang): a BCP-47 code such as 'en', 'es', 'hi' */
   language: string
   setLanguage: (l: string) => void
+  /** load the smallest multilingual model for the current task; false when the catalog has none */
+  switchToMultilingual: () => Promise<boolean>
   /** the last finished live run, remembered between visits (ns.last) */
   last: { repo: string; task: string; at: number; final: any; stats: RunStats | null } | null
   /** machine-readable reason of the last failed run: a BrowserRunError code, or null */
@@ -462,6 +464,12 @@ export const useStore = create<S>((set, get) => {
     savedInfo: async () => { const i = await savedInfoApi(); return { bytes: i.bytes, persisted: i.persisted } },
     async clear() { await clearModels(); set((st) => ({ plan: st.plan ? { ...st.plan, cached: false } : null })) },
     setLanguage: (language) => { lsSet('ns.lang', language); set({ language }) },
+    async switchToMultilingual() {
+      const m = multilingualFor(get().spec?.task ?? null)
+      if (!m) return false
+      await get().loadModel(m.repo)
+      return true
+    },
 
     setTab: (tab) => set({ tab }),
     selectLayer: (i) => set({ selLayer: i, selHead: null, calc: null, ...(i !== null ? { tab: 'layer' as Tab } : {}) }),

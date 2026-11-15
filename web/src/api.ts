@@ -1201,6 +1201,64 @@ export async function activation(q: { repo: string; input: TaskInput; layer: num
 }
 /* ================================================================== */
 
+/* ------------------------------------------------------------------ default models */
+export interface CatalogEntry {
+  repo: string; task: Task; title: string
+  /** roughly the smallest browser download in MB (checked against the Hub on 2026-11-14; chooseDefault reads the real size again) */
+  approxMB: number
+  /** reads more than English */
+  multilingual?: boolean
+  /** only the lite profile may pick it: smaller, but a weaker result */
+  liteOnly?: boolean
+}
+/** Browser-runnable models, smallest first per task. Sizes are the q4f16/q8 ONNX weights read from the Hub. */
+export const CATALOG: CatalogEntry[] = [
+  { repo: 'HuggingFaceTB/SmolLM2-135M-Instruct', task: 'text-generation', title: 'SmolLM2 135M', approxMB: 112 },
+  { repo: 'onnx-community/Qwen2.5-0.5B-Instruct', task: 'text-generation', title: 'Qwen2.5 0.5B (many languages)', approxMB: 461, multilingual: true },
+  { repo: 'Xenova/distilbert-base-uncased', task: 'fill-mask', title: 'DistilBERT', approxMB: 65 },
+  { repo: 'Xenova/bert-base-multilingual-cased', task: 'fill-mask', title: 'BERT multilingual', approxMB: 171, multilingual: true },
+  { repo: 'Xenova/distilbert-base-uncased-finetuned-sst-2-english', task: 'text-classification', title: 'DistilBERT SST-2', approxMB: 64 },
+  { repo: 'Xenova/distilbert-base-multilingual-cased-sentiments-student', task: 'text-classification', title: 'DistilBERT multilingual sentiment', approxMB: 130, multilingual: true },
+  { repo: 'Xenova/mobilevit-xx-small', task: 'image-classification', title: 'MobileViT xx-small', approxMB: 2, liteOnly: true },
+  { repo: 'Xenova/mobilevit-small', task: 'image-classification', title: 'MobileViT small', approxMB: 6 },
+  { repo: 'Xenova/resnet-18', task: 'image-classification', title: 'ResNet-18', approxMB: 11 },
+  { repo: 'Xenova/vit-base-patch16-224', task: 'image-classification', title: 'ViT base', approxMB: 84 },
+  { repo: 'Xenova/whisper-tiny.en', task: 'automatic-speech-recognition', title: 'Whisper tiny (English)', approxMB: 39 },
+  { repo: 'Xenova/whisper-tiny', task: 'automatic-speech-recognition', title: 'Whisper tiny (many languages)', approxMB: 39, multilingual: true },
+]
+
+/** The smallest catalog model for a task that reads languages other than English (null when none exists). */
+export function multilingualFor(task: Task | null, catalog: CatalogEntry[] = CATALOG): CatalogEntry | null {
+  return catalog.filter((e) => e.multilingual && e.task === task && !e.liteOnly).sort((a, b) => a.approxMB - b.approxMB)[0] ?? null
+}
+
+const specMemo = new Map<string, Promise<ModelSpec>>()
+export interface Chosen { entry: CatalogEntry; spec: ModelSpec; fit: Fit; bytes: number }
+/**
+ * Pick the default model for a task: the smallest catalog entry (real sizes from the Hub) that passes checkFit.
+ * caps.profile 'lite' also considers the lite-only entries. A language other than 'en' only considers multilingual entries.
+ * `catalog` adds the app's own entries (for example examples/index.json rows with a task). Null when nothing fits.
+ */
+export async function chooseDefault(task: Task, caps: { profile?: 'lite' | 'standard' | 'full'; language?: string; budget?: Budget; catalog?: { repo: string; task?: Task; title?: string }[] } = {}): Promise<Chosen | null> {
+  const lang = (caps.language ?? 'en').toLowerCase().split('-')[0]
+  const extra: CatalogEntry[] = (caps.catalog ?? []).filter((e) => e.task === task && !CATALOG.some((c) => c.repo === e.repo)).map((e) => ({ repo: e.repo, task, title: e.title ?? e.repo, approxMB: 1e9 }))
+  const pool = [...CATALOG, ...extra].filter((e) => e.task === task && (caps.profile === 'lite' || !e.liteOnly) && (lang === 'en' || e.multilingual))
+  const budget = caps.budget ?? (await deviceBudget())
+  const rated = await Promise.all(pool.map(async (entry): Promise<Chosen | null> => {
+    try {
+      let p = specMemo.get(entry.repo)
+      if (!p) { p = resolveModel(entry.repo); specMemo.set(entry.repo, p); p.catch(() => specMemo.delete(entry.repo)) }
+      const spec = await p
+      if (spec.task !== task || !spec.onnx) return null
+      const fit = checkFit(spec, budget)
+      if (fit.where === 'none' || fit.where === 'companion' || fit.verdict === 'too-big') return null
+      const bytes = spec.onnx.sizes?.[fit.dtype ?? ''] ?? Math.min(...Object.values(spec.onnx.sizes ?? { x: entry.approxMB * 1048576 }))
+      return { entry, spec, fit, bytes }
+    } catch { return null }
+  }))
+  return rated.filter((r): r is Chosen => !!r).sort((a, b) => a.bytes - b.bytes)[0] ?? null
+}
+
 /* ROUND 2 CONTRACT (owner S4): the model runs in a Web Worker so download, compile and inference never block the page.
  * Page -> worker. (Additive to the frozen shape: optional `avoid` and `prepared`, and the `dispose` and `activation` messages.) */
 export type ModelWorkerIn =
