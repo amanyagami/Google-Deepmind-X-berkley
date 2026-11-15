@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal, flushSync } from 'react-dom'
+import { drawKundali } from '../aspect'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
@@ -281,6 +282,7 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   g.fillStyle = '#0a0e19'; g.fillRect(0, 0, 1200, 630)
   g.fillStyle = '#ffa94d'; g.fillRect(0, 0, 400, 8)
   g.textBaseline = 'alphabetic'
+  drawKundali(g, 1084, 40, 52)
   g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText(who ? `${who.toUpperCase()} · DEVICE SCORE` : 'KUNDALI · DEVICE SCORE', 64, 90)
   g.fillStyle = '#ffa94d'; g.font = `700 150px ${sans}`; g.fillText(f.score != null ? `▲ ${f.score.toLocaleString('en-US')}` : '○ not tested', 56, 270)
   g.fillStyle = '#e8ecf8'; g.font = `600 44px ${sans}`; g.fillText(f.tier, 64, 336)

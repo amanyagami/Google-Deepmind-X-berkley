@@ -84,7 +84,7 @@ const feats = async () => { const q = (s) => !!document.querySelector(s), st = w
   const sw = await fetch('/sw.js').then((r) => r.ok && /javascript/.test(r.headers.get('content-type') || ''), () => false)
   return { S1: q('[data-dock]'), S3: !!window.__score, S4: q('[data-start]'), S5: q('[data-test]'), S6: q('[data-picker]'), S7: !!window.__inspector, S8: !!window.__scene,
     auto: typeof st?.autoStart === 'function', sw, pair: q('.pair'), drawer: q('[data-drawer]'), bulb: q('[data-explainer-bulb]'), strip: q('[data-score-strip]'), name: q('[data-namecard]'),
-    pad: q('[data-pad]'), lang: q('[data-lang-picker],[data-lang]'), theme: q('[data-theme-toggle]'), runAll: typeof hw?.runAll === 'function', pillar: q('[data-pillar]') } }
+    pad: q('[data-pad]'), lang: q('[data-lang-picker],[data-lang]'), theme: q('[data-theme-toggle],[data-profile]'), runAll: typeof hw?.runAll === 'function', pillar: q('[data-pillar]') } }
 
 export async function startHostile() { // another local origin serving a blank page, for A25
   const srv = http.createServer((q, r) => { r.setHeader('content-type', 'text/html'); r.end('<!doctype html><title>hostile</title>') })
