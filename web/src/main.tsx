@@ -5,7 +5,8 @@ import './styles.css'
 import { useStore } from './store'
 
 // Apply the saved theme before the first paint so there is no flash.
-try { const t = localStorage.getItem('ns.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t } catch { /* private mode */ }
+// index.html starts dark (the default); a saved choice replaces it before React renders.
+try { const t = localStorage.getItem('ns.theme'); if (t === 'light') document.documentElement.dataset.theme = t; else if (t === 'system') delete document.documentElement.dataset.theme } catch { /* private mode */ }
 
 // Exposed so browser tests and the devtools console can drive the app.
 ;(window as any).__studio = useStore
