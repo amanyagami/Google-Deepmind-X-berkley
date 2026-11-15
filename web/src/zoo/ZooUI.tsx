@@ -288,6 +288,8 @@ export function CompareCard() {
 
 /* ================================================================================ S6 model UI */
 const CSS = `
+.s6strip{position:absolute;left:12px;right:12px;top:56px;z-index:12;display:flex;flex-direction:column;gap:6px;padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+@media (max-width:900px){.s6strip{top:56px}}
 .s6lang{min-height:44px;max-width:130px;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:4px 8px;font-size:13px}
 .s6note2{justify-content:space-between}
 .s6tok{display:inline-block;padding:2px 7px;margin:2px;border:1px solid var(--line);border-radius:7px;font:13px var(--mono),'Noto Sans','Noto Sans Devanagari','Noto Sans SC','Noto Sans Arabic','Segoe UI',system-ui,sans-serif;white-space:pre}
@@ -396,6 +398,8 @@ function ErrorBox({ text, action, onAction }: { text: string; action: string; on
 /** Consent, download progress and run status. The numbers come from the main store (plan, download, running). */
 function Status() {
   const { pending, download, running, runStatus, runErr, runErrCode, confirm, decline, cancel } = useStore(useShallow((s) => ({ runErrCode: s.runErrCode, pending: s.pendingDownload, download: s.download, running: s.running, runStatus: s.runStatus, runErr: s.runErr, confirm: s.confirmDownload, decline: s.declineDownload, cancel: s.cancelDownload })))
+  const auto = typeof (useStore.getState() as any).autoStart === 'function'   // the strip over the scene shows progress
+  if (auto && (pending || download || running)) return null
   if (pending) {
     return (
       <div role="alert" className="s6row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
@@ -465,6 +469,38 @@ function FirstVisit() {
       {!busy && <button className="s6go" data-start data-primary onClick={() => useZoo.getState().startLive(usingCurrent ? undefined : def.id)}>{startLabel(plan)}</button>}
       <Status />
             {!busy && <button className="s6link" onClick={watch}>Watch a recorded run</button>}
+    </div>
+  )
+}
+
+/* --------------------------------------------------------------------- progress strip (R2-2) */
+/** With automatic downloads the first-visit card is gone: one slim line says what is coming, how big it is and how far along. */
+function AutoStrip() {
+  const { spec, repo, examples, running, lastStats, download, pending, runErr, cancel } = useStore(useShallow((s) => ({ spec: s.spec, repo: s.repo, examples: s.examples, running: s.running, lastStats: s.lastStats, download: s.download, pending: s.pendingDownload, runErr: s.runErr, cancel: s.cancelDownload })))
+  const plan = useCurrentPlan()
+  // the engine starts the default model by itself; ask once, after the catalog is known
+  const asked = useRef(false)
+  useEffect(() => {
+    const st: any = useStore.getState()
+    if (asked.current || !examples.length || typeof st.autoStart !== 'function') return
+    asked.current = true
+    void st.autoStart()
+  }, [examples.length])
+  const title = examples.find((e) => e.repo.toLowerCase() === repo.toLowerCase())?.title ?? (repo.split('/').pop() || 'the model')
+  const total = download?.total ?? pending?.bytes ?? plan?.bytes ?? null
+  const pct = download && download.total ? Math.min(100, Math.round((download.done / download.total) * 100)) : null
+  const conn: any = (navigator as any).connection
+  const mobile = !!conn && (conn.saveData || conn.type === 'cellular')
+  const busy = !!download || !!pending || (running && !lastStats && !!spec && isBrowserFit(useStore.getState().fit))
+  if (!busy || runErr) return null
+  return (
+    <div className="s6strip" role="status" data-strip>
+      <div className="s6row" style={{ flexWrap: 'nowrap' }}>
+        <span className="s6line" style={{ flex: 1, minWidth: 0 }} aria-live="polite">Getting <b>{title}</b>{total ? ` · ${fmtBytes(total)}` : ''}{pct !== null ? ` · ${pct} %` : ''}</span>
+        <button className="btn2 sm" onClick={() => cancel()}>Cancel</button>
+      </div>
+      <div className="s6bar" role="progressbar" aria-label="Download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? 0}><i style={{ width: `${pct ?? 0}%` }} /></div>
+      {mobile && <span className="s6line">You are on mobile data. Cancel any time.</span>}
     </div>
   )
 }
@@ -784,7 +820,7 @@ export function ZooView() {
         <Crumb />
         <Legend />
         <div className="stagebottom"><ZooTimeline /></div>
-        <FirstVisit />
+        {typeof (useStore.getState() as any).autoStart === 'function' ? <AutoStrip /> : <FirstVisit />}
         {err && <div className="err">{err}</div>}
       </section>
       <RunDock />
