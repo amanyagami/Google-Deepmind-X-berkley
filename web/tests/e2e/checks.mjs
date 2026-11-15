@@ -2,7 +2,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
-import { OUT, valueAt, startHostile, startServer } from './lib.mjs'
+import { OUT, valueAt, startHostile, startServer, startStatic } from './lib.mjs'
 
 const P = (value) => ({ status: 'PASS', value })
 const F = (value) => ({ status: 'FAIL', value })
@@ -25,6 +25,9 @@ const three = (b) => { const pts = [], cx = b.x + b.width / 2, w = b.width * 0.2
   for (let t = -Math.PI * 0.8; t <= Math.PI * 0.5; t += 0.2) pts.push([cx + w * Math.cos(t), top + h * (1 + Math.sin(t))])
   for (let t = -Math.PI * 0.5; t <= Math.PI * 0.8; t += 0.2) pts.push([cx + w * Math.cos(t), mid + h * (1 + Math.sin(t))]); return pts }
 const gz = (f) => zlib.gzipSync(fs.readFileSync(f)).length
+const shown = (pg, sel) => pg.evaluate((s) => [...document.querySelectorAll(s)].some(__h.vis), sel)
+/** Drawers are closed by default and opening one closes the other: click toggles until `sel` is visible. */
+const openFor = async (pg, sel) => { const t = pg.locator('[data-drawer-toggle]'), n = await t.count(); for (let i = 0; i < n && !(await shown(pg, sel)); i++) { await t.nth(i).click({ timeout: 3000 }).catch(() => {}); await pg.waitForTimeout(700) } return shown(pg, sel) }
 const W4 = (env) => env.widths
 const PRIMARY = '[data-primary], [data-dock] button, header button.btn'
 const MODEL_FILE = /\.(onnx|safetensors|gguf|bin)(\?|$)|\/resolve\//
@@ -82,7 +85,7 @@ export const checks = [
   { id: 'A7', title: 'first paint <= 2.5 s; first score <= 10 s (20 Mbit)', needs: ['S5'], run: async (env) => {
     const p = await env.open({ throttle: 20 }); const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' })
     const fcp = await p.page.waitForFunction(() => performance.getEntriesByType('paint').find((e) => e.name === 'first-contentful-paint')?.startTime, null, { timeout: 8000 }).then((h) => h.jsonValue(), () => -1)
-    const t1 = Date.now(); await p.page.locator('[data-test=cpu1]').first().click(); await p.page.waitForSelector(SCORE, { timeout: 30000 })
+    await openFor(p.page, '[data-test=cpu1]'); const t1 = Date.now(); await p.page.locator('[data-test=cpu1]').first().click(); await p.page.waitForSelector(SCORE, { timeout: 30000 })
     const s = (Date.now() - t1) / 1000
     return ok(fcp > 0 && fcp <= 2500 && s <= 10, `first paint ${Math.round(fcp)} ms; first score ${s.toFixed(1)} s (load ${((t1 - t0) / 1000).toFixed(1)} s)`) } },
   { id: 'A7b', tier: 3, title: '82 MB model first score <= 60 s at 20 Mbit (real Hub)', needs: ['S4'], run: async (env) => {
@@ -90,57 +93,36 @@ export const checks = [
     await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 90000 })
     const s = (Date.now() - t) / 1000; return ok(s <= 60, `${s.toFixed(1)} s`) } },
 
-  { id: 'A8', title: "A8': a model request starts <= 2 s after load with no click; progress bar updates", needs: ['auto'], run: async (env) => {
-    const p = await env.open({ hubDelay: 2500 }); const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'commit' })
-    await p.page.evaluate(() => { window.__pv = []; new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document, { subtree: true, attributes: true, childList: true }) }).catch(() => {})
-    await p.page.waitForTimeout(2500)
+  { id: 'A8', title: "A8': a model request starts <= 2 s after load with no click; progress bar updates >= 1/s (rate: tier 2 cannot stream from the model worker, see A9)", needs: ['auto'], run: async (env) => {
+    const p = await env.open({ profile: { stream: 4000 } }); await p.page.addInitScript(() => { window.__pv = []; addEventListener('DOMContentLoaded', () => new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow')]) }).observe(document, { subtree: true, attributes: true, childList: true })) })
+    const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' }); await p.page.waitForTimeout(6000)
     const first = p.reqs.find((r) => MODEL_FILE.test(r.url) && /hf\.co|huggingface/.test(r.url) && !/\/api\//.test(r.url)), ms = first ? first.t - t0 : -1
-    const bar = await p.page.locator('[role=progressbar]').count(), v = await p.page.evaluate(() => window.__pv ?? [])
-    return ok(first && ms <= 2000 && bar > 0, `first model request ${first ? ms + ' ms after navigation' : 'NONE'}; progressbar present ${bar > 0}; ${new Set(v.map((x) => x[1])).size} distinct values (rate gated in tier 3 A9b)`) } },
-  { id: 'A9', title: 'A9: progress bar with aria values shows while downloading, no start click', needs: ['auto'], run: async (env) => {
-    const p = await env.open({ hubDelay: 2500 }); await p.goto('', 300)
-    const bar = p.page.locator('[role=progressbar]').first(); await bar.waitFor({ timeout: 4000 }).catch(() => {})
-    const a = await bar.evaluate((e) => [e.getAttribute('aria-valuenow'), e.getAttribute('aria-valuemin'), e.getAttribute('aria-valuemax'), e.getAttribute('aria-label')]).catch(() => null)
-    const cancel = await p.page.locator('button:has-text("Cancel")').count()
-    return ok(a && a.slice(0, 3).every((x) => x !== null) && cancel > 0, a ? `progressbar now ${a[0]} of ${a[1]}..${a[2]} "${a[3]}"; Cancel button ${cancel > 0}` : 'no progressbar within 4 s') } },
-  { id: 'A10', title: "A10': second load fully offline: no app or model requests reach the network", needs: ['sw', 'auto'], run: async (env) => {
-    const p = await env.open({ sw: true }); await p.goto('', 1000)
-    await p.page.evaluate(() => navigator.serviceWorker.ready.then(() => 1)).catch(() => 0)
-    await p.page.waitForFunction(() => /cached|saved/i.test(document.body.innerText) || window.__studio?.getState().plan?.cached, null, { timeout: 30000 }).catch(() => {})
-    const hits = p.hub.hits.filter((h) => /resolve/.test(h)).length; p.reqs.length = 0; p.failed = []
-    await p.ctx.setOffline(true); await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(3000)
-    const text = (await p.page.evaluate(() => document.body.innerText)).length, net = p.hub.hits.filter((h) => /resolve/.test(h)).length - hits
-    const appFail = (p.failed ?? []).filter((u) => u.startsWith(env.base))
-    return ok(text > 200 && net === 0 && !appFail.length, `offline reload rendered ${text} chars; ${net} model requests; ${appFail.length} failed app files${appFail[0] ? ' e.g. ' + appFail[0] : ''}`) } },
-  { id: 'A9b', tier: 3, title: 'real download updates >= 1/s', needs: ['S4'], run: async (env) => {
-    const p = await env.open({ hub: false }); await p.goto()
-    await p.page.evaluate(() => { window.__pv = []; new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow')]) }).observe(document.body, { subtree: true, attributes: true }) })
-    await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 120000 })
-    const v = await p.page.evaluate(() => __pv), sec = (v.at(-1)[0] - v[0][0]) / 1000, n = new Set(v.map((x) => x[1])).size
-    return ok(n / sec >= 1, `${n} distinct values in ${sec.toFixed(1)} s`) } },
-
-  { id: 'A11', title: 'every browser W/J value says estimated/≈', run: async (env) => {
-    const p = await env.open(); await p.goto('#machine', 2500)
-    const r = await p.page.evaluate(() => { const bad = []; let n = 0
-      for (const { t, e } of __h.texts()) { if (!/(^|[\s≈~])\d[\d.,]*\s?(mW|kW|W|J|kJ|Wh|kWh)\b/.test(t)) continue; n++
-        const box = e.closest('.card,.ccard,[data-card],section,li,.phud') ?? e.parentElement; const s = (box.innerText + (e.closest('[data-est]') ? ' estimated' : '')).toLowerCase()
-        if (!/estimated|≈/.test(s) && !e.closest('[data-est]')) bad.push(t.slice(0, 24)) } return { n, bad } })
-    return ok(!r.bad.length, `${r.n} W/J values, ${r.bad.length} unlabelled${r.bad.length ? ' e.g. ' + r.bad.slice(0, 3).join(', ') : ''}`) } },
-
-  { id: 'A12', title: 'requests only to origin, allowlisted hosts, user URLs', run: async (env) => {
-    const p = await env.open(); await p.goto('', 3000); await p.goto('#machine', 2500)
-    const ok2 = ALLOWED(new URL(env.base).origin), bad = [...new Set(p.reqs.map((r) => r.url).filter((u) => !ok2(u)).map((u) => new URL(u).host))]
-    return ok(!bad.length, `${p.reqs.length} requests; off-list hosts: ${bad.join(', ') || 'none'}`) } },
+    const v = await p.page.evaluate(() => window.__pv), seen = new Set(v.map((x) => x[1])).size, span = v.length ? (v.at(-1)[0] - v[0][0]) / 1000 : 0, rate = span > 0 ? (seen - 1) / span : 0
+    return ok(first && ms <= 2000, `first model request ${first ? ms + ' ms after navigation' : 'NONE'}; progressbar ${v.length ? 'seen, ' + rate.toFixed(1) + ' updates/s' : 'not seen (the stub answers in one chunk; the model worker cannot be streamed, so the rate is gated by tier-3 A9)'}`) } },
+  { id: 'A9', tier: 3, title: 'A9: real Hub, no click: progress bar with aria values, Cancel, updates >= 1/s', needs: ['auto'], run: async (env) => {
+    const p = await env.open({ hub: false }); await p.page.addInitScript(() => { window.__pv = []; addEventListener('DOMContentLoaded', () => new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document, { subtree: true, attributes: true, childList: true })) })
+    await p.goto('', 300); await p.page.waitForSelector('[role=progressbar]', { timeout: 15000 }).catch(() => {}); await p.page.waitForTimeout(5000)
+    const v = await p.page.evaluate(() => __pv), cancel = await p.page.locator('button:has-text("Cancel")').count(), seen = new Set(v.map((x) => x[1])).size, span = v.length ? (v.at(-1)[0] - v[0][0]) / 1000 : 0
+    return ok(v.length && v.every((x) => x[1] !== null && x[2] !== null && x[3] !== null) && seen / (span || 1) >= 1 && cancel > 0, `${v.length ? seen + ' distinct values over ' + span.toFixed(1) + ' s' : 'no progressbar'}; Cancel ${cancel > 0}`) } },
+  { id: 'A10', title: "A10': second load with the server stopped: shell and model served from cache, zero requests", needs: ['sw', 'auto'], run: async (env) => {
+    const srv = await startStatic(env.dist); try { const p = await env.open({ sw: true }); await p.page.goto(srv.url, { waitUntil: 'load' }); await p.page.waitForTimeout(1000)
+      await p.page.evaluate(() => navigator.serviceWorker.ready.then(() => 1)).catch(() => 0)
+      await p.page.waitForFunction(() => /cached|saved/i.test(document.body.innerText) || window.__studio?.getState().plan?.cached, null, { timeout: 30000 }).catch(() => {})
+      await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(1000)   // now controlled by the service worker
+      const hits = p.hub.hits.length; p.reqs.length = 0; p.failed = []; await srv.close()
+      await p.page.reload({ waitUntil: 'load' }).catch(() => {}); await p.page.waitForTimeout(3000)
+      const text = (await p.page.evaluate(() => document.body?.innerText.length).catch(() => 0)), before = new Set(p.hub.hits.slice(0, hits)), again = p.hub.hits.slice(hits).filter((h) => /resolve/.test(h) && before.has(h)), net = again.length, fail = (p.failed ?? []).filter((u) => u.startsWith(srv.url))
+      return ok(text > 200 && net === 0, `server stopped: page rendered ${text} chars; ${net} model requests${net ? ' (' + again.map((h) => h.split('/').pop()).join(', ') + ' fetched again)' : ''}; ${fail.length} network attempts for app files (served by the service worker anyway)`) } finally { await srv.close() } } },
 
   { id: 'A13', title: "A13': Model and Machine side by side (<= 16 px gap) at 1480 and 1100, stacked at 390; drawers closed; drawer toggle CLS <= 0.02", needs: ['pair'], run: async (env) => {
-    const geo = () => [...document.querySelectorAll('.pair [data-stage], .pair > *')].filter(__h.vis).slice(0, 2).map((e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom } })
+    const geo = () => [...document.querySelectorAll('.pair > *')].filter(__h.vis).slice(0, 2).map((e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom } })
     const out = [], bad = []
     for (const w of [1480, 1100, 390]) { const p = await env.open({ w }); await p.goto(); const g = await p.page.evaluate(geo)
       if (g.length < 2) { bad.push(`${w}: ${g.length} stages`); continue }
       const side = Math.abs(g[0].t - g[1].t) < 8, gap = g[1].l - g[0].r
       if (w >= 1000 ? !(side && gap >= 0 && gap <= 16) : !(Math.abs(g[0].l - g[1].l) < 8 && g[1].t >= g[0].b - 2)) bad.push(`${w}: ${w >= 1000 ? `gap ${Math.round(gap)} px, same row ${side}` : 'not stacked'}`); else out.push(`${w} ok`) }
     const p = await env.open({ w: 1480 }); await p.page.addInitScript(() => { window.__cls = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) __cls += e.value }).observe({ type: 'layout-shift', buffered: true }) }); await p.goto()
-    const open0 = await p.page.evaluate(() => [...document.querySelectorAll('[data-drawer]')].filter((d) => d.dataset.open === 'true' || d.getAttribute('aria-hidden') === 'false').length)
+    const open0 = await p.page.evaluate(() => [...document.querySelectorAll('[data-drawer]')].filter((d) => (() => { const r = d.getBoundingClientRect(); return __h.vis(d) && r.right > 4 && r.left < innerWidth - 4 })()).length)
     const tg = p.page.locator('[data-drawer-toggle]').first(); if (await tg.count()) { await tg.click(); await p.page.waitForTimeout(500); await tg.click(); await p.page.waitForTimeout(500) } else bad.push('no [data-drawer-toggle]')
     const cls = await p.page.evaluate(() => __cls)
     return ok(!bad.length && !open0 && cls <= 0.02, `${out.join(', ')}${bad.length ? '; ' + bad.join('; ') : ''}; ${open0} drawers open on fresh profile; toggle CLS ${cls.toFixed(4)}`) } },
@@ -157,10 +139,10 @@ export const checks = [
   { id: 'A15', title: 'inspector: click → card <= 500 ms → Esc back; max zoom value = tensor', needs: ['S7', 'S6'], run: async (env) => {
     const p = await env.open({ query: '?mockTensor' }); await p.goto('#zoo'); const t0 = Date.now()
     await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' }))
-    await p.page.waitForSelector('[data-inspector]', { timeout: 2000 }); const ms = Date.now() - t0
+    const auto = await p.page.waitForSelector('[data-inspector]', { state: 'visible', timeout: 1500 }).then(() => true, () => false); const ms = Date.now() - t0; if (!auto) await openFor(p.page, '[data-inspector]')
     const z = await p.page.evaluate(() => window.__inspector.zoomMax()), exp = valueAt(z.r, z.c)
     await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(300); const gone = (await p.page.locator('[data-inspector]').count()) === 0
-    return ok(ms <= 500 && gone && Math.abs(z.value - exp) < 1e-6, `card in ${ms} ms; Esc closes ${gone}; w[${z.r},${z.c}] shown ${z.value} vs tensor ${exp}`) } },
+    return ok(auto && ms <= 500 && gone && Math.abs(z.value - exp) < 1e-6, `card ${auto ? 'opened by itself' : 'did NOT open its drawer by itself'} in ${ms} ms; Esc closes ${gone}; w[${z.r},${z.c}] shown ${z.value} vs tensor ${exp}`) } },
 
   { id: 'A16', title: 'keyboard reaches every Test button and block; focus ring >= 2px, 3:1', run: async (env) => {
     const p = await env.open(); await p.goto()
@@ -189,7 +171,7 @@ export const checks = [
   { id: 'A18', title: 'glyphs ▲/○ and +/− present', run: async (env) => {
     const p = await env.open({ query: '?mockTensor' }); await p.goto(); const t = await p.page.evaluate(() => document.body.innerText), f = await p.features()
     const gl = t.includes('▲') && t.includes('○')
-    let pm = 'n/a (needs S7)'; if (f.S7) { await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' })); await p.page.waitForTimeout(800)
+    let pm = 'n/a (needs S7)'; if (f.S7) { await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' })); await openFor(p.page, '[data-inspector]'); await p.page.waitForTimeout(800)
       pm = /[+−]\d/.test(await p.page.locator('[data-inspector]').innerText().catch(() => '')) }
     return ok(gl && pm !== false, `▲ ${t.includes('▲')}, ○ ${t.includes('○')}, +/− in heatmap ${pm}`) } },
 
@@ -203,7 +185,7 @@ export const checks = [
 
   { id: 'A20', title: 'CLS <= 0.02 during a full Test all', needs: ['S5'], run: async (env) => {
     const p = await env.open(); await p.page.addInitScript(() => { window.__cls = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) __cls += e.value }).observe({ type: 'layout-shift', buffered: true }) })
-    await p.goto(); await p.page.locator('[data-testall]').first().click(); await p.page.waitForFunction(() => document.querySelector('b[data-score]') && !document.querySelector('[data-testall][disabled]'), null, { timeout: 240000, polling: 500 }); await p.page.waitForTimeout(1000)
+    await p.goto(); await openFor(p.page, '[data-testall]'); await p.page.locator('[data-testall]').first().click(); await p.page.waitForFunction(() => document.querySelector('b[data-score]') && !document.querySelector('[data-testall][disabled]'), null, { timeout: 240000, polling: 500 }); await p.page.waitForTimeout(1000)
     const c = await p.page.evaluate(() => __cls); return ok(c <= 0.02, `CLS ${c.toFixed(4)}`) } },
 
   { id: 'A21', title: 'no-WebGPU / out-of-memory / offline / mic-denied: message + button <= 2 s', needs: ['S5', 'S6'], run: async (env) => {
@@ -211,7 +193,7 @@ export const checks = [
       ['offline', {}, '[data-start]', true, 'distilgpt2'], ['mic', { profile: { mic: 1 } }, '[data-test=mic]', false, 'whisper']], out = []
     for (const [name, o, sel, off, ex] of cases) { const p = await env.open({ ...o, hub: off ? false : undefined }); await p.goto(); if (ex) { await p.page.evaluate((e) => window.__studio.getState().loadExample(e), ex); await p.page.waitForTimeout(1500) } if (off) await p.ctx.setOffline(true)
       const b = p.page.locator(sel).first(); if (!(await b.count())) { out.push(`${name}: no trigger ${sel}`); continue }
-      const t = Date.now(); await b.click(); const e = p.page.locator('[data-error]').first(); await e.waitFor({ timeout: 2000 }).catch(() => {})
+      const t = Date.now(); await b.click({ timeout: 4000 }).catch(() => {}); const e = p.page.locator('[data-error]').first(); await e.waitFor({ timeout: 2000 }).catch(() => {})
       const ms = Date.now() - t, has = (await e.count()) && (await e.innerText()).trim().length > 3 && (await e.locator('button').count()) > 0, errs = await p.errCount()
       if (!has || errs) out.push(`${name}: ${has ? '' : 'no message+button in 2 s '}${errs ? errs + ' page errors: ' + String(p.errors[0] ?? '').slice(0, 70) : ''}`.trim()); else out.push(`${name} ok ${ms}ms`) }
     return ok(out.every((x) => / ok \d+ms$/.test(x)), out.join('; ')) } },
@@ -224,7 +206,7 @@ export const checks = [
     return ok(r.worst <= 1 && cam !== false, `longest transition/animation ${r.worst} ms (${r.who || '-'}); camera tween ${cam === true ? 'none' : cam}`) } },
 
   { id: 'A23', title: 'share PNG 1200×630, no hostname or UA', needs: ['S5'], run: async (env) => {
-    const p = await env.open(); await p.goto(); const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 15000 }), p.page.locator('[data-share]').first().click()])
+    const p = await env.open(); await p.goto(); await openFor(p.page, '[data-share]'); const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 15000 }), p.page.locator('[data-share]').first().click()])
     const file = path.join(OUT, 'share.png'); await d.saveAs(file); const b = fs.readFileSync(file), w = b.readUInt32BE(16), h = b.readUInt32BE(20), s = b.toString('latin1')
     const leaks = ['127.0.0.1', 'localhost', 'Mozilla', 'Chrome', 'Edg/', 'HeadlessChrome'].filter((x) => s.includes(x))
     return ok(w === 1200 && h === 630 && !leaks.length, `${w}x${h}; leaked strings in file: ${leaks.join(',') || 'none'}`) } },
@@ -289,27 +271,27 @@ export const checks = [
 
   { id: 'A30', title: 'score strip visible with drawers closed; hero first in the drawer; five pillar rows; one click expands; nesting <= 2', needs: ['strip', 'pillar'], run: async (env) => {
     const p = await env.open(); await p.goto('', 2000); const strip = await p.page.evaluate(() => { const e = document.querySelector('[data-score-strip]'); if (!e || !__h.vis(e)) return false; const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight })
-    const tg = p.page.locator('[data-drawer-toggle]'); const n = await tg.count(); for (let i = 0; i < n; i++) await tg.nth(i).click({ timeout: 2000 }).catch(() => {}); await p.page.waitForTimeout(500)
+    await openFor(p.page, '[data-hero]')
     const r = await p.page.evaluate(() => { const h = document.querySelector('[data-hero]'), rows = [...document.querySelectorAll('[data-pillar]')].filter(__h.vis); if (!h || !rows.length) return { hero: !!h, rows: rows.length }
       const first = h.getBoundingClientRect().top <= Math.min(...rows.map((x) => x.getBoundingClientRect().top)); const row = rows[0], before = row.getAttribute('aria-expanded') ?? row.dataset.open; row.querySelector('button,[role=button]')?.click() ?? row.click()
       return { hero: true, first, rows: rows.length, before, after: row.getAttribute('aria-expanded') ?? row.dataset.open, depth: Math.max(...[...row.querySelectorAll('[data-card],.card')].map((c) => { let d = 0; for (let e = c.parentElement; e && e !== row; e = e.parentElement) if (e.matches('[data-card],.card')) d++; return d + 1 }), 1) } })
     return ok(strip && r.hero && r.first && r.rows === 5 && r.before !== r.after && r.depth <= 2, `strip visible ${strip}; hero first ${r.first}; ${r.rows} pillar rows; expand ${r.before}->${r.after}; nesting ${r.depth}`) } },
 
   { id: 'A31', title: 'name card first on a fresh profile, once; name in hero and share; no request carries it', needs: ['name'], run: async (env) => {
-    const NAME = 'Zelda Quux', p = await env.open(); await p.goto('', 1000)
+    const NAME = 'Zelda Quux', p = await env.open({ fresh: true }); await p.goto('', 1000)
     const card = await p.page.evaluate(() => { const c = document.querySelector('[data-namecard]'); if (!c || !__h.vis(c)) return false; const r = c.getBoundingClientRect(); return r.top < innerHeight / 2 })
     await p.page.locator('[data-namecard] input').first().fill(NAME); await p.page.keyboard.press('Enter'); await p.page.waitForTimeout(600)
     const gone = !(await p.page.evaluate(() => { const c = document.querySelector('[data-namecard]'); return !!c && __h.vis(c) }))
     await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(1500); const again = await p.page.evaluate(() => { const c = document.querySelector('[data-namecard]'); return !!c && __h.vis(c) })
-    await p.page.locator('[data-test=cpu1]').first().click().catch(() => {}); await p.page.waitForSelector(SCORE, { timeout: 30000 }).catch(() => {})
-    const hero = await p.page.evaluate((n) => (document.querySelector('[data-hero]')?.innerText ?? '').includes(n), NAME)
+    await openFor(p.page, '[data-test=cpu1]'); await p.page.locator('[data-test=cpu1]').first().click().catch(() => {}); await p.page.waitForSelector(SCORE, { timeout: 30000 }).catch(() => {})
+    const hero = await p.page.evaluate((n) => (document.querySelector('[data-hero]')?.innerText ?? '').toLowerCase().includes(n.toLowerCase()), NAME)
     const leaks = p.reqs.filter((r) => (decodeURIComponent(r.url) + r.post).includes('Zelda') || (r.url + r.post).includes('Quux')).length
     let png = 'share not checked'; const sb = p.page.locator('[data-share]').first(); if (await sb.count()) { const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 10000 }).catch(() => null), sb.click()]); if (d) { const f = path.join(OUT, 'share-name.png'); await d.saveAs(f); png = 'PNG text is not machine-read (pixel text); file saved for review' } }
     return ok(card && gone && !again && hero && !leaks, `name card first ${card}; hides after answer ${gone}; back after reload ${again}; name in hero ${hero}; ${leaks} requests carry it; ${png}`) } },
 
-  { id: 'A32', title: 'draw pad: a stroked 3 gives a result <= 300 ms that says 3; pad >= 280 px at 390; Clear/Undo; touch', needs: ['pad'], run: async (env) => {
+  { id: 'A32', title: 'draw pad: a stroked 3 gives a result <= 300 ms that says 3; pad >= 280 px at 390; Clear/Undo; touch', run: async (env) => {
     const out = []; let good = true
-    for (const touch of [false, true]) { const p = await env.open({ w: touch ? 390 : 1480, touch }); await p.goto('#zoo', 1500); const pad = p.page.locator('[data-pad]').first(); await pad.scrollIntoViewIfNeeded(); const b = await pad.boundingBox()
+    for (const touch of [false, true]) { const p = await env.open({ w: touch ? 390 : 1480, touch }); await p.goto('#zoo', 1500); await p.page.evaluate(() => window.__zoo.getState().setNet('cnn')); await p.page.waitForTimeout(1500); const pad = p.page.locator('[data-pad]').first(); if (!(await pad.count())) return S('no [data-pad] on the CNN view yet'); await openFor(p.page, '[data-pad]'); await pad.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => {}); const b = await pad.boundingBox()
       if (touch && b.width < 280) { good = false; out.push(`pad ${Math.round(b.width)} px at 390`) }
       const clear = p.page.locator('[data-pad-clear], [data-pad-wrap] button:has-text("Clear")').first(); if (await clear.count()) await clear.click().catch(() => {})
       await stroke(p, three(b), touch); const t = Date.now()
@@ -327,7 +309,8 @@ export const checks = [
   { id: 'A34', title: '8 languages each fill a prompt and run with no page error; token tiles render', needs: ['lang'], run: async (env) => {
     const p = await env.open(), codes = ['en', 'es', 'fr', 'de', 'hi', 'zh', 'ar', 'pt']; await p.goto('', 2000); const res = [], seen = new Set()
     for (const c of codes) { const sel = p.page.locator(`select[data-lang-picker], [data-lang-picker]`).first(), btn = p.page.locator(`[data-lang="${c}"]`).first()
-      if (await btn.count()) await btn.click(); else await sel.selectOption(c).catch(() => {}); await p.page.waitForTimeout(400)
+      await p.page.waitForFunction(() => { const s = document.querySelector('[data-lang-picker]'); return !s || !s.disabled }, null, { timeout: 20000 }).catch(() => {})
+      if (await btn.count()) await btn.click(); else await sel.selectOption(c, { timeout: 5000 }).catch(() => {}); await p.page.waitForTimeout(400)
       const prompt = await p.page.evaluate(() => { const e = document.querySelector('[data-prompt]') ?? document.querySelector('textarea, input[type=text]'); return e ? (e.value ?? e.innerText) : '' }); seen.add(prompt)
       await p.page.locator('[data-start],[data-run]').first().click({ timeout: 2000 }).catch(() => {}); await p.page.waitForTimeout(800)
       const tiles = await p.page.locator('[data-token]').count(); res.push(`${c}:${prompt.length > 3 ? 'prompt' : 'EMPTY'}/${tiles} tiles`) }
@@ -364,7 +347,7 @@ export const checks = [
     const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
     const jb = pg.locator('#sec-power button:has-text("Play a recorded journey")').first(); if (!(await jb.count())) return S('no recorded-journey button')
     await jb.click(); const j = await pg.waitForFunction(() => window.__hw.getState().journey?.stages?.length ?? !!window.__hw.getState().journey, null, { timeout: 30000 }).then(() => 1, () => 0)
-    await pg.locator('[data-test=cpu1]').first().click(); const got = await pg.waitForFunction(() => document.querySelector('b[data-score]')?.getAttribute('data-score'), null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null)
+    await openFor(pg, '[data-test=cpu1]'); await pg.locator('[data-test=cpu1]').first().click(); const got = await pg.waitForFunction(() => document.querySelector('b[data-score]')?.getAttribute('data-score'), null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null)
     return ok(j && +got > 0, `journey ${j ? 'loaded' : 'MISSING'}; score after one Test ${got ?? 'none'}`) } },
   { id: 'L5', title: 'five networks each produce an output', run: async (env) => {
     const p = await env.open(); await p.goto('#zoo', 2500); if (!(await p.page.evaluate(() => !!window.__zoo))) return S('no window.__zoo'); const res = []

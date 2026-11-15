@@ -12,7 +12,7 @@ const LIMIT = 300000
 
 const browser = await launch()
 const env = makeEnv(browser, base, widths, query)
-const probe = await env.open(); await probe.goto(); const have = await probe.features(); await env.closeAll()
+const probe = await env.open({ fresh: true }); await probe.goto(); const have = await probe.features(); await env.closeAll()
 console.log(`base ${base} | tier ${tier} | widths ${widths.join(',')} | features: ${Object.entries(have).map(([k, v]) => `${k}${v ? '+' : '-'}`).join(' ')} | out ${OUT}\n`)
 
 const rows = []

@@ -33,7 +33,7 @@ const kindOf = (path) => { const r = path.toLowerCase()
     : { pipeline_tag: 'text-generation', config: { model_type: 'gpt2' } } }
 const HOST = /(^|\.)(huggingface\.co|hf\.co)$/
 
-/** In-page device profile: any of nogpu mem saveData cellular battery quota mic oom phone. */
+/** In-page device profile: any of stream(ms: onnx downloads arrive in 10 timed chunks) nogpu mem saveData cellular battery quota mic oom phone. */
 const mockScript = (p) => `(()=>{const p=${JSON.stringify(p)};const def=(o,k,v)=>{try{Object.defineProperty(o,k,{get:()=>v,configurable:true})}catch{}}
 if(p.nogpu||p.phone)def(Navigator.prototype,'gpu',undefined)
 if(p.mem||p.phone)def(Navigator.prototype,'deviceMemory',p.mem||2)
@@ -42,6 +42,7 @@ if(p.saveData||p.cellular)def(Navigator.prototype,'connection',{saveData:!!p.sav
 if(p.battery)navigator.getBattery=async()=>({level:p.battery,charging:false,addEventListener(){},removeEventListener(){}})
 if(p.quota){navigator.storage.estimate=async()=>({quota:1e6,usage:1e6});navigator.storage.getDirectory=async()=>{throw new DOMException('full','QuotaExceededError')};try{Cache.prototype.put=async()=>{throw new DOMException('full','QuotaExceededError')}}catch{}}
 if(p.mic)navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('denied','NotAllowedError')}
+if(p.stream){const of=window.fetch.bind(window);window.fetch=async(u,i)=>{const url=String(u&&u.url||u),r=await of(u,i);if(!((url.includes('huggingface.co')||url.includes('hf.co'))&&url.includes('/resolve/')&&url.endsWith('.onnx'))||!r.ok)return r;const buf=new Uint8Array(await r.arrayBuffer()),n=10,step=Math.ceil(buf.length/n);let k=0;return new Response(new ReadableStream({async pull(c){if(k>=n){c.close();return}await new Promise(s=>setTimeout(s,p.stream/n));c.enqueue(buf.slice(k*step,(k+1)*step));k++}}),{status:r.status,headers:r.headers})}}
 if(p.oom){WebAssembly.Memory=function(){throw new RangeError('WebAssembly.Memory(): could not allocate memory')};if(window.GPUAdapter)GPUAdapter.prototype.requestDevice=async()=>{throw new DOMException('out of memory','OperationError')}}})()`
 
 /** Page-side helpers (window.__h): visibility, colour compositing, contrast. Serialised with toString(). */
@@ -103,10 +104,11 @@ export function makeEnv(browser, base, widths, query) {
       if (o.profile) await ctx.addInitScript(mockScript(o.profile))
       ctx.on('request', (r) => P.reqs.push({ url: r.url(), t: Date.now(), type: r.resourceType(), post: r.postData()?.slice(0, 2000) ?? '' }))
       ctx.on('requestfailed', (r) => (P.failed ??= []).push(r.url()))
+      if (!o.fresh) await ctx.addInitScript(`try{if(localStorage.getItem('ns.name')===null)localStorage.setItem('ns.name','Test')}catch{}`)
       if (o.theme) await ctx.addInitScript(`try{localStorage.setItem('ns.theme','${o.theme}')}catch{};const s=()=>document.documentElement&&(document.documentElement.dataset.theme='${o.theme}');s();addEventListener('DOMContentLoaded',s)`)
       if (o.hub !== false) await ctx.route((u) => HOST.test(u.hostname), async (route) => { // Hub + CDN stub (HTTP Range supported)
         const u = new URL(route.request().url()); P.hub.hits.push(u.pathname)
-        if (P.hub.delay) await new Promise((r) => setTimeout(r, P.hub.delay))
+        if (P.hub.delay && u.pathname.includes('/resolve/')) await new Promise((r) => setTimeout(r, P.hub.delay))
         const h = { 'access-control-allow-origin': '*', 'access-control-expose-headers': '*', 'accept-ranges': 'bytes', 'content-type': 'application/octet-stream' }
         if (/\/tree\//.test(u.pathname)) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify(Object.entries(FILES).filter(([f]) => f.startsWith('onnx/')).map(([f, b]) => ({ type: 'file', path: f, size: b.length }))) })
         if (u.pathname.startsWith('/api/')) return route.fulfill({ headers: h, contentType: 'application/json', body: JSON.stringify({ id: 'mock/tiny', sha: '0'.repeat(40), siblings: Object.entries(FILES).map(([f, b]) => ({ rfilename: f, size: b.length, lfs: { size: b.length } })), safetensors: { total: 4096 }, ...kindOf(u.pathname), library_name: 'transformers.js' }) })
@@ -137,4 +139,13 @@ export async function startServer(port) {
   const stop = () => { try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch {} }
   for (let i = 0; i < 160; i++) { if (await fetch(`http://127.0.0.1:${port}/api/health`).then(() => true, () => false)) return { ok: true, stop }; await new Promise((r) => setTimeout(r, 500)) }
   stop(); return { ok: false, why: `server did not start on ${port}` }
+}
+
+/** Tiny static server for dist (SPA fallback), so a check can stop it and prove a second load needs no network. */
+export async function startStatic(dir) {
+  const T = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' }
+  const srv = http.createServer((q, r) => { let f = path.join(dir, decodeURIComponent(new URL(q.url, 'http://x').pathname)); if (!f.startsWith(dir) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) f = path.join(dir, 'index.html')
+    r.setHeader('content-type', T[path.extname(f)] ?? 'application/octet-stream'); r.setHeader('cache-control', 'no-cache'); r.end(fs.readFileSync(f)) })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r)); let closed = false
+  return { url: `http://127.0.0.1:${srv.address().port}/`, close: async () => { if (closed) return; closed = true; srv.closeAllConnections?.(); await new Promise((r) => srv.close(r)) } }
 }
