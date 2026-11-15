@@ -463,10 +463,10 @@ function ScoreStrip() {
   const secs = batch ? Math.round((now - batch.t0) / 1000) : 0
   const r = relPct(f), rec = useRecordedScore(), shown = f.score ?? rec
   return (
-    <div className="t5-strip" data-score-strip role="group" aria-label="Device score">
+    <div className="t5-strip" data-score-strip data-card="strip" role="group" aria-label="Device score">
       <b className="t5-ssc" {...(shown != null ? { 'data-score': shown } : {})}>▲ {shown != null ? shown.toLocaleString('en-US') : '—'}</b>
       {f.score != null && <span className="t5-stier">{f.tier}</span>}
-      <span className="t5-sinfo">{f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span>
+      <span className="t5-sinfo"><span aria-hidden="true" style={{ color: "var(--neg-ink)" }}>○</span> {f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span>
       {f.limiting && !running && <span className="t5-sweak">Weakest: <button type="button" className="t5-link" onClick={() => select((PILLAR_CARD[f.limiting as string] ?? f.limiting) as ComponentId)}>{labelOf(f.limiting)}</button></span>}
       {running
         ? <><span className="t5-srun mono">{labelOf(running).replace(/^CPU, /, 'CPU ')}{batch ? ` ${idx + 1}/${batch.ids.length} · ${secs} s` : ''}
