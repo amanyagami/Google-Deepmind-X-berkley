@@ -96,3 +96,57 @@ test('scoreRun: overall is the weighted geometric mean of speed and response onl
   expect(part(scoreRun(rs({ firstMs: 600 }), null, { params: 1, info: null }), 'response').score).toBe(500)
   expect(part(scoreRun(rs({ firstMs: 1 }), null, { params: 1, info: null }), 'response').score).toBe(2000)
 })
+
+/* ---- D19: cores never exceed the package; "rest of chip" is never a silent clamp ---- */
+import { readFileSync } from 'node:fs'
+import { fixSplit, splitOf, SPLIT_MAX } from '../src/hw/hwStore'
+
+const sumC = (s: PowerSample) => s.core_w.reduce((a, b) => a + (b ?? 0), 0)
+
+test('fixSplit scales cores above the package down to it and flags core-scaled; untouched otherwise', () => {
+  const bad = fixSplit({ t: 0, stage: 'x', pkg_w: 52.7, core_w: Array(8).fill(72.6 / 8), mhz: null, util: [] })
+  expect(sumC(bad)).toBeCloseTo(52.7, 6)
+  expect(bad.split).toBe('core-scaled'); expect(bad.cr).toBeCloseTo(72.6 / 52.7, 6)
+  const ok = { t: 0, stage: 'x', pkg_w: 50, core_w: [10, 12], mhz: null, util: [] }
+  expect(fixSplit(ok)).toBe(ok)
+  expect(fixSplit({ ...ok, pkg_w: 0, core_w: [3] }).core_w).toEqual([0])
+})
+
+test('splitOf: cores as a share of the package; mild disagreement is "scaled", gross is "unavailable" (package only)', () => {
+  const a = splitOf({ pkg_w: 50, core_w: [10, 20] })!
+  expect(a.state).toBe('ok'); expect(a.cores).toBeCloseTo(30); expect(a.rest).toBeCloseTo(20); expect(a.share).toBeCloseTo(0.6)
+  const b = splitOf({ pkg_w: 50, core_w: [26, 26] })!            // 104 %: scaled, still shown, rest 0 exactly
+  expect(b.state).toBe('scaled'); expect(b.cores).toBeCloseTo(50); expect(b.rest).toBeGreaterThanOrEqual(0)
+  const c = splitOf({ pkg_w: 52.7, core_w: Array(8).fill(72.6 / 8) })!   // the audit's 138 %
+  expect(c.state).toBe('unavailable'); expect(c.cores).toBeNull(); expect(c.rest).toBeNull(); expect(c.pkg).toBe(52.7)
+  expect(c.ratio!).toBeGreaterThan(SPLIT_MAX)
+  expect(splitOf({ pkg_w: 40, core_w: [] })!.state).toBe('unavailable')
+  expect(splitOf(null)).toBeNull()
+})
+
+test('every producer keeps cores <= package and rest >= 0 over 200 samples: live stream, powerAt, interp', () => {
+  let seed = 3; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  // a synthetic stream in which the cores often add up to more than the package
+  const stream: PowerSample[] = Array.from({ length: 200 }, (_, i) => { const pkg = 10 + rnd() * 50; return { t: i * 0.1, stage: 's', pkg_w: pkg, core_w: Array.from({ length: 8 }, () => (pkg / 8) * (0.5 + rnd() * 0.9)), mhz: null, util: [] } })
+  expect(stream.some((s) => sumC(s) > s.pkg_w)).toBe(true)
+  for (let i = 0; i < 200; i++) {
+    for (const s of [powerAt(stream, i * 0.1 + 0.05)!, powerAt(stream, i * 0.1)!]) {
+      expect(sumC(s)).toBeLessThanOrEqual(s.pkg_w + 1e-9)
+      const sp = splitOf(s)!; if (sp.rest != null) expect(sp.rest).toBeGreaterThanOrEqual(0)
+    }
+    const tele = stream.slice(Math.max(0, i - 3), i + 1).map((s) => ({ cpu: [], power: { pkg_w: s.pkg_w, core_w: s.core_w } }))
+    const live = telemetryPower(tele)!
+    expect(sumC(live)).toBeLessThanOrEqual(live.pkg_w + 1e-9)
+  }
+  // single-sample interpolation path (window has < 2 samples)
+  const sparse = [stream[0], { ...stream[1], t: 5 }]
+  const mid = powerAt(sparse, 2.5)!
+  expect(sumC(mid)).toBeLessThanOrEqual(mid.pkg_w + 1e-9)
+})
+
+test('the recorded pack replays with cores <= package at every playhead', () => {
+  const pack = JSON.parse(readFileSync(new URL('../public/examples/machine.json', import.meta.url), 'utf8'))
+  const s: PowerSample[] = pack.power.samples
+  const T = s[s.length - 1].t
+  for (let i = 0; i <= 200; i++) { const p = powerAt(s, (i / 200) * T)!; expect(sumC(p)).toBeLessThanOrEqual(p.pkg_w + 1e-9); const sp = splitOf(p)!; if (sp.rest != null) expect(sp.rest).toBeGreaterThanOrEqual(0) }
+})

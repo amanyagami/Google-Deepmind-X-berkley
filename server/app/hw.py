@@ -198,7 +198,7 @@ class PowerRecorder:
             if s.get("pkg_w") is not None:
                 util = psutil.cpu_percent(percpu=True)
                 row = {"t": round(time.perf_counter() - self.t0, 3), "stage": self.stage, "pkg_w": s["pkg_w"], "core_w": s["core_w"],
-                       "mhz": s["eff_mhz"], "throttle": s.get("throttle") or 0, "util": [round((util[2 * k] + util[2 * k + 1]) / 2 if len(util) >= 2 * self.n else util[k % len(util)], 1) for k in range(self.n)]}
+                       "mhz": s["eff_mhz"], "throttle": s.get("throttle") or 0, **({"split": s["split"], "cr": s.get("core_ratio")} if s.get("split") else {}), "util": [round((util[2 * k] + util[2 * k + 1]) / 2 if len(util) >= 2 * self.n else util[k % len(util)], 1) for k in range(self.n)]}
                 self.samples.append(row)
                 if self.emit:
                     self.emit({"type": "power", **row})

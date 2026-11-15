@@ -368,3 +368,19 @@ test('export carries the name only when allowed, never the theme; history entrie
   mem[RESULTS_KEY] = JSON.stringify({ v: 1, results: {}, history: [{ at: 't', scale: 'native', results: {}, name: 'Ada' }] })
   expect(loadStored().history[0].name).toBe('Ada')
 })
+
+/* ---- B7: a model run fills the Model pillar of the one device score ---- */
+import { finalScore } from '../src/hw/score'
+import { modelResult } from '../src/hw/score'
+import type { RunStats } from '../src/api'
+
+test('a finished model run becomes model:<repo> and fills the Model pillar', () => {
+  const st: RunStats = { where: 'webgpu', repo: 'HuggingFaceTB/SmolLM2-135M-Instruct', task: 'text-generation', loadMs: 900, firstMs: 400, totalMs: 3000, items: 40, unit: 'tokens', perSec: 40, memBytes: null, joules: null, estimatedEnergy: true }
+  const r = modelResult(st, { params: null, fit: null })!
+  expect(r.component).toBe('model:HuggingFaceTB/SmolLM2-135M-Instruct')
+  expect(r.scale).toBe('browser')
+  expect(r.score).toBeGreaterThan(0)
+  const f = finalScore({ [r.component]: r })
+  expect(f.pillars.find((p) => p.id === 'model')!.status).toBe('measured')
+  expect(modelResult({ ...st, where: 'none' })).toBeNull()
+})

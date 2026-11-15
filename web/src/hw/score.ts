@@ -348,6 +348,19 @@ function fromRun(st: RunStats, ctx: FromBenchCtx): TestResult {
   }
 }
 
+/* ------------------------------------------------------------------ B7: a model run in the device score */
+/** The TestResult of one model run, keyed by repo. null when the run cannot be scored (no runtime, no speed). */
+export function modelResult(stats: RunStats, o: { params?: number | null; fit?: Fit | null; ok?: boolean } = {}): TestResult | null {
+  if (!stats || stats.where === 'none' || !stats.repo) return null
+  // A run that finished passed the runner's degenerate-output check: that is the accuracy gate we have.
+  const r = fromBench('run', stats, { params: o.params ?? null, fit: o.fit ?? null, goldenOk: o.ok ?? true })
+  if (!r) return null
+  const tps = r.value > 0 && isFinite(r.value) ? r.value : null
+  // without a parameter count the work-normalised score is unknown: text generation falls back to the 135M reference speed
+  const score = r.score ?? (stats.task === 'text-generation' && tps ? (1000 * tps) / MODEL_REF[stats.where] : null)
+  return { ...r, component: `model:${stats.repo}`, score: score != null && isFinite(score) ? score : null }
+}
+
 /* ------------------------------------------------------------------ export */
 /** The final score of the current results, with each pillar's delta against the previous history entry. */
 export function finalNow(results: Record<string, TestResult>, history: Snapshot[]): FinalScore {

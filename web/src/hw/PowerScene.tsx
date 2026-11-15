@@ -5,13 +5,13 @@
 // that core's watts, and the regulator phases fire in turn at a rate that follows the load.
 // When a prompt's journey exists, its timeline (activityAt) drives the same scene: cores, RAM and the data rails
 // (blue) light as the prompt goes keyboard -> CPU <-> RAM -> screen, while the copper rails (amber) carry the power.
-import { useContext, useEffect, useMemo, useRef } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { aspectFit, FpsCap, useTheme, WheelScrollsPage } from '../aspect'
 import { CameraControls, Environment, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
-import { peaksOf, powerNow, useHW, useHWThrottled, type PowerMode, type PowerSample } from './hwStore'
+import { peaksOf, powerNow, splitOf, useHW, useHWThrottled, type PowerMode, type PowerSample } from './hwStore'
 import { activityAt, locate } from './timeline'
 import { Backdrop, Chip, FirstFrame, fitBox, KitProvider, LiteCtx, markTween, reduceMotion, setText, SlowWatch, useStage, useStageKeys, Word } from '../zoo/ZooScene'
 
@@ -159,9 +159,19 @@ function Tag({ pos, name, sub, show = true, live, group, cid, prio = 1 }: { pos:
     for (const id of CID[cid ?? group ?? ''] ?? []) { const v = r?.[id]?.score; if (typeof v === 'number') return `score ${Math.round(v)}` }
     return undefined
   })
-  const vis = show && !(path.length > 0 && group && path[0] !== group)
+  const narrow = useNarrow()
+  const vis = show && !(path.length > 0 && group && path[0] !== group) && (!narrow || path.length > 0 || NARROW_TAGS.has(name))
   return <Chip pos={pos} name={name} sub={sub} live={live ? <LiveBare k={live} /> : undefined} score={score} hidden={!vis} selected={!!group && path[0] === group} hovered={hov} prio={prio}
     onClick={group ? () => open(group) : undefined} onHover={group ? (h) => useHW.getState().setHover(h ? group : null) : undefined} />
+}
+
+const NARROW_TAGS = new Set(['CPU', 'RAM', 'Storage'])
+const NARROW_Q = '(max-width: 600px)'
+/** True on phone widths, where the scene keeps only three labels. */
+function useNarrow() {
+  const [n, setN] = useState(() => typeof matchMedia !== 'undefined' && matchMedia(NARROW_Q).matches)
+  useEffect(() => { if (typeof matchMedia === 'undefined') return; const q = matchMedia(NARROW_Q), f = () => setN(q.matches); q.addEventListener('change', f); return () => q.removeEventListener('change', f) }, [])
+  return n
 }
 
 /** Double-click a part to look inside it; the pointer shows which parts can be opened. */
@@ -312,9 +322,9 @@ function CpuChip() {
     const doText = time - lastTxt.current > 0.25 // label text at 4 Hz
     if (doText) { lastTxt.current = time; let mx = 0.5; hot.current = -1; for (let i = 0; i < cw.length; i++) if ((cw[i] ?? 0) > mx) { mx = cw[i]; hot.current = i } }
     const pulse = reduceMotion ? 1 : 1 + 0.18 * Math.sin(time * 5)
-    const coreSum = cw.reduce((a, b) => a + (b ?? 0), 0)
+    const split = splitOf(s)   // cores <= package (D19); rest of chip unknown when the sensors disagree
     ring.current.color.copy(AMBER).multiplyScalar(0.3 + 2.4 * Math.min(1, (s?.pkg_w ?? 0) / 65))
-    soc.current.emissiveIntensity = 0.05 + 1.2 * Math.min(1, Math.max(0, ((s?.pkg_w ?? 0) - coreSum) / 25))
+    soc.current.emissiveIntensity = 0.05 + 1.2 * Math.min(1, (split?.rest ?? 0) / 25)
     for (const c of cores) {
       const w = cw[c.k] ?? 0
       const h = 0.1 + Math.min(1.4, w * 0.15)
@@ -598,7 +608,8 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   // inside the idle baseline the other stages are compared with.
   const recording = useHW((s) => s.benchRunning)
   // paused for the one-second idle baseline only, so the cost of drawing can be measured against it
-  const baseline = useHW((s) => s.benchRunning && s.benchStage === 'idle' && s.source === 'companion')
+  // and during the memory test of Test all, where drawing would compete for the memory bandwidth being measured
+  const baseline = useHW((s) => s.benchRunning && ((s.benchStage === 'idle' && s.source === 'companion') || (!!s.running && s.benchStage === 'dram')))
   const st = useStage(active)
   const light = useTheme() === 'light'
   PT.light = light
@@ -623,9 +634,8 @@ export function PowerScene({ active = true }: { active?: boolean }) {
               <Lightformer form="rect" intensity={1.5} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />
             </Environment>
             <Pcb />
-            <Chip pos={[-8.6, 0.2, 6.2]} name="▲ power  ○ data" sub="amber rails carry power, blue rails carry data" prio={0.3} />
             <DcIn /><Vrm /><CpuChip /><Ram /><Keyboard /><Screen />
-            <Small pos={SSDP} id="ssd" name="SSD" sub="power not metered" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
+            <Small pos={SSDP} id="ssd" name="Storage" sub="power not metered" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
             <Small pos={NICP} id="nic" name="Network" sub="power not metered" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
             <LanesHost />
             <Rails />
