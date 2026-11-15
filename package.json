@@ -1,0 +1,14 @@
+{
+  "name": "kundali",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Kundali: see a real model as a 3D machine and test your own computer. Builds web/ and serves it with the leaderboard server.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "install:all": "npm --prefix web ci && npm --prefix server-web ci",
+    "build": "npm --prefix web run build",
+    "start": "node server-web/server.mjs",
+    "dev": "npm --prefix web run dev",
+    "test": "npm --prefix web test && npm --prefix server-web test"
+  }
+}
