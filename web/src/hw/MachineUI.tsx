@@ -506,6 +506,8 @@ const T5_CSS = `
 .main.machine{position:relative;grid-template-columns:minmax(0,1fr)!important}
 .main.machine>.inspector{position:absolute;right:0;top:0;bottom:0;width:min(380px,100%);z-index:30;box-shadow:-12px 0 32px #0006}
 }
+.main.machine .stagebottom{left:56px}
+@media (max-width:900px){.main.machine .stage.powerview .stagebottom{margin-left:56px}}
 .t5-err{display:grid;gap:6px;justify-items:start}
 .t5-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .t5-head h4{margin:0;flex:1;font-size:14px;display:flex;align-items:center;gap:4px}
@@ -1020,7 +1022,7 @@ export function MachineView() {
       <section className="stage powerview" aria-label="3D machine: live electricity, and a prompt's journey through it">
         <div className="scenewrap"><PowerScene active={shown} /></div>
         <div className="mcol">{path.length > 0 && <Crumbs />}<PowerHUD /><IoStrip /></div>
-        <Explainer id="machine" placement="bottom-right">
+        <Explainer id="machine" placement="bottom-left">
           <span>Amber is work. Blue is data.</span>
           <span>Bright lines show where the numbers move.</span>
           <span>Press Test all to score this device.</span>
