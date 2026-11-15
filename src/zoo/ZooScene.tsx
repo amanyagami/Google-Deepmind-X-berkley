@@ -423,11 +423,11 @@ function StageHtml({ pos, zIndexRange = [5, 0], children }: { pos: [number, numb
 
   const sync = useCallback(() => {
     const g = groupRef.current, st = stateRef.current
-    if (!g || !st) return
+    if (!g || !st || size.width <= 0 || size.height <= 0) return
     g.updateWorldMatrix(true, false)
     _pWorld.setFromMatrixPosition(g.matrixWorld)
     _pCam.setFromMatrixPosition(camera.matrixWorld)
-    _pFwd.set(0, 0, -1).applyQuaternion(camera.quaternion)
+    camera.getWorldDirection(_pFwd)
     const behind = _pDelta.subVectors(_pWorld, _pCam).dot(_pFwd) <= 0
     const show = !behind
     if (show !== st.show) {
@@ -439,8 +439,9 @@ function StageHtml({ pos, zIndexRange = [5, 0], children }: { pos: [number, numb
     _pWorld.project(camera)
     const x = (_pWorld.x * 0.5 + 0.5) * size.width
     const y = (_pWorld.y * -0.5 + 0.5) * size.height
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
     const z = Math.max(zLo, Math.min(zHi, Math.round(zHi - Math.min(1, Math.max(0, (dist - 1) / 40)) * (zHi - zLo))))
-    if (Math.abs(x - st.x) > 0.01 || Math.abs(y - st.y) > 0.01) {
+    if (!Number.isFinite(st.x) || !Number.isFinite(st.y) || Math.abs(x - st.x) > 0.01 || Math.abs(y - st.y) > 0.01) {
       st.x = x
       st.y = y
       st.el.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,0)`
@@ -458,7 +459,7 @@ function StageHtml({ pos, zIndexRange = [5, 0], children }: { pos: [number, numb
   useLayoutEffect(() => {
     if (!target) return
     const el = document.createElement('div')
-    el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;display:none;'
+    el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;transform-origin:0 0;display:none;'
     target.appendChild(el)
     const root = createRoot(el)
     stateRef.current = { el, root, x: NaN, y: NaN, z: -1, show: false }
