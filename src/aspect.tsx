@@ -61,12 +61,12 @@ export function useTheme(): ThemeName {
 /** The Kundali mark on a 2D canvas (share card): chamfered square, diagonals, inner diamond, vertex dots & central bindu star. */
 export function drawKundali(g: CanvasRenderingContext2D, x: number, y: number, size: number) {
   const gr = g.createLinearGradient(x, y, x + size, y + size)
-  gr.addColorStop(0, '#9a82ff'); gr.addColorStop(0.52, '#3ddcf5'); gr.addColorStop(1, '#ff8fc4')
+  gr.addColorStop(0, '#f6dfae'); gr.addColorStop(0.55, '#ffb454'); gr.addColorStop(1, '#ff7d5a')
   const h = size / 2
   const r = size * 0.14
   g.save()
   const aura = g.createRadialGradient(x + h, y + h, 0, x + h, y + h, size * 0.65)
-  aura.addColorStop(0, 'rgba(61, 220, 245, 0.24)'); aura.addColorStop(0.6, 'rgba(154, 130, 255, 0.10)'); aura.addColorStop(1, 'rgba(255, 143, 196, 0)')
+  aura.addColorStop(0, 'rgba(255, 192, 113, 0.20)'); aura.addColorStop(0.6, 'rgba(255, 180, 84, 0.07)'); aura.addColorStop(1, 'rgba(255, 125, 90, 0)')
   g.fillStyle = aura
   g.beginPath(); g.roundRect(x, y, size, size, r); g.fill()
 
@@ -82,13 +82,13 @@ export function drawKundali(g: CanvasRenderingContext2D, x: number, y: number, s
   g.stroke()
 
   const dotR = Math.max(1.6, size / 18)
-  for (const [dx, dy, col] of [[h, 0, '#9a82ff'], [size, h, '#3ddcf5'], [h, size, '#ff8fc4'], [0, h, '#3ddcf5']] as const) {
+  for (const [dx, dy, col] of [[h, 0, '#f6dfae'], [size, h, '#ffb454'], [h, size, '#ff7d5a'], [0, h, '#ffb454']] as const) {
     g.fillStyle = col; g.beginPath(); g.arc(x + dx, y + dy, dotR, 0, Math.PI * 2); g.fill()
   }
 
   const s = size * 0.15, si = s * 0.32
   const sg = g.createLinearGradient(x + h - s, y + h - s, x + h + s, y + h + s)
-  sg.addColorStop(0, '#fff4e0'); sg.addColorStop(0.5, '#ffa94d'); sg.addColorStop(1, '#ff7ab6')
+  sg.addColorStop(0, '#fff6e2'); sg.addColorStop(0.5, '#ffc071'); sg.addColorStop(1, '#ff7d5a')
   g.fillStyle = sg
   g.beginPath()
   g.moveTo(x + h, y + h - s); g.lineTo(x + h + si, y + h - si); g.lineTo(x + h + s, y + h); g.lineTo(x + h + si, y + h + si)

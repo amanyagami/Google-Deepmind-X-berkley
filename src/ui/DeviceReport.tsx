@@ -3,9 +3,10 @@
 // (what the browser tells a page; some of it is rounded or capped by the browser, and the row says so).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useHW, type TestResult } from '../hw/hwStore'
-import { finalScore, tierOf } from '../hw/score'
+import { finalScore } from '../hw/score'
 import { probe, type Capabilities } from '../hw/browserBench'
 import { useStore } from '../store'
+import { chartPaths, houseAt, STAR8 } from './Sky'
 
 type Src = 'measured' | 'live' | 'reported'
 interface Row { k: string; v: string; src: Src; note?: string }
@@ -155,6 +156,45 @@ function buildGroups(caps: Capabilities | null, res: Record<string, TestResult>,
   return g.filter((x) => x.rows.length)
 }
 
+/** A number that counts up once (at once when motion is reduced). */
+function Count({ to }: { to: number }) {
+  const [n, setN] = useState(() => (matchMedia('(prefers-reduced-motion: reduce)').matches ? to : 0))
+  useEffect(() => {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { setN(to); return }
+    let raf = 0, t0 = 0
+    const tick = (t: number) => { if (!t0) t0 = t; const k = Math.min(1, (t - t0) / 1100); setN(Math.round(to * (1 - Math.pow(1 - k, 4)))); if (k < 1) raf = requestAnimationFrame(tick) }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [to])
+  return <>{n.toLocaleString('en-US')}</>
+}
+
+interface House { k: string; v: string; hue?: string }
+/** The device as a chart: the square, its diagonals and the inner diamond make twelve houses. The four diamonds hold the
+ *  four hardware scores; the eight corners hold what the browser reports; the score sits in the middle. */
+function Chart({ score, houses, label }: { score: number | null; houses: House[]; label: string }) {
+  const H = 200, [sq, dg, dm] = chartPaths(H)
+  return (
+    <svg className="dr-chart" viewBox="-224 -224 448 448" role="img" aria-label={label}>
+      <defs><linearGradient id="dr-g" x1={-H} y1={-H} x2={H} y2={H} gradientUnits="userSpaceOnUse"><stop offset="0" className="k-g1" stopColor="#f6dfae" /><stop offset=".55" className="k-g2" stopColor="#ffb454" /><stop offset="1" className="k-g3" stopColor="#ff7d5a" /></linearGradient></defs>
+      <rect className="c-frame" x="-216" y="-216" width="432" height="432" />
+      <path className="c-ln" pathLength={1} d={sq} /><path className="c-ln thin d2" pathLength={1} d={dg} /><path className="c-ln d3" pathLength={1} d={dm} />
+      {[[-H, -H], [H, -H], [H, H], [-H, H], [0, -H], [H, 0], [0, H], [-H, 0]].map(([x, y], i) => <circle key={i} className="c-dot" cx={x} cy={y} r={i < 4 ? 2.4 : 3.4} />)}
+      {houses.map((h, i) => {
+        const big = i % 3 === 0, [hx, y] = houseAt(i, H), x = Math.abs(hx) > H * 0.8 ? hx * 0.94 : hx   // the four side corners sit a little inward
+        return (
+          <g key={i} className="c-h" style={{ animationDelay: `${600 + i * 60}ms` }}>
+            <text className="c-k" x={x} y={y - (big ? 21 : 6)} style={h.hue ? { fill: h.hue } : undefined}>{h.k}</text>
+            <text className={big ? 'c-v big' : 'c-v'} x={x} y={y + (big ? 15 : 12)}>{h.v}</text>
+          </g>
+        )
+      })}
+      <circle className="c-core" r="47" />
+      {score != null ? <text className="c-score" y="11">{score.toLocaleString('en-US')}</text> : <path className="c-star" d={STAR8(22)} />}
+    </svg>
+  )
+}
+
 const SRC_WORD: Record<Src, string> = { measured: 'measured', live: 'live', reported: 'reported' }
 
 export default function DeviceReport({ onClose }: { onClose: () => void }) {
@@ -183,7 +223,25 @@ export default function DeviceReport({ onClose }: { onClose: () => void }) {
     const text = [`${name ? `${name}'s device` : 'Device'} · Kundali`, fin ? `Score ${Math.round(fin.score)} (${fin.tier})` : '', ...groups.flatMap((x) => ['', x.title, ...x.rows.map((r) => `  ${r.k}: ${r.v} (${SRC_WORD[r.src]})`)])].join('\n')
     navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1600) }).catch(() => { /* clipboard blocked */ })
   }
-  const R = 52, C = 2 * Math.PI * R, frac = fin ? Math.min(1, fin.score / 2000) : 0
+  const houses = useMemo<House[]>(() => {
+    const pil = (id: string) => { const row = fin?.pillars.find((x) => x.id === id); return !fin ? '—' : row && row.score != null && (row.status === 'measured' || row.status === 'imputed') ? Math.round(row.score).toLocaleString('en-US') : row?.status === 'unavailable' ? 'n/a' : '—' }
+    const dpr = window.devicePixelRatio || 1, conn = (navigator as any).connection
+    const threads = caps?.cores ?? navigator.hardwareConcurrency
+    return [
+      { k: 'CPU', v: pil('compute'), hue: 'var(--p-compute)' },
+      { k: 'System', v: soft.os },
+      { k: 'Threads', v: threads ? String(threads) : '—' },
+      { k: 'Memory', v: pil('memory'), hue: 'var(--p-memory)' },
+      { k: 'Refresh', v: hz ? `${hz} Hz` : '—' },
+      { k: 'Screen', v: `${Math.round(screen.width * dpr)} × ${Math.round(screen.height * dpr)}` },
+      { k: 'Storage', v: pil('storage'), hue: 'var(--p-storage)' },
+      fin ? { k: 'Model', v: pil('model'), hue: 'var(--p-model)' } : { k: 'Engine', v: caps ? (caps.gpu.available && !caps.gpu.software ? 'WebGPU' : 'WebAssembly') : '—' },
+      { k: 'Link', v: conn?.effectiveType ? String(conn.effectiveType).toUpperCase() : navigator.onLine ? 'Online' : 'Offline' },
+      { k: 'GPU', v: pil('gpu'), hue: 'var(--p-gpu)' },
+      { k: 'Density', v: `${+dpr.toFixed(2)}×` },
+      { k: 'Browser', v: soft.browser },
+    ]
+  }, [fin, caps, soft, hz])
   return (
     <div className="dr-wall" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <section className="dr" role="dialog" aria-modal="true" aria-labelledby="dr-t" data-device-report tabIndex={-1} ref={box}>
@@ -200,29 +258,29 @@ export default function DeviceReport({ onClose }: { onClose: () => void }) {
         </header>
         <div className="dr-scroll">
           <div className="dr-hero">
-            <div className="dr-ring" role="img" aria-label={fin ? `Score ${Math.round(fin.score)}, ${fin.tier}` : 'Not tested yet'}>
-              <svg viewBox="0 0 128 128" width="128" height="128">
-                <defs><linearGradient id="dr-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#9a82ff" /><stop offset=".55" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" /></linearGradient></defs>
-                <circle cx="64" cy="64" r={R} fill="none" stroke="var(--line)" strokeWidth="8" opacity=".55" />
-                {fin && <circle className="dr-arc" cx="64" cy="64" r={R} fill="none" stroke="url(#dr-g)" strokeWidth="8" strokeLinecap="round" strokeDasharray={`${C * frac} ${C}`} transform="rotate(-90 64 64)" />}
-              </svg>
-              <div className="dr-ringtxt">{fin ? <><b>{Math.round(fin.score).toLocaleString('en-US')}</b><span>{fin.tier}</span></> : <><b className="dim">—</b><span>not tested</span></>}</div>
-            </div>
-            <div className="dr-pillars">
+            <Chart score={fin ? Math.round(fin.score) : null} houses={houses} label={fin ? `Your device chart. Score ${Math.round(fin.score)}, ${fin.tier}.` : 'Your device chart. Not tested yet.'} />
+            <div className="dr-read">
               {fin
-                ? PILLARS.map((p) => { const row = fin.pillars.find((x) => x.id === p.id), s = row?.status === 'measured' || row?.status === 'imputed' ? row.score : null
-                  return (
-                    <div className="dr-pill" key={p.id}>
-                      <span className="dr-pl">{p.label}</span>
-                      <span className="dr-bar"><i style={{ width: `${s ? Math.max(3, Math.min(100, (s / 2000) * 100)) : 0}%`, background: p.hue }} /></span>
-                      <b className="mono">{s ? Math.round(s).toLocaleString('en-US') : row?.status === 'unavailable' ? 'n/a' : '—'}</b>
-                    </div>
-                  ) })
+                ? <>
+                  <p className="dr-k">Device score</p>
+                  <p className="dr-score"><b><Count to={Math.round(fin.score)} /></b><em>{fin.tier}</em></p>
+                  <div className="dr-pillars">
+                    {PILLARS.map((p) => { const row = fin.pillars.find((x) => x.id === p.id), sc = row?.status === 'measured' || row?.status === 'imputed' ? row.score : null
+                      return (
+                        <div className="dr-pill" key={p.id}>
+                          <span className="dr-pl">{p.label}</span>
+                          <span className="dr-bar"><i style={{ width: `${sc ? Math.max(3, Math.min(100, (sc / 2000) * 100)) : 0}%`, background: p.hue }} /></span>
+                          <b className="mono">{sc ? Math.round(sc).toLocaleString('en-US') : row?.status === 'unavailable' ? 'n/a' : '—'}</b>
+                        </div>
+                      ) })}
+                  </div>
+                  <p className="dr-foot">1,000 is the reference PC. {measured} measured values below.</p>
+                </>
                 : <>
-                  <p className="dr-lead">The facts below are read from your device right now. Test your system to add measured speeds and a score.</p>
+                  <p className="dr-k">Not tested yet</p>
+                  <p className="dr-lead">This chart is half read. Test your system to fill the four scores.</p>
                   <button type="button" className="t5-btn pri" data-report-test onClick={() => { onClose(); window.dispatchEvent(new CustomEvent('ns-test-all')) }}>Test your system</button>
                 </>}
-              {fin && <p className="dr-foot">1,000 is the reference PC. {tierOf(fin.score)} · {measured} measured values below.</p>}
             </div>
           </div>
           <div className="dr-grid">
@@ -250,55 +308,71 @@ export default function DeviceReport({ onClose }: { onClose: () => void }) {
 
 const CSS = `
 .dr-wall{position:fixed;inset:0;z-index:96;display:grid;place-items:center;padding:16px;background:color-mix(in srgb,var(--bg) 74%,transparent);backdrop-filter:blur(12px) saturate(120%);-webkit-backdrop-filter:blur(12px) saturate(120%);animation:ns-fade .2s var(--ease,ease) both}
-.dr{width:min(960px,100%);max-height:min(90dvh,920px);display:flex;flex-direction:column;overflow:hidden;color:var(--fg);background:var(--glass-heavy,var(--panel));backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);border:1px solid var(--rim,var(--line));border-radius:22px;box-shadow:var(--sh-2),0 0 90px -24px var(--glow,transparent);animation:ns-up .36s var(--ease,ease) both;outline:none}
+.dr{width:min(1000px,100%);max-height:min(92dvh,960px);display:flex;flex-direction:column;overflow:hidden;color:var(--fg);background:linear-gradient(var(--glass-heavy,var(--panel)),var(--glass-heavy,var(--panel))) padding-box,linear-gradient(150deg,color-mix(in srgb,var(--gold) 70%,var(--line)),var(--line) 30%,var(--line) 70%,color-mix(in srgb,var(--gold) 40%,var(--line))) border-box;backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);border:1px solid transparent;border-radius:24px;box-shadow:var(--sh-2),0 0 120px -30px var(--glow,transparent);animation:dr-in .5s var(--ease-out,ease) both;outline:none}
+@keyframes dr-in{from{opacity:0;transform:translateY(18px) scale(.985)}}
 .dr-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:20px 22px 14px;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
 .dr-id{min-width:0}
-.dr-eyebrow{margin:0 0 2px;font:650 11.5px var(--body);letter-spacing:.09em;text-transform:uppercase;background:var(--brand-fill);-webkit-background-clip:text;background-clip:text;color:transparent;width:max-content}
-.dr-head h3{margin:0;font:720 22px/1.2 var(--display);letter-spacing:-.02em;overflow-wrap:anywhere}
+.dr-eyebrow{margin:0 0 6px;font:500 11px var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--gold)}
+.dr-head h3{margin:0;font:400 32px/1.08 var(--serif);letter-spacing:-.005em;overflow-wrap:anywhere}
 .dr-sub{margin:4px 0 0;color:var(--muted);font-size:13px}
 .dr-act{display:flex;gap:8px;flex:none}
 .dr-scroll{overflow:auto;padding:18px 22px 22px;display:grid;gap:18px;overscroll-behavior:contain}
-.dr-hero{display:grid;grid-template-columns:auto minmax(0,1fr);gap:22px;align-items:center;padding:18px;border-radius:18px;border:1px solid color-mix(in srgb,var(--brand-1) 26%,var(--line));background:radial-gradient(420px circle at 0% 0%,color-mix(in srgb,var(--brand-1) 20%,transparent),transparent 70%),radial-gradient(380px circle at 100% 100%,color-mix(in srgb,var(--brand-3) 12%,transparent),transparent 70%),color-mix(in srgb,var(--surface) 70%,transparent)}
-.dr-ring{position:relative;width:128px;height:128px;flex:none}
-.dr-arc{filter:drop-shadow(0 0 8px color-mix(in srgb,var(--brand-2) 60%,transparent));animation:dr-draw .9s var(--ease,ease) both}
-@keyframes dr-draw{from{stroke-dasharray:0 400}}
-.dr-ringtxt{position:absolute;inset:0;display:grid;place-content:center;text-align:center;gap:0}
-.dr-ringtxt b{font:760 30px/1 var(--display);letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.dr-ringtxt b.dim{color:var(--faint)}
-.dr-ringtxt span{font:600 12px var(--body);color:var(--muted);margin-top:4px}
-.dr-pillars{display:grid;gap:7px;min-width:0}
+.dr-hero{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:clamp(18px,4vw,44px);align-items:center;padding:clamp(14px,2.4vw,26px);border-radius:20px;border:1px solid color-mix(in srgb,var(--gold) 26%,var(--line));background:radial-gradient(520px circle at 22% 46%,color-mix(in srgb,var(--gold-2) 10%,transparent),transparent 70%),color-mix(in srgb,var(--surface) 60%,transparent)}
+.dr-chart{width:100%;height:auto;display:block;overflow:visible}
+.dr-chart text{text-anchor:middle}
+.c-frame{fill:none;stroke:var(--gold);stroke-width:1;opacity:.28;vector-effect:non-scaling-stroke}
+.c-ln{fill:none;stroke:url(#dr-g);stroke-width:1.5;stroke-linejoin:round;vector-effect:non-scaling-stroke;stroke-dasharray:1;animation:c-draw 1.5s var(--ease-out,ease) both}
+.c-ln.thin{stroke-width:1;opacity:.7}.c-ln.d2{animation-delay:.25s}.c-ln.d3{animation-delay:.45s}
+@keyframes c-draw{from{stroke-dashoffset:1}}
+.c-dot{fill:var(--gold-2)}
+.c-h{animation:c-pop .7s var(--ease-out,ease) both}
+@keyframes c-pop{from{opacity:0}}
+.c-k{font:500 10.5px var(--mono);letter-spacing:.16em;text-transform:uppercase;fill:var(--muted)}
+.c-v{font:550 14.5px var(--body);fill:var(--fg);font-variant-numeric:tabular-nums}
+.c-v.big{font:400 36px var(--serif);letter-spacing:-.01em}
+.c-core{fill:var(--panel);stroke:url(#dr-g);stroke-width:1.5;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 16px color-mix(in srgb,var(--gold-2) 55%,transparent))}
+.c-score{font:400 31px var(--serif);fill:var(--fg);font-variant-numeric:tabular-nums}
+.c-star{fill:var(--gold-2);opacity:.9;animation:c-breathe 2.4s ease-in-out infinite alternate}
+@keyframes c-breathe{from{opacity:.35}}
+.dr-read{display:grid;gap:10px;min-width:0;align-content:center}
+.dr-k{margin:0;font:500 11px var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--gold)}
+.dr-score{margin:0;display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 16px}
+.dr-score b{font:400 clamp(72px,9vw,112px)/.9 var(--serif);letter-spacing:-.02em;background:var(--brand);-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
+.dr-score em{font:italic 400 clamp(26px,3vw,36px)/1 var(--serif);color:var(--fg)}
+.dr-lead{margin:0;font:400 clamp(24px,2.6vw,32px)/1.18 var(--serif);color:var(--fg);max-width:20ch}
+.dr-read .t5-btn.pri{justify-self:start;margin-top:8px;min-height:46px;padding:0 22px;border-radius:999px}
+.dr-pillars{display:grid;gap:8px;min-width:0;margin-top:6px}
 .dr-pill{display:grid;grid-template-columns:64px minmax(0,1fr) 52px;align-items:center;gap:10px;font-size:13px}
 .dr-pl{color:var(--muted)}
 .dr-pill b{text-align:right;font-size:13px}
-.dr-bar{height:8px;border-radius:99px;background:color-mix(in srgb,var(--line) 70%,transparent);overflow:hidden}
+.dr-bar{height:4px;border-radius:99px;background:color-mix(in srgb,var(--fg) 10%,transparent);overflow:hidden}
 .dr-bar i{display:block;height:100%;border-radius:99px;transform-origin:left;animation:dr-grow .7s var(--ease,ease) both}
 @keyframes dr-grow{from{transform:scaleX(0)}}
-.dr-lead{margin:0 0 4px;font-size:14px;line-height:1.5;color:var(--fg);max-width:46ch}
-.dr-pillars .t5-btn.pri{justify-self:start}
 .dr-foot{margin:4px 0 0;font-size:12px;color:var(--muted)}
 .dr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
-.dr-card{--hue:var(--brand-1);position:relative;padding:14px 14px 8px;border-radius:16px;border:1px solid var(--line);background:linear-gradient(180deg,color-mix(in srgb,var(--hue) 7%,var(--panel)),var(--panel) 46%);box-shadow:inset 0 1px 0 var(--rim);animation:ns-up .4s var(--ease,ease) both;transition:border-color var(--d1,120ms) ease,transform var(--d2,220ms) var(--ease,ease)}
-.dr-card:hover{border-color:color-mix(in srgb,var(--hue) 50%,var(--line))}
-.dr-card h4{display:flex;align-items:center;gap:9px;margin:0 0 8px;font:650 14px var(--display)}
-.dr-ico{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;color:var(--hue);background:color-mix(in srgb,var(--hue) 15%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--hue) 32%,transparent)}
+.dr-card{--hue:var(--brand-1);position:relative;padding:16px 16px 8px;border-radius:16px;border:1px solid color-mix(in srgb,var(--fg) 9%,transparent);background:color-mix(in srgb,var(--fg) 2.5%,transparent);animation:ns-up .4s var(--ease,ease) both;transition:border-color var(--d2,220ms) ease,background-color var(--d2,220ms) ease}
+.dr-card:hover{border-color:color-mix(in srgb,var(--hue) 46%,transparent);background:color-mix(in srgb,var(--hue) 4%,transparent)}
+.dr-card h4{display:flex;align-items:center;gap:10px;margin:0 0 10px;font:400 22px/1 var(--serif);letter-spacing:0}
+.dr-ico{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;color:var(--hue);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--hue) 45%,transparent)}
 .dr-card dl{margin:0;display:grid}
 .dr-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid color-mix(in srgb,var(--line) 50%,transparent)}
 .dr-row dt{color:var(--muted);font-size:13px;min-width:0;flex:0 1 46%}
 .dr-row dt small{display:block;font-size:11.5px;line-height:1.35;color:var(--faint);margin-top:2px}
 .dr-row dd{margin:0;display:flex;flex-direction:column;align-items:flex-end;gap:3px;text-align:right;min-width:0;flex:1 1 54%;font:600 13px var(--body);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.dr-src{font:600 10px var(--body);font-style:normal;letter-spacing:.05em;text-transform:uppercase;padding:1px 6px;border-radius:99px;color:var(--faint);border:1px solid color-mix(in srgb,var(--line) 80%,transparent)}
+.dr-src{font:500 9.5px var(--mono);font-style:normal;letter-spacing:.14em;text-transform:uppercase;padding:2px 7px;border-radius:99px;color:var(--faint);border:1px solid color-mix(in srgb,var(--fg) 14%,transparent)}
 .dr-src.measured{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 9%,transparent)}
 .dr-src.live{color:var(--neg-ink);border-color:color-mix(in srgb,var(--neg) 45%,transparent);background:color-mix(in srgb,var(--neg) 9%,transparent)}
 .dr-note{margin:0;font-size:12.5px;line-height:1.55;color:var(--muted)}
 .dr-note b{color:var(--fg);font-weight:600}
 @media (max-width:640px){
 .dr-wall{place-items:end stretch;padding:0}
-.dr{width:100%;max-height:92dvh;border-radius:22px 22px 0 0;border-bottom:0;padding-bottom:env(safe-area-inset-bottom,0px)}
+.dr{width:min(1000px,100%);max-height:min(92dvh,960px);display:flex;flex-direction:column;overflow:hidden;color:var(--fg);background:linear-gradient(var(--glass-heavy,var(--panel)),var(--glass-heavy,var(--panel))) padding-box,linear-gradient(150deg,color-mix(in srgb,var(--gold) 70%,var(--line)),var(--line) 30%,var(--line) 70%,color-mix(in srgb,var(--gold) 40%,var(--line))) border-box;backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px) saturate(150%);border:1px solid transparent;border-radius:24px;box-shadow:var(--sh-2),0 0 120px -30px var(--glow,transparent);animation:dr-in .5s var(--ease-out,ease) both;outline:none}
+@keyframes dr-in{from{opacity:0;transform:translateY(18px) scale(.985)}}
 .dr-head{padding:16px 16px 12px}.dr-head h3{font-size:19px}
 .dr-scroll{padding:14px 14px 18px;gap:14px}
-.dr-hero{grid-template-columns:1fr;justify-items:center;gap:14px;padding:16px}
-.dr-pillars{width:100%}
+.dr-hero{grid-template-columns:1fr;gap:16px;padding:14px}.dr-read{justify-items:center;text-align:center}.dr-score{justify-content:center}.dr-read .t5-btn.pri{justify-self:center}.dr-head h3{font-size:25px}
+.dr-pillars{width:100%;text-align:left}
 .dr-grid{grid-template-columns:1fr}
 }
-@media (prefers-reduced-motion:reduce){.dr,.dr-wall,.dr-card,.dr-arc,.dr-bar i{animation:none}}
+@media (prefers-reduced-motion:reduce){.dr,.dr-wall,.dr-card,.dr-bar i,.c-ln,.c-h,.c-star{animation:none}}
 `

@@ -1,6 +1,8 @@
-import { Component, lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
+import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
 import { BoardHost, BoardOptOut, openLeaderboard } from './board'
+import { Astrolabe, KundaliLogo, Stars } from './ui/Sky'
+export { KundaliLogo }
 // Each view loads its own code on first use, so the first page needs only what it shows.
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
@@ -58,49 +60,67 @@ function ThemeToggle() {
   )
 }
 
-/** Four small steps on the name card: what the page does, in plain words. Icons are inline SVG with the brand gradient. */
-const HOW: { t: string; d: string; icon: string }[] = [
-  { t: 'Get a model', d: 'It comes from Hugging Face and runs on your device.', icon: 'M4 5h16v10H4zM2 19h20M12 2v7M9 6l3 3 3-3' },
-  { t: 'Watch it think', d: 'Your prompt flows through the 3D blocks.', icon: 'M3 8l5-3 5 3v6l-5 3-5-3zM11 10l5-3 5 3v6l-5 3-5-3z' },
-  { t: 'See the power', d: 'Electricity moves through CPU, GPU and RAM.', icon: 'M13 2L4 14h7l-1 8 9-12h-7z' },
-  { t: 'Get your score', d: 'Test your system scores your device.', icon: 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4' },
+/** Four small steps on the opening screen: what the page does, in plain words. */
+const HOW: { t: string; d: string }[] = [
+  { t: 'Get a model', d: 'It comes from Hugging Face and runs on your device.' },
+  { t: 'Watch it think', d: 'Your prompt flows through the 3D blocks.' },
+  { t: 'See the power', d: 'Electricity moves through CPU, GPU and RAM.' },
+  { t: 'Get your score', d: 'Test your system scores your device.' },
 ]
-function HowItWorks() {
-  return (
-    <ol className="howto" aria-label="How it works">
-      <svg width="0" height="0" aria-hidden style={{ position: 'absolute' }}><defs><linearGradient id="ns-howg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#9a82ff" /><stop offset=".55" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" /></linearGradient></defs></svg>
-      {HOW.map((h, i) => (
-        <li key={h.t} style={{ animationDelay: `${120 + i * 90}ms` }}>
-          <span className="howicon" aria-hidden><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="url(#ns-howg)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d={h.icon} /></svg><b>{i + 1}</b></span>
-          <span className="howtxt"><strong>{h.t}</strong><span>{h.d}</span></span>
-        </li>
-      ))}
-    </ol>
-  )
-}
 
-/** First visit: ask for a name. It goes on the score card and, after Test all, on the public leaderboard (unless the
- *  visitor ticks "Keep me off the leaderboard"). Enter continues; "Use Guest" skips. */
+/** First visit: the opening screen asks for a name. It goes on the score card and, after Test all, on the public
+ *  leaderboard (unless the visitor ticks "Keep me off the leaderboard"). Enter continues; "Use Guest" skips. */
 function NameCard() {
   const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
   const [v, setV] = useState('')
-  const ref = useRef<HTMLInputElement>(null)
-  useEffect(() => { ref.current?.focus() }, [name])
+  const [out, setOut] = useState(false)
+  const ref = useRef<HTMLInputElement>(null), wall = useRef<HTMLDivElement>(null)
+  // a phone keeps its keyboard down until the visitor taps the field, so the whole screen shows first
+  useEffect(() => { if (!matchMedia('(pointer: coarse)').matches) ref.current?.focus({ preventScroll: true }) }, [name])
+  // the sky leans a little toward the pointer: two numbers on the wall, read by CSS transforms only
+  useEffect(() => {
+    const el = wall.current
+    if (!el || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let raf = 0
+    const move = (e: PointerEvent) => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { el.style.setProperty('--px', ((e.clientX / innerWidth) * 2 - 1).toFixed(3)); el.style.setProperty('--py', ((e.clientY / innerHeight) * 2 - 1).toFixed(3)) }) }
+    el.addEventListener('pointermove', move)
+    return () => { cancelAnimationFrame(raf); el.removeEventListener('pointermove', move) }
+  }, [name])
   if (name) return null
+  // the screen lifts away, then the name is set (at once when motion is reduced)
+  const go = (n: string) => {
+    if (out) return
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { setName(n); return }
+    setOut(true); setTimeout(() => { setName(n); setOut(false) }, 340)
+  }
   return (
-    <div className="namewall" data-namecard>
-      <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
-        <div className="namefields">
-          <div className="namebrand"><KundaliLogo size={20} /><span>Kundali</span></div>
-          <p className="nametag">Watch a real AI model think on your own device, then score your hardware.</p>
-          <h3 id="nm-t">What is your name?</h3>
-          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
-          <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
-          <BoardOptOut />
-          <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
+    <div className={`kx${out ? ' out' : ''}`} data-namecard ref={wall}>
+      <Stars />
+      <i className="kx-light" aria-hidden />
+      <Astrolabe />
+      <header className="kx-top">
+        <span className="kx-brand"><KundaliLogo size={28} /><span>Kundali</span></span>
+        <span className="kx-meta mono"><i aria-hidden />Runs on your device</span>
+      </header>
+      <form className="namecard kx-form" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) go(v) }}>
+        <p className="kx-eye mono">A birth chart for your machine</p>
+        <h1 className="kx-h"><span className="ln"><span>Every machine</span></span><span className="ln"><span>has a <em>chart.</em></span></span></h1>
+        <p className="kx-lede">Watch a real AI model think on your own device. Then score your hardware.</p>
+        <label className="kx-q mono" id="nm-t" htmlFor="nm-in">What is your name?</label>
+        <div className="kx-field">
+          <input id="nm-in" ref={ref} value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" placeholder="Your name" />
+          <button className="btn primary kx-go" type="submit" disabled={!v.trim()}>Begin<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h15M13 6l6 6-6 6" /></svg></button>
         </div>
-        <HowItWorks />
+        <div className="kx-sub">
+          <BoardOptOut />
+          <button type="button" className="t5link" onClick={() => go('Guest')}>Use Guest</button>
+          <span className="kx-kbd mono" aria-hidden>Enter ↵</span>
+        </div>
+        <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
       </form>
+      <ol className="kx-steps" aria-label="How it works">
+        {HOW.map((h, i) => <li key={h.t}><span className="n mono" aria-hidden>0{i + 1}</span><strong>{h.t}</strong><span>{h.d}</span></li>)}
+      </ol>
     </div>
   )
 }
@@ -112,35 +132,6 @@ function SavedLine() {
   if (!i) return null
   const mb = i.bytes / 1048576
   return <span className="savedline">{i.bytes ? <>Saved on this device: {mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB · <button type="button" className="t5link" onClick={() => void useStore.getState().clear().then(load)}>Clear</button></> : 'Nothing saved on this device yet.'}</span>
-}
-
-/** The Kundali mark: a North-Indian birth chart (chamfered square, both diagonals, inner diamond, vertex dots and central bindu star). */
-export function KundaliLogo({ size = 20 }: { size?: number }) {
-  const uid = useId().replace(/:/g, '')
-  const gid = `ns-lg-${uid}`, cid = `ns-lc-${uid}`, aid = `ns-la-${uid}`
-  return (
-    <svg className="logo" width={size} height={size} viewBox="0 0 24 24" aria-hidden fill="none">
-      <defs>
-        <linearGradient id={gid} x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#9a82ff" /><stop offset=".52" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" />
-        </linearGradient>
-        <linearGradient id={cid} x1="8" y1="8" x2="16" y2="16" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#fff4e0" /><stop offset=".5" stopColor="#ffa94d" /><stop offset="1" stopColor="#ff7ab6" />
-        </linearGradient>
-        <radialGradient id={aid} cx="50%" cy="50%" r="50%">
-          <stop offset="0" stopColor="#3ddcf5" stopOpacity=".24" /><stop offset=".6" stopColor="#9a82ff" stopOpacity=".1" /><stop offset="1" stopColor="#ff8fc4" stopOpacity="0" />
-        </radialGradient>
-      </defs>
-      <rect x="2" y="2" width="20" height="20" rx="3.4" fill={`url(#${aid})`} stroke={`url(#${gid})`} strokeWidth="1.75" strokeLinejoin="round" />
-      <path d="M2.8 2.8l18.4 18.4M21.2 2.8L2.8 21.2" stroke={`url(#${gid})`} strokeOpacity=".82" strokeWidth="1.35" strokeLinecap="round" />
-      <path d="M12 2L22 12 12 22 2 12z" stroke={`url(#${gid})`} strokeWidth="1.65" strokeLinejoin="round" />
-      <circle cx="12" cy="2" r="1.25" fill="#9a82ff" />
-      <circle cx="22" cy="12" r="1.25" fill="#3ddcf5" />
-      <circle cx="12" cy="22" r="1.25" fill="#ff8fc4" />
-      <circle cx="2" cy="12" r="1.25" fill="#3ddcf5" />
-      <path d="M12 8.4l1.1 2.5L15.6 12l-2.5 1.1L12 15.6l-1.1-2.5L8.4 12l2.5-1.1z" fill={`url(#${cid})`} />
-    </svg>
-  )
 }
 
 /** One profile menu: name, theme, this device, privacy, saved models. */
@@ -181,6 +172,9 @@ function ProfileMenu() {
 }
 
 function TopBar({ view }: { view: AppView }) {
+  // after a finished Test your system the chart has scores to show: the button says so until it is opened
+  const [ready, setReady] = useState(false)
+  useEffect(() => { const f = () => setReady(true); addEventListener('ns-chart-ready', f); return () => removeEventListener('ns-chart-ready', f) }, [])
   return (
     <header className="topbar">
       <div className="brand"><KundaliLogo /><span className="brandname">Kundali</span></div>
@@ -194,7 +188,7 @@ function TopBar({ view }: { view: AppView }) {
         ))}
       </nav>
       <span className="grow" />
-      <button className="btn2 boardbtn devbtn" data-open-device onClick={openDeviceReport} title="Everything this page can read and measure about your device"><Ico d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M7 5h10a2 2 0 012 2v10a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2zM9.5 9.5h5v5h-5z" /><span className="boardtxt">Your device</span></button>
+      <button className={`btn2 boardbtn devbtn${ready ? ' ready' : ''}`} data-open-device onClick={() => { setReady(false); openDeviceReport() }} title={ready ? 'Your chart is ready' : 'Everything this page can read and measure about your device'}><Ico d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M7 5h10a2 2 0 012 2v10a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2zM9.5 9.5h5v5h-5z" /><span className="boardtxt">Your device</span></button>
       <button className="btn2 boardbtn" data-board aria-label="Leaderboard" onClick={openLeaderboard}><Ico d={CUP} /><span className="boardtxt">Leaderboard</span></button>
       <ProfileMenu />
     </header>

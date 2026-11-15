@@ -132,6 +132,9 @@ Each has a **Details** drawer, closed until you open it (Esc or a click outside 
 | `src/zoo` | network zoo: forward passes and stress tests (`nets.ts`), state (`zooStore.ts`), 3D scene, UI (`ZooUI.tsx`, including the comparison and robustness cards) |
 | `server-web/server.mjs` | Cloud Run server: static files with the security headers, leaderboard API, Firestore or memory store |
 | `src/board.tsx`, `src/ui/Leaderboard.tsx` | leaderboard: device ID, opt-out, submit after Test all; the dialog (loaded on first open) |
+| `src/ui/Sky.tsx` | the opening screen's drawing (star field, the turning chart), the Kundali mark, and the twelve-house geometry the device chart reuses |
+| `src/ui/DeviceReport.tsx` | the device report: the device as a twelve-house chart, then every value the page reads or measures |
+| `src/fonts` | the three typefaces, served from this site: Instrument Serif, Geist, Geist Mono (SIL Open Font License; the licence texts sit beside the files) |
 | `tests`, `server/tests` | unit tests (`npm test`, `pytest`); `tests/e2e` drives the real app in Edge |
 
 ## Checked on the test PC (Ryzen 7 8745HS, Radeon 780M, DDR5-5600, NVMe Gen4 x4)

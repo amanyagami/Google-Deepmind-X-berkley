@@ -51,8 +51,8 @@ export function Backdrop({ light, size = [30, 20] }: { light: boolean; size?: [n
   return (
     <>
       <primitive attach="background" object={bg} />
-      <mesh rotation-x={-Math.PI / 2} position={[-2, -0.42, 0.5]} renderOrder={-3}><planeGeometry args={[size[0], size[1]]} /><meshBasicMaterial map={halo} color={light ? '#8b6cff' : '#6d4dff'} transparent opacity={light ? 0.16 : 0.42} blending={light ? THREE.NormalBlending : THREE.AdditiveBlending} depthWrite={false} toneMapped={false} fog={false} /></mesh>
-      <mesh rotation-x={-Math.PI / 2} position={[5, -0.43, -2]} renderOrder={-3}><planeGeometry args={[size[0] * 0.55, size[1] * 0.55]} /><meshBasicMaterial map={halo} color={light ? '#22d3ee' : '#1fb6d8'} transparent opacity={light ? 0.12 : 0.28} blending={light ? THREE.NormalBlending : THREE.AdditiveBlending} depthWrite={false} toneMapped={false} fog={false} /></mesh>
+      <mesh rotation-x={-Math.PI / 2} position={[-2, -0.42, 0.5]} renderOrder={-3}><planeGeometry args={[size[0], size[1]]} /><meshBasicMaterial map={halo} color={light ? '#b08a3c' : '#4a4fd0'} transparent opacity={light ? 0.14 : 0.36} blending={light ? THREE.NormalBlending : THREE.AdditiveBlending} depthWrite={false} toneMapped={false} fog={false} /></mesh>
+      <mesh rotation-x={-Math.PI / 2} position={[5, -0.43, -2]} renderOrder={-3}><planeGeometry args={[size[0] * 0.55, size[1] * 0.55]} /><meshBasicMaterial map={halo} color={light ? '#c98a3a' : '#e0a050'} transparent opacity={light ? 0.10 : 0.16} blending={light ? THREE.NormalBlending : THREE.AdditiveBlending} depthWrite={false} toneMapped={false} fog={false} /></mesh>
     </>
   )
 }
@@ -69,7 +69,7 @@ function FloorGrid({ light }: { light: boolean }) {
   return (
     <group position-y={-0.235}>
       <lineSegments geometry={geo}><lineBasicMaterial color={light ? '#c7cdea' : '#2a3570'} transparent opacity={light ? 0.5 : 0.28} toneMapped={false} /></lineSegments>
-      <lineSegments geometry={rim} rotation-x={-Math.PI / 2} position={[0, 0.002, 0.3]}><lineBasicMaterial color={light ? '#9aa4d8' : '#7c5cff'} transparent opacity={light ? 0.8 : 0.9} toneMapped={false} /></lineSegments>
+      <lineSegments geometry={rim} rotation-x={-Math.PI / 2} position={[0, 0.002, 0.3]}><lineBasicMaterial color={light ? '#b79a5e' : '#c9a15a'} transparent opacity={light ? 0.8 : 0.75} toneMapped={false} /></lineSegments>
     </group>
   )
 }
@@ -113,7 +113,7 @@ const CSS = `
 .nsc .lv .livedot{width:5px;height:5px;margin:0 5px 0 0;vertical-align:1px;box-shadow:none}
 .nsc .sc{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
 .nsc:hover .box,.nsc.on .box,.nsc.hov .box{box-shadow:0 8px 22px rgba(2,4,20,.34),0 0 16px color-mix(in srgb,var(--pos,#ffa94d) 45%,transparent);transform:translateY(-1px)}
-.nsc.on .box{background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,#ffa94d,#ff7ab6) border-box}
+.nsc.on .box{background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,#f6dfae,#ffb454 55%,#ff7d5a) border-box}
 .nsc:focus-visible{outline:none}
 .nsc:focus-visible .box{outline:2px solid var(--fg,#e8ecf8);outline-offset:1px}
 .nsc .lead{position:absolute;left:50%;top:50%;height:0;border-top:1px dashed rgba(154,165,199,.7);transform-origin:0 0;pointer-events:none;display:none;z-index:-1}
@@ -1262,7 +1262,7 @@ export function ZooScene() {
           <KitProvider>
             <Backdrop light={light} />
             <WheelScrollsPage />
-            <fog attach="fog" args={[light ? '#eef0fb' : '#060a1a', 30, 56]} />
+            <fog attach="fog" args={[light ? '#ebe7db' : '#05050a', 30, 56]} />
             <SlowWatch onStep={st.step} />
             <FirstFrame name="model" />
             <ambientLight intensity={0.4} />

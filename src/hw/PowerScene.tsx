@@ -754,7 +754,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
             <FirstFrame name="machine" />
             <Backdrop light={light} size={[34, 22]} />
             <WheelScrollsPage />
-            <fog attach="fog" args={[light ? '#eef0fb' : '#060a1a', 26, 54]} />
+            <fog attach="fog" args={[light ? '#ebe7db' : '#05050a', 26, 54]} />
             <ambientLight intensity={0.3} />
             <directionalLight position={[6, 12, 8]} intensity={1.3} />
             <directionalLight position={[-8, 9, -8]} intensity={light ? 0.45 : 0.7} color="#7ea6ff" />

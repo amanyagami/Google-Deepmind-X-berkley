@@ -74,6 +74,7 @@ export function onFinalScore(f: Final): void {
   try {
     const fs = finalScore(res)
     if (!(fs.score > 0)) return
+    window.dispatchEvent(new CustomEvent('ns-chart-ready'))
     const backend = useHW.getState().source === 'companion' ? 'companion' : res.gpu && !isUnavailable(res.gpu) ? 'webgpu' : 'wasm'
     void submitScore({ score: fs.score, pillars: Object.fromEntries(fs.pillars.map((p) => [p.id, p.score])), tested: fs.coverage.ran / fs.coverage.of, backend }, useStore.getState().name)
   } catch { /* results of two scales: no single score to send */ }
@@ -279,7 +280,7 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   g2.addColorStop(0, 'rgba(34, 211, 238, 0.14)'); g2.addColorStop(1, 'rgba(34, 211, 238, 0)')
   g.fillStyle = g2; g.fillRect(0, 0, 1200, 630)
   const barGrad = g.createLinearGradient(0, 0, 1200, 0)
-  barGrad.addColorStop(0, '#9a82ff'); barGrad.addColorStop(0.52, '#3ddcf5'); barGrad.addColorStop(1, '#ff8fc4')
+  barGrad.addColorStop(0, '#f6dfae'); barGrad.addColorStop(0.55, '#ffb454'); barGrad.addColorStop(1, '#ff7d5a')
   g.fillStyle = barGrad; g.fillRect(0, 0, 1200, 6)
   g.textBaseline = 'alphabetic'
   drawKundali(g, 1084, 38, 54)
@@ -483,6 +484,7 @@ function ScoreStrip() {
             {!complete && <p className="t5-line">Testing your system runs six short tests, about 30 s.</p>}
             {browser && <p className="t5-line">{BROWSER_NOTE}</p>}
           </>} />
+          {complete && <button type="button" className="t5-btn t5-chart" data-open-device aria-label="Your chart" title="Your device as a chart" onClick={() => window.dispatchEvent(new CustomEvent('ns-open-device'))}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M3 3h18v18H3zM3 3l18 18M21 3L3 21M12 3l9 9-9 9-9-9z" /></svg><span>Your chart</span></button>}
           <button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={testAll}>Test your system</button></>}
     </div>
   )
