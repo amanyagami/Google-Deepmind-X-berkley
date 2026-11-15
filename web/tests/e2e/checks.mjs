@@ -270,7 +270,10 @@ export const checks = [
 
   { id: 'A29', title: 'theme: toggle flips data-theme, persists across reload, no dark leftovers in light mode', needs: ['theme'], run: async (env) => {
     const p = await env.open({ theme: undefined }); await p.goto(); const tg = p.page.locator('[data-theme-toggle]').first(); const seen = []
-    for (let i = 0; i < 3; i++) { seen.push(await p.page.evaluate(() => document.documentElement.dataset.theme ?? '')); if (seen.at(-1) === 'light') break; await tg.click(); await p.page.waitForTimeout(400) }
+    // the toggle lives in the profile menu (D14): open the menu when it is not on screen
+    const reach = async () => { if (!(await tg.isVisible().catch(() => false))) { await p.page.locator('[data-profile]').first().click().catch(() => {}); await p.page.waitForTimeout(200) } }
+    for (let i = 0; i < 3; i++) { seen.push(await p.page.evaluate(() => document.documentElement.dataset.theme ?? '')); if (seen.at(-1) === 'light') break; await reach(); await tg.click(); await p.page.waitForTimeout(400) }
+    await p.page.keyboard.press('Escape')
     const now = await p.page.evaluate(() => document.documentElement.dataset.theme); if (now !== 'light') return F(`toggle never reached light: ${seen.join('>')}>${now}`)
     await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(1200); const kept = await p.page.evaluate(() => document.documentElement.dataset.theme)
     const dark = await p.page.evaluate(() => [...document.querySelectorAll('body *')].filter((e) => !(e instanceof HTMLCanvasElement) && __h.vis(e)).filter((e) => { const s = getComputedStyle(e), b = __h.rgba(s.backgroundColor); return b[3] > 0.6 && __h.ratio(b, [255, 255, 255, 1]) > 12 && e.getBoundingClientRect().width > 40 && !e.closest('canvas,[data-keep-dark]') }).map((e) => `${e.tagName.toLowerCase()}.${String(e.className).slice(0, 18)}`))
