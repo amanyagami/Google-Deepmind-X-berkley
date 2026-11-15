@@ -78,7 +78,7 @@ function DrawPad() {
   const reads = useMemo(() => (NETS.every((n) => packs[n.id]) ? NETS.map((n) => ({ id: n.id, r: readDigit(n.id, packs[n.id]!, img) })) : null), [img, packs])
   const verdict = useMemo(() => (reads && inked ? consensus(reads.map((x) => x.r)) : null), [reads, inked])
   return (
-    <div className="s6padwrap">
+    <div className="s6padwrap" data-pad-wrap>
       <div className="s6pad">
         <Explainer id="pad" placement="top-right"><Say id="pad" /></Explainer>
         <canvas ref={cv} data-pad width={PAD} height={PAD} aria-label="Draw a number here" role="img" style={{ touchAction: 'none' }}
@@ -93,8 +93,8 @@ function DrawPad() {
         {!inked && <div className="s6guide" aria-hidden><i /><span>Draw a number</span></div>}
       </div>
       <div className="s6row">
-        <button className="btn2" onClick={clear} title="Clear (C)">Clear</button>
-        <button className="btn2" onClick={undo} disabled={!nStrokes} title="Undo the last stroke (Z)">Undo</button>
+        <button className="btn2" data-pad-clear onClick={clear} title="Clear (C)">Clear</button>
+        <button className="btn2" data-pad-undo onClick={undo} disabled={!nStrokes} title="Undo the last stroke (Z)">Undo</button>
         <span className="s6line">Try a digit</span>
       </div>
       <div className="s6chips" role="group" aria-label="Try a digit">{Array.from({ length: 10 }, (_, d) => <button key={d} className="btn2" onClick={() => pick(d)}>{d}</button>)}</div>
@@ -649,27 +649,28 @@ function InputBox({ compact = false }: { compact?: boolean }) {
   const langOk = task === 'text-generation' || task === 'text-classification'
   const multi = isMultilingual(spec)
   const spoken = kind === 'audio' && multi
-  const swap = async () => {
-    const st = useStore.getState()
-    let r: any = null
-    try { r = await (engine as any).multilingualFor?.(task) } catch { /* not ready: use the catalog */ }
-    let repo: string | undefined = typeof r === 'string' ? r : r?.repo ?? r?.id
-    let ex = repo ? st.examples.find((e) => e.id === repo || e.repo.toLowerCase() === String(repo).toLowerCase()) : undefined
-    if (!ex && !repo) ex = st.examples.find((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
-    if (ex) await st.loadExample(ex.id); else if (repo) await st.loadModel(repo, langPrompt(lang, task))
+  const canSwap = !!(engine as any).multilingualFor?.(task)
+  /** A language fills the prompt; a model that only knows English is swapped for the smallest multilingual one, which then downloads by itself. */
+  const pickLang = async (id: LangId) => {
+    setLang(id); (useStore.getState() as any).setLanguage?.(id)
+    set({ kind: 'text', text: langPrompt(id, task) })
+    if (id !== 'en' && !isMultilingual(useStore.getState().spec) && canSwap) {
+      useStore.getState().cancelDownload()
+      await (useStore.getState() as any).switchToMultilingual?.()
+      set({ kind: 'text', text: langPrompt(id, task) })
+    }
   }
-  const canSwap = typeof (engine as any).multilingualFor === 'function' || examplesAll.some((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
-  const needsMulti = langOk && lang !== 'en' && !multi
+  const needsMulti = langOk && lang !== 'en' && !multi && !canSwap
   return (
     <div className="stack" style={{ gap: 8 }}>
-      {needsMulti && <div className={`s6row s6note2 ${compact ? 's6float' : ''}`} data-note><span className="s6line">This model knows English best.</span>{canSwap && <button className="btn2 sm" onClick={swap}>Use a multilingual model</button>}</div>}
+      {needsMulti && <div className={`s6row s6note2 ${compact ? 's6float' : ''}`} data-note><span className="s6line">This model knows English best.</span></div>}
       {spoken && <div className="s6row"><LangSelect value={lang} onChange={setLang} label="Spoken language" /></div>}
       <input ref={file} type="file" accept={kind === 'image' ? 'image/*' : 'audio/*'} hidden onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = '' }} />
       {kind === 'text' && cur.kind === 'text' && (
         <>
           <label className={compact ? 'sr' : 'lbl'} htmlFor="s6text">{task === 'fill-mask' ? 'Sentence with a gap' : task === 'text-classification' ? 'Text to judge' : 'Start of a sentence'}</label>
           <div className="s6row s6inrow">
-            {langOk && <LangSelect disabled={replay} value={lang} onChange={(id) => { setLang(id); set({ kind: 'text', text: langPrompt(id, task) }) }} />}
+            {langOk && <LangSelect value={lang} onChange={(id) => pickLang(id)} />}
             {compact
               ? <input id="s6text" data-prompt className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
               : <textarea id="s6text" data-prompt rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
