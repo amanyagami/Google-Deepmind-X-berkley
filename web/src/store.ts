@@ -454,8 +454,15 @@ export const useStore = create<S>((set, get) => {
       const s = get()
       if (!s.spec || s.probing) return   // loadModel calls this again when the model is known
       const where = s.fit?.where
-      if ((where !== 'webgpu' && where !== 'wasm') || s.fit?.verdict === 'too-big' || s.running || s.download) return
+      if (s.fit?.verdict === 'too-big' || s.running || s.download) return
       const key = `${s.repo}|${s.spec.task}`
+      if (where === 'companion') {   // the companion has the weights already: no download, just run (the old auto-run)
+        if (autoDone.has(key) || !canRun(s)) return
+        autoDone.add(key)
+        await get().run({ auto: true })
+        return
+      }
+      if (where !== 'webgpu' && where !== 'wasm') return
       if (autoDone.has(key)) return
       autoDone.add(key)
       await beginBrowser({ recordedFirst: true })
