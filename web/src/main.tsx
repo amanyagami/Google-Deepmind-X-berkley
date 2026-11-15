@@ -3,13 +3,14 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import './styles.css'
 import { useStore } from './store'
-import { useHW } from './hw/hwStore'
-import { useZoo } from './zoo/zooStore'
+
+// Apply the saved theme before the first paint so there is no flash.
+try { const t = localStorage.getItem('ns.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t } catch { /* private mode */ }
 
 // Exposed so browser tests and the devtools console can drive the app.
 ;(window as any).__studio = useStore
-;(window as any).__hw = useHW
-;(window as any).__zoo = useZoo
+import('./hw/hwStore').then((m) => { ;(window as any).__hw = m.useHW })
+import('./zoo/zooStore').then((m) => { ;(window as any).__zoo = m.useZoo })
 
 // Run the ONNX engine from our own files (/ort/), not a CDN. Set before the first model loads.
 import('@huggingface/transformers').then((tf: any) => {
@@ -22,3 +23,16 @@ createRoot(document.getElementById('root')!).render(
     <App />
   </StrictMode>,
 )
+
+performance.mark('ns:shell')
+
+// Offline shell: register the service worker in production. A waiting new version raises an event the page shows as a strip.
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then((reg) => {
+      ;(window as any).__sw = reg
+      const waiting = () => reg.waiting && navigator.serviceWorker.controller && dispatchEvent(new CustomEvent('ns-sw-update', { detail: reg }))
+      waiting(); reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', waiting))
+    }).catch(() => { /* no service worker: the app still works */ })
+  })
+}

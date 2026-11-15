@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { readFileSync } from 'node:fs'
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 
 // The FastAPI backend serves /api and /ws on :8000. In dev, Vite proxies to it.
@@ -41,9 +42,23 @@ const selfHostOrt = (): Plugin => ({
   },
 })
 
+// Stamps public/sw.js in dist with a build hash and the list of files to keep for offline use.
+const stampSw = (): Plugin => ({
+  name: 'stamp-sw',
+  apply: 'build',
+  writeBundle(opts, bundle) {
+    const out = opts.dir ?? resolve(__dirname, 'dist'), f = resolve(out, 'sw.js')
+    // Vite also emits its own copy of the engine's wasm (unused: we point the engine at /ort/). Drop it.
+    for (const n of Object.keys(bundle)) if (/^assets\/ort-wasm.*\.wasm$/.test(n)) { try { unlinkSync(resolve(out, n)) } catch { /* already gone */ } delete bundle[n] }
+    const names = Object.keys(bundle).filter((n) => !n.endsWith('.map'))
+    const hash = createHash('sha1').update(names.join('|')).digest('hex').slice(0, 10)
+    writeFileSync(f, readFileSync(f, 'utf8').replace('__BUILD__', hash).replace('__PRECACHE__', names.join(',')))
+  },
+})
+
 export default defineConfig({
   base: './',
-  plugins: [react(), selfHostOrt()],
+  plugins: [react(), selfHostOrt(), stampSw()],
   server: {
     port: 5173,
     // dev keeps inline scripts and a live-reload socket, so only isolation is applied here; preview gets the full policy
@@ -54,6 +69,15 @@ export default defineConfig({
     },
   },
   preview: { headers: { ...ISOLATION, 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' } },
-  build: { outDir: 'dist', chunkSizeWarningLimit: 1500 },
+  build: {
+    outDir: 'dist', chunkSizeWarningLimit: 1500,
+    rollupOptions: { output: { manualChunks(id) {
+      // shared vendor chunks: three.js once, its React wrapper once, React once (not duplicated into each view)
+      if (!id.includes('node_modules')) return
+      if (/node_modules[\/]three[\/]/.test(id)) return 'three'
+      if (/node_modules[\/](@react-three|postprocessing|three-stdlib|troika|@monogrid|meshline|camera-controls|maath|its-fine)/.test(id)) return 'r3f'
+      if (/node_modules[\/](react|react-dom|scheduler)[\/]/.test(id)) return 'react'
+    } } },
+  },
   worker: { format: 'es' },
 })

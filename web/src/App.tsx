@@ -1,7 +1,9 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Hint } from './ui/charts'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
 // Each view loads its own code on first use, so the first page needs only what it shows.
+// the hint bubble lives in a lazy chunk so the first page does not pay for it
+const HintLazy = lazy(() => import('./ui/charts').then((m) => ({ default: m.Hint })))
+const Hint = (p: { label?: string; children: React.ReactNode }) => <Suspense fallback={null}><HintLazy {...p} /></Suspense>
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
 const SECTIONS: { id: AppView; label: string; tip: string }[] = [
@@ -14,6 +16,8 @@ const Loading = () => <div className="skeleton" role="status" aria-label="Loadin
 const Ico = ({ d, fill }: { d: string; fill?: boolean }) => (
   <svg className="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden fill={fill ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
 )
+const SUN = 'M12 7a5 5 0 100 10 5 5 0 000-10zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'
+const MOON = 'M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z', SCREEN = 'M3 5h18v11H3zM8 20h8M12 16v4'
 const PLAY = 'M7 4.5v15l12-7.5z', SHIELD = 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z', CHEV = 'M6 9l6 6 6-6'
 
 /** One prompt, one Run: the model runs it (Model section), then the Machine replays it on the hardware. */
@@ -60,6 +64,66 @@ function PickerFallback() {
   )
 }
 
+/** System / Light / Dark. Sets data-theme (System removes it), with a View Transition when the browser has one. */
+function useThemeApply() {
+  const theme = useStore((s) => s.theme)
+  useEffect(() => {
+    const el = document.documentElement
+    const apply = () => { if (theme === 'system') delete el.dataset.theme; else el.dataset.theme = theme }
+    const vt = (document as any).startViewTransition
+    if (vt && !matchMedia('(prefers-reduced-motion: reduce)').matches && el.dataset.theme !== (theme === 'system' ? undefined : theme)) vt.call(document, apply); else apply()
+  }, [theme])
+}
+function ThemeToggle() {
+  const theme = useStore((s) => s.theme), set = useStore((s) => s.setTheme)
+  const next = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
+  const label = theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark'
+  return <button className="btn2 themebtn" data-theme-toggle onClick={() => set(next)} aria-label={`Theme: ${label}. Switch to ${next}.`} title={`Theme: ${label}`}><Ico d={theme === 'light' ? SUN : theme === 'dark' ? MOON : SCREEN} /><span className="themelbl">{label}</span></button>
+}
+
+/** First visit: ask for a name (stays on this device). Enter continues; "Use Guest" skips. */
+function NameCard() {
+  const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
+  const [v, setV] = useState('')
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => { ref.current?.focus() }, [name])
+  if (name) return null
+  return (
+    <div className="namewall" data-namecard>
+      <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
+        <h3 id="nm-t">What is your name?<Hint label="About your name">It stays on this device. It goes on your score card.</Hint></h3>
+        <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+        <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
+      </form>
+    </div>
+  )
+}
+/** The name in the top bar, with a small menu to change it. */
+function NameChip() {
+  const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
+  const [open, setOpen] = useState(false)
+  const [v, setV] = useState('')
+  if (!name) return null
+  return (
+    <span className="namechip">
+      <button className="btn2" aria-expanded={open} onClick={() => { setV(name); setOpen((o) => !o) }} title="Change your name"><span className="pickname">{name}</span></button>
+      {open && <form className="pop namepop" onSubmit={(e) => { e.preventDefault(); if (v.trim()) { setName(v); setOpen(false) } }}>
+        <input className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} aria-label="Your name" autoFocus />
+        <button className="btn" type="submit">Save</button></form>}
+    </span>
+  )
+}
+
+/** "Saved on this device: 82 MB · Clear", shown when the privacy hint is open. */
+function SavedLine() {
+  const [i, setI] = useState<{ bytes: number; persisted: boolean | null } | null>(null)
+  const load = () => useStore.getState().savedInfo().then(setI).catch(() => setI({ bytes: 0, persisted: null }))
+  useEffect(() => { void load() }, [])
+  if (!i) return null
+  const mb = i.bytes / 1048576
+  return <span className="savedline">{i.bytes ? <>Saved on this device: {mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB · <button type="button" className="t5link" onClick={() => void useStore.getState().clear().then(load)}>Clear</button></> : 'Nothing saved on this device yet.'}</span>
+}
+
 function TopBar({ view }: { view: AppView }) {
   const device = useDevice()
   return (
@@ -75,8 +139,10 @@ function TopBar({ view }: { view: AppView }) {
       </nav>
       <span className="grow" />
       <span className="tag devchip">{device}</span>
+      <ThemeToggle />
+      <NameChip />
       <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device · nothing uploaded</span>
-        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded.</Hint></span>
+        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded. <SavedLine /></Hint></span>
     </header>
   )
 }
@@ -106,6 +172,14 @@ class Guard extends Component<{ children: React.ReactNode }, { err: boolean }> {
   state = { err: false }
   static getDerivedStateFromError() { return { err: true } }
   render() { return this.state.err ? <ErrorBox message="This part did not load. Check your connection, then try again." onAction={() => this.setState({ err: false })} /> : this.props.children }
+}
+
+/** "New version · Reload": shown when a new service worker is waiting. */
+function UpdateStrip() {
+  const [reg, setReg] = useState<ServiceWorkerRegistration | null>(null)
+  useEffect(() => { const f = (e: Event) => setReg((e as CustomEvent).detail); addEventListener('ns-sw-update', f); return () => removeEventListener('ns-sw-update', f) }, [])
+  if (!reg) return null
+  return <div className="offline-strip update-strip" role="status">New version <button className="t5link" onClick={() => { navigator.serviceWorker.addEventListener('controllerchange', () => location.reload()); reg.waiting?.postMessage('skip') }}>Reload</button></div>
 }
 
 function OfflineStrip() {
@@ -173,9 +247,33 @@ function useSections(flow: React.RefObject<HTMLDivElement | null>) {
   return seen
 }
 
-const Sect = ({ id, label, children }: { id: AppView; label: string; children: React.ReactNode }) => (
-  <div id={`sec-${id}`} data-sec={id} className="sect" role="region" aria-label={label}>{children}</div>
-)
+const RAIL = { model: 'model', power: 'machine' } as const
+const Sect = ({ id, label, children }: { id: 'model' | 'power'; label: string; children: React.ReactNode }) => {
+  const open = useStore((s) => s.railOpen[RAIL[id]])
+  const setRail = useStore((s) => s.setRail)
+  return (
+    <div id={`sec-${id}`} data-sec={id} data-rail={open ? 'open' : 'closed'} className="sect" role="region" aria-label={label}>
+      {children}
+      <button className="drawer-tab" data-drawer-toggle aria-expanded={open} onClick={() => setRail(RAIL[id], !open)}>{open ? 'Close' : 'Details'}</button>
+    </div>
+  )
+}
+
+/** Esc, or a click outside the drawer, closes the open drawers. Machine details follow the drawer. */
+function useDrawers() {
+  useEffect(() => { try { if (localStorage.getItem('ns.machine.details') === null) useStore.getState().setDetails(false) } catch { /* private mode */ } }, [])
+  useEffect(() => {
+    const close = () => { const s = useStore.getState(); (['model', 'machine'] as const).forEach((k) => s.railOpen[k] && s.setRail(k, false)) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('.rail, .inspector, .drawer-tab, .hintpop, .pop')) close() }
+    addEventListener('keydown', key); document.addEventListener('pointerdown', down)
+    return () => { removeEventListener('keydown', key); document.removeEventListener('pointerdown', down) }
+  }, [])
+  // the Machine view has its own details switch: keep it and the drawer in step
+  const open = useStore((s) => s.railOpen.machine), details = useStore((s) => s.details)
+  useEffect(() => { if (useStore.getState().details !== open) useStore.getState().setDetails(open) }, [open])
+  useEffect(() => { if (useStore.getState().railOpen.machine !== details) useStore.getState().setRail('machine', details) }, [details])
+}
 
 export default function App() {
   const init = useStore((s) => s.init)
@@ -185,18 +283,18 @@ export default function App() {
   const flow = useRef<HTMLDivElement>(null)
   const seen = useSections(flow)
   useSheet()
+  useThemeApply()
+  useDrawers()
   // stage and rail are the side-by-side panels: mark them so tests and styles can find them
   useEffect(() => {
-    const mark = () => document.querySelectorAll('.main > .stage, .main > .rail, .main > .inspector').forEach((e) => e.setAttribute('data-panel', ''))
+    const mark = () => document.querySelectorAll('.main > .stage, .main > .rail, .main > .inspector').forEach((e) => { e.setAttribute('data-panel', ''); if (!e.matches('.stage')) e.setAttribute('data-drawer', '') })
     mark()
     const mo = new MutationObserver(mark)
     mo.observe(flow.current!, { childList: true, subtree: true })
     return () => mo.disconnect()
   }, [])
-  // every model opens already run on the shared prompt, so the animations have something real to show
-  const autoRan = useRef('')
-  useEffect(() => { const s = useStore.getState(); if (canRun(s) && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run({ auto: true }) } }, [probeRes, layers])
-  useEffect(() => { init() }, [init])
+  // the default model downloads by itself and runs when ready (no click); the recorded run plays meanwhile
+  useEffect(() => { init(); void useStore.getState().autoStart() }, [init])
   // a link such as /#power opens at that section (the old #journey link opens the merged Machine section)
   useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first === 'journey' ? 'power' : first, false)) }, [])
   useEffect(() => { try { history.replaceState(null, '', view === 'model' ? location.pathname + location.search : `${location.search}#${view}`) } catch { /* ignore */ } }, [view])
@@ -204,13 +302,16 @@ export default function App() {
     <div className="app">
       <TopBar view={view} />
       <OfflineStrip />
+      <UpdateStrip />
       <div className="flow" ref={flow}>
-        <Guard>
+        <div id="score-strip-slot" data-score-strip />
+        <Guard><div className="pair">
           <Sect id="model" label="The model on your prompt">{seen.model ? <Suspense fallback={<Loading />}><ZooView /></Suspense> : <Loading />}</Sect>
           <Sect id="power" label="The machine: live electricity and the journey of a prompt">{seen.power ? <Suspense fallback={<Loading />}><MachineView /></Suspense> : <Loading />}</Sect>
-        </Guard>
+        </div></Guard>
       </div>
       <Dock />
+      <NameCard />
     </div>
   )
 }

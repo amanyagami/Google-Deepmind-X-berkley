@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
 
 /** How much farther the camera must sit on a narrow (portrait) screen to keep the scene's width in frame. */
@@ -42,4 +42,18 @@ export function FpsCap({ fps }: { fps: number }) {
 
 /* ROUND 2 CONTRACT (owner S1): the resolved theme for 3D scenes. S1 makes it follow data-theme / the OS setting. */
 export type ThemeName = 'light' | 'dark'
-export function useTheme(): ThemeName { return 'dark' }
+const resolveTheme = (): ThemeName => {
+  const t = typeof document !== 'undefined' ? document.documentElement.dataset.theme : undefined
+  return t === 'light' || t === 'dark' ? t : typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+/** The theme now in effect: the data-theme the toggle sets, else the OS setting. Updates when either changes. */
+export function useTheme(): ThemeName {
+  const [t, setT] = useState<ThemeName>(resolveTheme)
+  useEffect(() => {
+    const f = () => setT(resolveTheme())
+    const mq = matchMedia('(prefers-color-scheme: light)'), mo = new MutationObserver(f)
+    mq.addEventListener('change', f); mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] }); f()
+    return () => { mq.removeEventListener('change', f); mo.disconnect() }
+  }, [])
+  return t
+}
