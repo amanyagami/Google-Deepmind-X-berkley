@@ -268,7 +268,7 @@ export function EditPanel() {
       <div>
         <h4>Which heads matter? <Hint>Ablate each head in turn and watch the answer change.</Hint></h4>
         <div className="row">
-          <button className="btn2" onClick={() => s.runScan()} disabled={s.scanning}>{s.scanning ? 'Scanning every head…' : scan ? 'Re-scan' : 'Scan all heads'}</button>
+          <button className="btn2" onClick={() => s.runScan()} disabled={s.scanning}>{s.scanning ? 'Checking every head…' : scan ? 'Check again' : 'Find important heads'}</button>
           {scan && <label className="chk"><input type="checkbox" checked={s.showImportance} onChange={(e) => s.setShowImportance(e.target.checked)} /> show in 3D</label>}
         </div>
         {s.scanErr && <div className="err">{s.scanErr}</div>}
