@@ -4,7 +4,7 @@ import * as api from '../api'
 import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
 import type { InputCaps, LangId } from './nets'
 import { useHW } from '../hw/hwStore'
-import { cnn, mlp, rnn, timeNet, vit, vlm, type Pack, type Speed } from './nets'
+import { cnn, mlp, rnn, timeNet, vit, vlm, vlmWords, type Pack, type Speed } from './nets'
 
 /** 'llm' is the real model loaded at the top of the page, run on the shared prompt; the others are the five tiny
  *  digit networks, all reading the same 8x8 image. */
@@ -16,12 +16,12 @@ export const NETS: { id: DigitNet; short: string }[] = [
 
 /** Stages of each network's flow, in order. Durations are visual seconds at 1x. */
 export const STAGES: Record<NetId, { id: string; label: string; dur: number }[]> = {
-  llm: [{ id: 'input', label: 'Prompt tokens', dur: 1.4 }, { id: 'blocks', label: 'Through every block', dur: 7.5 }, { id: 'out', label: 'Next-word scores', dur: 2.0 }],
-  mlp: [{ id: 'input', label: 'Pixels in', dur: 1.2 }, { id: 'h1', label: 'Hidden layer 1', dur: 2.2 }, { id: 'h2', label: 'Hidden layer 2', dur: 1.8 }, { id: 'out', label: 'Scores', dur: 1.6 }],
-  cnn: [{ id: 'input', label: 'Pixels in', dur: 1.0 }, { id: 'conv1', label: '8 filters slide', dur: 3.2 }, { id: 'pool1', label: 'Pool', dur: 1.0 }, { id: 'conv2', label: '16 filters slide', dur: 2.6 }, { id: 'pool2', label: 'Pool', dur: 0.9 }, { id: 'out', label: 'Scores', dur: 1.4 }],
-  rnn: [{ id: 'input', label: 'Pixels in', dur: 0.8 }, ...Array.from({ length: 8 }, (_, t) => ({ id: `t${t}`, label: `Row ${t + 1}`, dur: 0.9 })), { id: 'out', label: 'Scores', dur: 1.4 }],
-  vit: [{ id: 'input', label: 'Pixels in', dur: 1.0 }, { id: 'patch', label: 'Cut into patches', dur: 1.6 }, { id: 'embed', label: 'Patches become tokens', dur: 1.4 }, { id: 'attn', label: 'Attention', dur: 3.0 }, { id: 'mlp', label: 'Per-token MLP', dur: 1.2 }, { id: 'out', label: 'Scores', dur: 1.4 }],
-  vlm: [{ id: 'input', label: 'Pixels in', dur: 0.8 }, { id: 'vision', label: 'Vision tower', dur: 2.0 }, { id: 'connect', label: 'Connector', dur: 1.2 }, { id: 'write', label: 'Writing the caption', dur: 7.0 }],
+  llm: [{ id: 'input', label: 'Words', dur: 1.4 }, { id: 'blocks', label: 'Blocks', dur: 7.5 }, { id: 'out', label: 'Guess', dur: 2.0 }],
+  mlp: [{ id: 'input', label: 'Pixels', dur: 1.2 }, { id: 'h1', label: 'Layer 1', dur: 2.2 }, { id: 'h2', label: 'Layer 2', dur: 1.8 }, { id: 'out', label: 'Guess', dur: 1.6 }],
+  cnn: [{ id: 'input', label: 'Pixels', dur: 1.0 }, { id: 'conv1', label: 'Filters 1', dur: 3.2 }, { id: 'pool1', label: 'Pool', dur: 1.0 }, { id: 'conv2', label: 'Filters 2', dur: 2.6 }, { id: 'pool2', label: 'Pool', dur: 0.9 }, { id: 'out', label: 'Guess', dur: 1.4 }],
+  rnn: [{ id: 'input', label: 'Pixels', dur: 0.8 }, ...Array.from({ length: 8 }, (_, t) => ({ id: `t${t}`, label: `Row ${t + 1}`, dur: 0.9 })), { id: 'out', label: 'Guess', dur: 1.4 }],
+  vit: [{ id: 'input', label: 'Pixels', dur: 1.0 }, { id: 'patch', label: 'Patches', dur: 1.6 }, { id: 'embed', label: 'Tokens', dur: 1.4 }, { id: 'attn', label: 'Attention', dur: 3.0 }, { id: 'mlp', label: 'MLP', dur: 1.2 }, { id: 'out', label: 'Guess', dur: 1.4 }],
+  vlm: [{ id: 'input', label: 'Pixels', dur: 0.8 }, { id: 'vision', label: 'Vision', dur: 2.0 }, { id: 'connect', label: 'Connect', dur: 1.2 }, { id: 'write', label: 'Writing', dur: 7.0 }],
 }
 
 export function locateZ(net: NetId, t: number) {
@@ -71,6 +71,9 @@ interface Z {
   base: number[]
   img: number[]
   label: number | null
+  /** the VLM's text input: the user's first words, which the model then finishes */
+  words: string
+  setWords: (w: string) => void
   timing: Partial<Record<DigitNet, Speed>>
   out: any
   err: string | null
@@ -181,10 +184,11 @@ export const useZoo = create<Z>((set, get) => ({
     }
     set({ net, sel: null, t: 0 })
     get().recompute()
-    get().play()
+    if (!get().out?.draft) get().play()
   },
 
   setImg(base, label = null) { set({ base, img: base, label }); get().recompute() },
+  words: 'this is', setWords(words) { set({ words }); if (get().net === 'vlm') get().recompute() },
 
   /** All five networks, so they can be compared side by side; then time each one on this device. */
   async loadAll() {
@@ -200,12 +204,19 @@ export const useZoo = create<Z>((set, get) => ({
   },
 
   recompute() {
-    const { net, packs, img } = get()
-    if (net === 'llm') { set({ out: llmOut() }); return }
+    const { net, packs, img, words } = get()
+    if (net === 'llm') {
+      const out: any = llmOut(), was = get().out
+      set({ out })
+      // typed but not run yet: show the words as they arrive, with the blocks waiting
+      if (out?.draft && !was?.draft) { get().pause(); set({ t: STAGES.llm[0].dur }) }
+      else if (!out?.draft && was?.draft) { set({ t: 0 }); get().play() }
+      return
+    }
     const p = packs[net]
     if (!p) return
     const fn: any = { mlp, cnn, rnn, vit }[net as 'mlp']
-    const out = net === 'vlm' ? vlm(p.weights, img, p.vocab!) : fn(p.weights, img)
+    const out = net === 'vlm' ? vlm(p.weights, img, p.vocab!, undefined, vlmWords(words, p.vocab!).ids) : fn(p.weights, img)
     set({ out })
   },
 
@@ -232,10 +243,39 @@ export const useZoo = create<Z>((set, get) => ({
 
 /** The real model's run, shaped for the zoo scene. Signal sizes grow a lot with depth and the first token is often
  *  huge (an "attention sink"), so they are drawn on a log scale. */
+/** The prompt the shown tokens came from, and the size of the last real run (a draft reuses it). */
+let ranText = ''
+let lastShape = { L: 12, nh: 8 }
+const norm = (t: string) => t.trim().replace(/\s+/g, ' ')
+const MAX_DRAFT = 48
+/** Typed words, split the way a reader would (the real tokenizer runs with the model). */
+export function draftPieces(text: string, lang: string): string[] {
+  try {
+    const seg = new (Intl as any).Segmenter(lang, { granularity: 'word' })
+    return [...seg.segment(text)].map((x: any) => (x.segment as string).trim()).filter(Boolean).slice(0, MAX_DRAFT)
+  } catch { return text.split(/\s+/).filter(Boolean).slice(0, MAX_DRAFT) }
+}
+
 function llmOut() {
+  const st = useStore.getState()
+  const real = llmReal()
+  const typed = st.input.kind === 'text' ? st.input.text : ''
+  if (!norm(typed) || (real && norm(typed) === norm(ranText))) return real
+  // the user typed something that has not been run: their words become the prompt tiles, the blocks wait for Run
+  const tokens = draftPieces(typed, useZoo.getState().lang)
+  const T = tokens.length, { L, nh } = lastShape
+  return {
+    id: `draft|${typed}`, draft: true, running: st.running, T, L, nh, tokens, emb: tokens.map(() => 0.6), resid: new Array(T * L).fill(0),
+    heads: new Array(L * nh).fill(0), attn: Array.from({ length: L }, () => new Array(T).fill(0)), done: false,
+    probs: new Array(10).fill(0), labels: new Array(10).fill(''),
+  }
+}
+
+function llmReal() {
   const st = useStore.getState()
   const T = st.tokens.length, L = st.layers.length
   if (!T || !L) return null
+  lastShape = { L, nh: st.layers[0].head_norm.length }
   const lg = (v: number) => Math.log1p(Math.abs(v))
   const resid = st.layers.flatMap((l: any) => l.resid_norm.slice(0, T).map(lg))
   const rmax = Math.max(1e-6, ...resid)
@@ -255,10 +295,13 @@ function llmOut() {
   }
 }
 
+{ const s = useStore.getState(); if (s.tokens.length) ranText = s.input.kind === 'text' ? s.input.text : s.prompt }
 // The real model follows the shared run: new layers redraw it, and a finished run plays from the start.
 useStore.subscribe((s, p) => {
   const z = useZoo.getState()
-  if (z.net !== 'llm' || (s.layers === p.layers && s.final === p.final && s.tokens === p.tokens)) return
+  // new tokens belong to the prompt that was sent (the box may change again while it runs)
+  if (s.tokens !== p.tokens && s.tokens.length) ranText = s.input.kind === 'text' ? s.input.text : s.prompt
+  if (z.net !== 'llm' || (s.layers === p.layers && s.final === p.final && s.tokens === p.tokens && s.input === p.input && s.running === p.running)) return
   z.recompute()
   if (s.final && s.final !== p.final) { z.pause(); useZoo.setState({ t: 0 }); z.play() }
 })
