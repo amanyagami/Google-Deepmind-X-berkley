@@ -8,7 +8,7 @@ import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
-import { Hint, Inspector, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
+import { Explainer, Hint, Inspector, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
@@ -80,6 +80,7 @@ function DrawPad() {
   return (
     <div className="s6padwrap">
       <div className="s6pad">
+        <Explainer id="pad" placement="top-right"><Say id="pad" /></Explainer>
         <canvas ref={cv} data-pad width={PAD} height={PAD} aria-label="Draw a number here" role="img" style={{ touchAction: 'none' }}
           onPointerDown={(e) => {
             if (e.pointerType === 'mouse' && e.button !== 0) return
@@ -473,6 +474,19 @@ function FirstVisit() {
   )
 }
 
+/* ------------------------------------------------------------------------------ explainers (R2-3) */
+/** Two or three short lines per animation (plain words, TODO section 6.4). */
+const EXPLAIN: Record<NetId | 'pad', string[]> = {
+  llm: ['Each dot is a word. Lines show what it listens to.', 'The bars at the end are its guesses for the next word.'],
+  mlp: ['Pixels go in on the left. Each layer mixes them.', 'Ten bars come out, one for each digit.'],
+  cnn: ['Small filters slide over the picture. They find edges and curves.', 'Then the net picks a digit.'],
+  rnn: ['It reads the digit one row at a time.', 'It keeps a memory of the rows it saw.'],
+  vit: ['It cuts the picture into patches. Each patch is a token.', 'Attention lets the patches talk to each other.'],
+  vlm: ['It looks at the picture first.', 'Then it writes a caption, one word at a time.'],
+  pad: ['Draw a number. Five networks read it as you draw.', 'Each pill shows what one network guessed.'],
+}
+const Say = ({ id }: { id: NetId | 'pad' }) => <>{EXPLAIN[id].map((l, i) => <p key={i} style={{ margin: '0 0 4px' }}>{l}</p>)}</>
+
 /* --------------------------------------------------------------------- progress strip (R2-2) */
 /** With automatic downloads the first-visit card is gone: one slim line says what is coming, how big it is and how far along. */
 function AutoStrip() {
@@ -816,6 +830,7 @@ export function ZooView() {
             <p className="small mono">{FLOPS[net as DigitNet].split('≈').pop()?.trim()}<Hint>Work per image: {FLOPS[net as DigitNet]}. Computed in this page, on this device.</Hint></p>
           </div>
         )}
+        <Explainer key={net} id={net === 'llm' ? 'model' : `net-${net}`} placement={net === 'llm' ? 'top-left' : 'bottom-left'}><Say id={net} /></Explainer>
         <Empty />
         <Crumb />
         <Legend />
