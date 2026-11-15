@@ -626,3 +626,32 @@ s4describe('S4 chooseDefault', () => {
     s4expect(S4.multilingualFor('image-classification')).toBeNull()
   })
 })
+
+s4describe('S4 file selection and speech language', () => {
+  const MB = 1048576
+  const gpt2 = [
+    ['onnx/model.onnx', 312], ['onnx/model_quantized.onnx', 225], ['onnx/model_fp16.onnx', 156], ['onnx/model_q4f16.onnx', 156],
+    ['onnx/decoder_model_merged_quantized.onnx', 80], ['onnx/decoder_model_quantized.onnx', 79], ['onnx/decoder_with_past_model_quantized.onnx', 79], ['config.json', 0.001], ['tokenizer.json', 1],
+  ].map(([rfilename, mb]) => ({ rfilename: rfilename as string, size: Math.round((mb as number) * MB) }))
+  s4it('plans exactly the graph the loader fetches (model_*, not the decoder_model family)', () => {
+    s4expect(S4.loaderBases(gpt2.map((f) => f.rfilename))).toEqual(['model'])
+    const info = S4.onnxInfo(gpt2)
+    s4expect(info.sizes.q8).toBe(225 * MB)
+    s4expect(info.sizes.fp16).toBe(156 * MB)
+    s4expect(S4.selectModelFiles(gpt2, 'q8').map((f) => f.path).sort()).toEqual(['config.json', 'onnx/model_quantized.onnx', 'tokenizer.json'])
+  })
+  s4it('whisper layout: encoder + merged decoder, nothing else', () => {
+    const w = ['encoder_model', 'decoder_model_merged', 'decoder_model', 'decoder_with_past_model'].map((b) => ({ rfilename: `onnx/${b}_quantized.onnx`, size: 10 * MB }))
+    s4expect(S4.loaderBases(w.map((f) => f.rfilename))).toEqual(['encoder_model', 'decoder_model_merged'])
+    s4expect(S4.onnxInfo(w).sizes.q8).toBe(20 * MB)
+    s4expect(S4.selectModelFiles(w, 'q8').length).toBe(2)
+  })
+  s4it('the spoken language rides on the audio input', async () => {
+    const f = globalThis.fetch
+    globalThis.fetch = (async () => new Response(new Uint8Array(10))) as any
+    try {
+      const r = await S4.validateInput('automatic-speech-recognition', { kind: 'audio', url: 'https://x/a.wav', language: 'es' }, { prepare: false })
+      s4expect(r.ok && r.prepared.language).toBe('es')
+    } finally { globalThis.fetch = f }
+  })
+})

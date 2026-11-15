@@ -66,7 +66,7 @@ export type Task = 'text-generation' | 'fill-mask' | 'text-classification' | 'im
 export type TaskInput =
   | { kind: 'text'; text: string }
   | { kind: 'image'; url: string }     // a URL or an object URL from an upload
-  | { kind: 'audio'; url: string }     // a URL, an upload, or a microphone recording
+  | { kind: 'audio'; url: string; language?: string }   // a URL, an upload, or a microphone recording; language: the spoken language of a multilingual speech model (a name such as 'spanish' or a code such as 'es')
 
 /** Everything the app needs to know about a Hugging Face repo before running it. */
 export interface ModelSpec {
@@ -141,9 +141,29 @@ export function onnxDtype(file: string): string | null {
 
 /** Dtypes and total bytes per dtype from a repo's file list. A model made of several files (encoder + decoder) sums them,
  *  using the merged decoder when there is one; weights stored beside the graph (.onnx_data) are counted too. */
+/** The graphs Transformers.js loads for a repo: `model` (decoder-only and encoder-only models), or encoder + merged decoder (Whisper and friends).
+ *  Null when the repo has neither layout (then every graph is counted). Other graphs in the repo (decoder_model, ...) are never fetched. */
+export function loaderBases(names: string[]): string[] | null {
+  const has = (b: string) => names.some((n) => n.startsWith(`onnx/${b}.onnx`) || n.startsWith(`onnx/${b}_`))
+  if (names.some((n) => n.startsWith('onnx/encoder_model'))) return ['encoder_model', has('decoder_model_merged') ? 'decoder_model_merged' : 'decoder_model']
+  if (names.some((n) => /^onnx\/model(\.onnx|_)/.test(n))) return ['model']
+  return null
+}
+const STRICT_DTYPES = ['fp32', 'fp16', 'q8', 'q4', 'q4f16', 'bnb4']
+
 export function onnxInfo(siblings: { rfilename: string; size?: number | null }[]): { dtypes: string[]; sizes: Record<string, number> } {
   const size = new Map(siblings.map((f) => [f.rfilename, f.size ?? 0]))
   const names = siblings.map((f) => f.rfilename)
+  const bases = loaderBases(names)
+  if (bases) {
+    const sizes: Record<string, number> = {}
+    for (const d of STRICT_DTYPES) {
+      const files = bases.map((b) => `onnx/${b}${DTYPE_SUFFIX[d]}.onnx`)
+      if (files.every((f) => size.has(f))) sizes[d] = files.reduce((a, f) => a + (size.get(f) ?? 0) + names.filter((n) => n.startsWith(`${f}_data`)).reduce((x, n) => x + (size.get(n) ?? 0), 0), 0)
+    }
+    const order = ['q4f16', 'fp16', 'q4', 'bnb4', 'q8', 'fp32']
+    if (Object.keys(sizes).length) return { dtypes: order.filter((d) => d in sizes), sizes }
+  }
   const hasMerged = names.some((n) => n.startsWith('onnx/decoder_model_merged'))
   const part = new Map<string, number>()   // dtype|component -> bytes (model_quantized, _int8 and _uint8 are all q8: count the largest once)
   for (const n of names) {
@@ -364,10 +384,15 @@ export function selectModelFiles(siblings: { rfilename: string; size?: number | 
   const hasMerged = names.some((n) => n.startsWith('onnx/decoder_model_merged'))
   const suf = (DTYPE_SUFFIX[dtype] ?? '') + '.onnx'
   const out: { path: string; size: number }[] = []
+  const bases = loaderBases(names)
+  const strict = bases ? new Set(bases.map((b) => `onnx/${b}${suf}`)) : null
+  const wanted = strict && [...strict].every((f) => names.includes(f))
   for (const f of siblings) {
     const n = f.rfilename, size = f.size ?? 0
     if (!n.includes('/')) {
       if (SMALL_EXT.test(n) && size < 32 * MiB && !/safetensors|pytorch_model|\.index\./.test(n)) out.push({ path: n, size })
+    } else if (n.startsWith('onnx/') && wanted) {
+      if (strict!.has(n) || [...strict!].some((g) => n.startsWith(`${g}_data`))) out.push({ path: n, size })
     } else if (n.startsWith('onnx/')) {
       const isGraph = n.endsWith('.onnx') && onnxDtype(n) === dtype && n.endsWith(suf)
       const base = n.slice(5).replace(SUFFIX, '')
@@ -542,7 +567,7 @@ export async function clearModels(): Promise<void> {
 /* ------------------------------------------------------------------ task inputs */
 export interface InputCaps { deviceMemoryGB?: number | null; maxTextTokens?: number; maxImageBytes?: number; maxAudioSeconds?: number; maxAudioBytes?: number; prepare?: boolean }
 export const INPUT_LIMITS = { textTokens: 512, textTokensLowMem: 128, imageBytes: 10 * MiB, audioSeconds: 30, audioBytes: 40 * MiB, imageSide: 1024, audioRate: 16000 }
-export type Prepared = { text?: string; image?: string; audio?: Float32Array; revoke?: () => void }
+export type Prepared = { text?: string; image?: string; audio?: Float32Array; language?: string; revoke?: () => void }
 export type InputCheck = { ok: true; prepared: Prepared } | { ok: false; code: 'input'; error: string }
 
 export function maxTextTokens(caps?: InputCaps): number {
@@ -580,8 +605,13 @@ export async function validateInput(task: Task, input: TaskInput, caps?: InputCa
   } catch { return bad(`The ${kind} could not be read. Check the link, or upload the file instead.`) }
   const cap = kind === 'image' ? (caps?.maxImageBytes ?? INPUT_LIMITS.imageBytes) : (caps?.maxAudioBytes ?? INPUT_LIMITS.audioBytes)
   if (blob.size > cap) return bad(`That ${kind} file is ${mb(blob.size)}. The limit is ${mb(cap)}${kind === 'audio' ? ` (and ${caps?.maxAudioSeconds ?? INPUT_LIMITS.audioSeconds} s of sound)` : ''}.`)
-  if (caps?.prepare === false) return { ok: true, prepared: kind === 'image' ? { image: input.url } : {} }
-  try { return kind === 'image' ? await prepareImage(blob) : await prepareAudio(blob, caps) } catch (e: any) {
+  if (caps?.prepare === false) return { ok: true, prepared: kind === 'image' ? { image: input.url } : { language: (input as any).language } }
+  try {
+    if (kind === 'image') return await prepareImage(blob)
+    const a = await prepareAudio(blob, caps)
+    if (a.ok && input.kind === 'audio') a.prepared.language = input.language
+    return a
+  } catch (e: any) {
     return bad(e instanceof BrowserRunError ? e.message : `That ${kind} could not be decoded. Try a common format (${kind === 'image' ? 'JPEG, PNG, WebP' : 'WAV, MP3, M4A'}).`)
   }
 }
@@ -805,7 +835,9 @@ async function runOnce(spec: ModelSpec, task: Task, prep: Prepared, emit: (f: an
     if (isDegenerate(r.map((x) => x.score))) throw degenerateError()
     emit({ type: 'final', labels: r.map((x) => ({ label: x.label, score: x.score })), seconds: seconds() })
   } else {
-    const r: any = await pipe(prep.audio, { chunk_length_s: 30 })
+    // a multilingual Whisper (not the .en models) takes the spoken language; English-only models ignore it
+    const multi = !/\.en$/i.test(repo) && !!prep.language
+    const r: any = await pipe(prep.audio, { chunk_length_s: 30, ...(multi ? { language: prep.language, task: 'transcribe' } : {}) })
     firstMs = performance.now() - start
     const said = String(r?.text ?? '').trim()
     let rms = 0
@@ -1368,7 +1400,7 @@ export async function runInBrowser(spec: ModelSpec, input: TaskInput, onFrame: (
   const prep = check.prepared
   const tr: Transferable[] = prep.audio ? [prep.audio.buffer as ArrayBuffer] : []
   try {
-    return await callWorker<BrowserRunStats>(w, { type: 'run', spec, input, device: opts.device, dtype: opts.dtype, avoid: opts.avoid ?? (await f16Avoid(opts.device, opts.dtype)), prepared: { text: prep.text, image: prep.image, audio: prep.audio } }, { onFrame, onProgress: opts.onProgress }, opts.signal, tr)
+    return await callWorker<BrowserRunStats>(w, { type: 'run', spec, input, device: opts.device, dtype: opts.dtype, avoid: opts.avoid ?? (await f16Avoid(opts.device, opts.dtype)), prepared: { text: prep.text, image: prep.image, audio: prep.audio, language: prep.language } }, { onFrame, onProgress: opts.onProgress }, opts.signal, tr)
   } catch (e: any) {
     if (workerBroken && e?.code === 'unsupported' && !opts.signal?.aborted) return runInThread(spec, input, onFrame, { ...opts, prepared: undefined })
     throw e
