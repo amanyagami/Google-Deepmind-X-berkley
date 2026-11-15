@@ -187,8 +187,9 @@ function Pcb() {
   }, [])
   return (
     <group>
+      {PT.light && <RoundedBox args={[21, 0.3, 13.5]} radius={0.25} smoothness={4} position={[0, -0.22, 0.25]}><meshBasicMaterial color="#c3c9e4" /></RoundedBox>}
       <RoundedBox args={[20.5, 0.3, 13]} radius={0.2} smoothness={4} position={[0, -0.15, 0.25]}>
-        <meshPhysicalMaterial color={PT.light ? '#cfd6ee' : '#08101f'} metalness={PT.light ? 0.1 : 0.4} roughness={0.65} clearcoat={0.4} />
+        {PT.light ? <meshBasicMaterial color="#e9ecf8" /> : <meshPhysicalMaterial color="#08101f" metalness={0.4} roughness={0.65} clearcoat={0.4} />}
       </RoundedBox>
       <lineSegments geometry={geo}><lineBasicMaterial color={PT.light ? '#aab4d6' : '#17223f'} transparent opacity={0.5} /></lineSegments>
     </group>
@@ -612,9 +613,9 @@ export function PowerScene({ active = true }: { active?: boolean }) {
             {st.run && recording && !baseline && <FpsCap fps={30} />}
             <SlowWatch onStep={st.step} />
             <FirstFrame name="machine" />
-            <color attach="background" args={[light ? '#eef0fb' : '#05080f']} />
+            <color attach="background" args={[light ? '#f1f3fb' : '#05080f']} />
             <WheelScrollsPage />
-            <fog attach="fog" args={[light ? '#eef0fb' : '#05080f', 26, 54]} />
+            <fog attach="fog" args={[light ? '#f1f3fb' : '#05080f', 26, 54]} />
             <ambientLight intensity={0.3} />
             <directionalLight position={[6, 12, 8]} intensity={1.3} />
             <Environment resolution={64} environmentIntensity={0.6}>

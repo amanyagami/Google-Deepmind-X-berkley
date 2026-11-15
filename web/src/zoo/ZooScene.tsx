@@ -193,13 +193,14 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   }
   // other controls that sit over the stage (timeline, prompt dock, buttons): chips keep clear of them
   let oc = obstCache.get(cv)
-  if (!oc || oc.n++ > 3) { oc = { n: 0, els: [...document.querySelectorAll('button,select,input,textarea,a[href],[role=button],[role=slider]')].filter((e) => !cv.parentElement?.contains(e)) }; obstCache.set(cv, oc) }
+  if (!oc || oc.n++ > 3) { oc = { n: 0, els: [...document.querySelectorAll('button,select,input,textarea,a[href],[role=button],[role=slider],.phud,.zoohud,.mcol>*,.tlbar,[data-obstacle]')].filter((e) => !cv.parentElement?.contains(e)) }; obstCache.set(cv, oc) }
   const obst: B[] = []
   for (const e of oc.els) {
     const r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue
     if (r.right > cr.left && r.left < cr.right && r.bottom > cr.top && r.top < cr.bottom) { const x = r.left + r.width / 2 - cr.left, y = r.top + r.height / 2 - cr.top; obst.push({ it: null as any, ax: x, ay: y, w: r.width, h: r.height, p: 0, x, y }) }
   }
   const placed: B[] = [...obst]
+
   const hit = (b: B) => placed.some((p) => Math.abs(b.x - p.x) < (b.w + p.w) / 2 + 3 && Math.abs(b.y - p.y) < (b.h + p.h) / 2 + 2)
   const clampX = (b: B, x: number) => (W - 16 < b.w ? W / 2 : Math.min(W - 8 - b.w / 2, Math.max(8 + b.w / 2, x)))
   const clampY = (b: B, y: number) => (H - top - 8 < b.h ? (H + top) / 2 : Math.min(H - 8 - b.h / 2, Math.max(top + b.h / 2, y)))
@@ -215,7 +216,9 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
         b.x = gx; b.y = gy; if (!hit(b)) { best = dd; bx = gx; by = gy }
       }
       b.x = bx; b.y = by
+      if (best === Infinity && b.p < 2) { b.it.show = false; continue } // no free spot on a crowded stage: a low-priority chip steps aside
     }
+    b.it.show = true
     placed.push(b)
   }
   for (const b of words) {
@@ -235,7 +238,7 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   let moved = false
   for (const b of chips) {
     const dx = Math.round(b.x - b.ax), dy = Math.round(b.y - b.ay), it = b.it
-    if (it.el.style.visibility) it.el.style.visibility = ''
+    const vv = it.show ? '' : 'hidden'; if (it.el.style.visibility !== vv) { it.el.style.visibility = vv; moved = true }
     if (dx !== it.dx || dy !== it.dy) { moved = true; it.dx = dx; it.dy = dy; it.el.style.transform = dx || dy ? `translate(${dx}px,${dy}px)` : '' }
     const far = Math.hypot(dx, dy) > 26
     const lead = far ? `${Math.hypot(dx, dy).toFixed(0)}|${(Math.atan2(-dy, -dx) * 180 / Math.PI).toFixed(1)}` : ''
@@ -262,6 +265,11 @@ export function KitProvider({ children, top = 48 }: { children: ReactNode; top?:
     if (now - at.current < 50 || (s === sig.current && now - at.current < 500)) return
     sig.current = layout(reg, gl.domElement, top) ? '' : s; at.current = now // a pass that moved something runs again next frame, until it settles
   })
+  // also while frames are paused (a test baseline, a hidden-then-shown stage): page controls and cards still move
+  useEffect(() => {
+    const id = window.setInterval(() => { if (!document.hidden) layout(reg, gl.domElement, top) }, 400)
+    return () => window.clearInterval(id)
+  }, [reg, gl, top])
   return <KitCtx.Provider value={reg}>{children}</KitCtx.Provider>
 }
 
@@ -1074,16 +1082,17 @@ export function ZooScene() {
         onPointerMissed={(e) => { if (e.type === 'dblclick') Z().select(null); else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
-            <color attach="background" args={[light ? '#eef0fb' : '#060913']} />
+            <color attach="background" args={[light ? '#f1f3fb' : '#060913']} />
             <WheelScrollsPage />
-            <fog attach="fog" args={[light ? '#eef0fb' : '#060913', 30, 56]} />
+            <fog attach="fog" args={[light ? '#f1f3fb' : '#060913', 30, 56]} />
             <SlowWatch onStep={st.step} />
             <FirstFrame name="model" />
             <ambientLight intensity={0.4} />
             <Environment resolution={64} environmentIntensity={0.5}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
             </Environment>
-            <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}><meshPhysicalMaterial color={light ? '#dfe3f5' : '#0a1122'} metalness={light ? 0 : 0.4} roughness={0.7} /></RoundedBox>
+            {light && <RoundedBox args={[22.5, 0.2, 15.5]} radius={0.2} smoothness={3} position={[0, -0.4, 0.3]}><meshBasicMaterial color="#c3c9e4" /></RoundedBox>}
+            <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}>{light ? <meshBasicMaterial color="#e9ecf8" /> : <meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} />}</RoundedBox>
             <Stage />
             <Chip pos={[-9.2, 0.2, 6.6]} name="▲ positive  ○ negative" sub="amber is above zero, blue is below zero" prio={0.3} />
             <Outlines />
