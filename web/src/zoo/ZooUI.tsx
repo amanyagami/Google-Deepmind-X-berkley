@@ -399,6 +399,10 @@ function ErrorBox({ text, action, onAction }: { text: string; action: string; on
 /** Consent, download progress and run status. The numbers come from the main store (plan, download, running). */
 function Status() {
   const { pending, download, running, runStatus, runErr, runErrCode, confirm, decline, cancel } = useStore(useShallow((s) => ({ runErrCode: s.runErrCode, pending: s.pendingDownload, download: s.download, running: s.running, runStatus: s.runStatus, runErr: s.runErr, confirm: s.confirmDownload, decline: s.declineDownload, cancel: s.cancelDownload })))
+  if (runErr && !download) {
+    const retry = runErrCode === 'offline' || runErrCode === 'aborted' || runErrCode === 'unknown'
+    return <ErrorBox text={runErr} action={retry ? 'Try again' : 'Pick another model'} onAction={() => (retry ? void runNow() : window.dispatchEvent(new Event('ns-open-picker')))} />
+  }
   const auto = typeof (useStore.getState() as any).autoStart === 'function'   // the strip over the scene shows progress
   if (auto && (pending || download || running)) return null
   if (pending) {
@@ -745,6 +749,10 @@ function RunDock() {
 /* ---------------------------------------------------------------------------- result card */
 function Result() {
   const lang = useZoo((s) => s.lang)
+  const typed = useStore((s) => (s.input.kind === 'text' ? s.input.text : ''))
+  const preview = useMemo(() => {
+    try { const seg = new (Intl as any).Segmenter(lang, { granularity: 'word' }); return [...seg.segment(typed)].filter((x: any) => x.isWordLike).map((x: any) => x.segment as string).slice(0, 40) } catch { return typed.split(/\s+/).filter(Boolean).slice(0, 40) }
+  }, [typed, lang])
   const tokens = useStore((s) => s.tokens)
   const { lastStats, fit, spec, final, runErr, running, examples, loadExample } = useStore(useShallow((s) => ({ lastStats: s.lastStats, fit: s.fit, spec: s.spec, final: s.final, runErr: s.runErr, running: s.running, examples: s.examples, loadExample: s.loadExample })))
   const alt = runErr && /smaller|too big/i.test(runErr) ? examples.find((e) => e.repo.toLowerCase() !== spec?.repo.toLowerCase() && (e.task ?? 'text-generation') === spec?.task) : null
@@ -752,6 +760,9 @@ function Result() {
   const text: string | undefined = final?.text
   return (
     <div className="stack">
+      {tokens.length === 0 && preview.length > 0 && (
+        <div className="ccard"><h4>Your text <small>before the model cuts it up</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{preview.map((t, i) => <span key={i} className="s6tok" data-token>{t}</span>)}</div></div>
+      )}
       {tokens.length > 0 && (
         <div className="ccard"><h4>Tokens <small>the pieces the model reads</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{tokens.slice(0, 60).map((t, i) => <span key={i} className="s6tok" data-token>{showTok(t)}</span>)}</div></div>
       )}
