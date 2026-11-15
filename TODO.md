@@ -20,6 +20,89 @@ real Hub: T1, T2, A9, L6 pass (default model, first result 22.9 s on WebGPU over
 
 ---
 
+# Round 3 plan: Kundali (reviewed 2026-11-14)
+
+Owner asks, in their words: one place to pick a model; fewer things in the top bar; details only on hover; a reset view;
+a camera that never turns the view into nonsense and springs back on release; input that fits the model and shows in 3D;
+the prompt dock only for language models; SmolLM2 must load; dark by default; a "how it works" first page; rename to
+Kundali with a kundali logo; deploy on Google Cloud Run; a public leaderboard that updates per visitor; find and fix every
+small rough edge.
+
+## R3.0 Done already (on branch `fix-tags`)
+- [x] Tags no longer blink (chips were obstacles for each other; plus hysteresis). `1050bd3`
+- [x] Dark by default, no light flash; theme cycles Dark/System/Light. S1 `04e39bf`
+- [x] Name card has 4 illustrated "how it works" steps (1480 side by side, 390 2x2). S1 `04e39bf`
+- [x] Explainers wait for the name card; bigger name-card heading. S8 `145ad36`
+- [x] Renamed to Kundali (title, brand, share card, downloads, server, deploy name). `e043615`
+- [x] Cloud Run files: Dockerfile, nginx config, .dockerignore, README deploy section (not deployed). `c63179b`
+
+## R3.1 Decisions (fixed; change only with the owner)
+- D13 **One model control.** Keep the tab row in the Model section (SmolLM2 | MLP | CNN | RNN | ViT | VLM | More…).
+  "More…" opens the Hugging Face link box (the old top-bar picker's job). The top-bar picker goes.
+- D14 **Minimal top bar**: logo + brand · Leaderboard · profile menu (name, theme, device line, privacy, clear saved
+  models). No Model|Machine switch on wide screens (both are on screen); on phones a slim 2-tab switch under the bar.
+- D15 **Input follows the model.** LLM: language + prompt + Example + Run dock. MLP/CNN/ViT: digit pad. RNN: digit pad,
+  fed to the net row by row (shown as steps). VLM: image + short question. Whatever is entered appears live in 3D.
+- D16 **Calm cards.** Every HUD card shows a name + one headline number at rest; the rest on hover, keyboard focus or
+  tap. Same box size open or closed (the extra lines overlay downward), no layout shift.
+- D17 **Guided camera.** Clamped orbit (azimuth ±35°, polar 35°–75°, never below the floor), zoom limited to where labels
+  stay readable, pan clamped to the model's box, damping, zoom to cursor. Drag/pinch/wheel is a **peek**: on release
+  (wheel: 600 ms after the last tick) the camera springs back to the default pose in ~550 ms (instant under reduced
+  motion); grabbing again cancels the return. **Click to focus** a block/part keeps that view until Reset view, Esc or a
+  click on empty space. **Reset view** button in the same corner of both scenes + Home key.
+- D18 **Leaderboard**: Firestore, anonymous device ID (random UUID in localStorage; stored only as SHA-256), best score
+  kept, latest + visits tracked. Sent after Test all unless "Keep me off the leaderboard" is on. Name card says so plainly.
+  One Node 22 server in the container serves the site (same headers as today) and `/api/scores`, `/api/leaderboard`.
+- D19 **Power numbers add up.** Cores ≤ package always; "rest of chip" = package − cores, never negative; if the sensors
+  disagree, show only the package and say "split unavailable".
+- D20 **Logo**: a North-Indian kundali chart (square, both diagonals, inner diamond = 12 houses) as inline SVG in the
+  brand gradient; same mark as favicon (SVG) and on the share card.
+
+## R3.2 Lanes (disjoint files; one worktree each; base `fix-tags`)
+| Lane | Owner | Files it may edit | Items |
+| --- | --- | --- | --- |
+| L-load | SmolLM2 agent (running) | api.ts download/worker, sw.js, _headers, CSP | SmolLM2 loads cold and after reload |
+| L-input | input agent (running) | zoo/ZooUI.tsx, zooStore.ts, nets.ts, input layer of ZooScene.tsx; dock-visibility line in App.tsx | D15, dock only for LLMs |
+| L-board | leaderboard agent (running) | server file, Dockerfile, .dockerignore, ui/Leaderboard.tsx, submit call in MachineUI.tsx, name-card copy | D18 |
+| L-shell | S1 | App.tsx top bar/profile menu/picker removal, shell CSS, logo + favicon | D13 top-bar side, D14, D20, audit (a) |
+| L-cam | S8 | controls block of ZooScene.tsx and PowerScene.tsx, new shared ui/camera.ts | D17 |
+| L-cards | new agent | ui/charts.tsx, HUD card markup (class names only) in MachineUI.tsx and ZooUI.tsx | D16, audit (d) |
+| L-machine | new agent | hw/* except PowerScene camera | D19, audit (c) |
+
+Overlaps: App.tsx (L-shell owns; L-input and L-board each add one isolated line and merge first); ZooScene.tsx (L-cam
+edits only the controls block, L-input only the input layer); MachineUI.tsx (L-board one submit call, L-cards card
+markup, L-machine numbers). Merge order: L-load → L-input → L-board → L-shell → L-cam → L-cards → L-machine; harness after
+each merge; screenshots reviewed in dark and light at 1480 and 390 before calling it done.
+
+## R3.3 New acceptance checks (harness)
+- A36 one model control: exactly one element opens model choice; "More…" accepts a Hub link.
+- A37 top bar ≤ 4 interactive items at 1480 and ≤ 3 at 390; nothing wraps.
+- A38 HUD cards at rest ≤ 2 lines; hover/focus/tap shows the rest; CLS 0.
+- A39 camera: after drag + release the pose is default again within 900 ms; random drags never leave the limits;
+  click-to-focus survives release; Reset view and Home restore default.
+- A40 input per model: dock visible only for text models; changing the input changes that net's 3D input within 300 ms.
+- A41 power card: cores ≤ package and rest ≥ 0 over 200 samples.
+- A42 leaderboard: Test all submits once; second run updates the same row (visits 2, best kept); opt-out sends nothing;
+  API rejects foreign Origin, oversize body, impossible scores; rate limit works.
+- T3 real SmolLM2 cold + after reload on the real Hub (tier 3).
+
+## R3.4 Risks and answers (review)
+- Browser-computed scores can be faked. Range checks, per-device and per-IP rate limits, pillar-to-score consistency on
+  the server; the board says "self-reported".
+- The privacy promise changes (name goes public): plain sentence on the name card, opt-out, README update.
+- Spring-back camera can feel like it fights the user: return only after release, cancel on grab, never in
+  click-to-focus, snap under reduced motion.
+- Many lanes touch the Model section: file ownership above, merge order, harness after each merge.
+- Main folder `neural-studio` has foreign uncommitted files. Master is frozen; work lands on `fix-tags` until the owner
+  decides.
+- Docker Desktop does not start here (no WSL distro). Cloud Build builds the image on deploy, so local Docker is optional.
+
+## R3.5 Waiting on
+- [ ] Audit list (25–50 items) → folded into L-shell / L-input / L-machine / L-cards.
+- [ ] Owner: what to do with the foreign files in `neural-studio`.
+
+---
+
 # Neural Studio: plan v3 (reviewed, ready to split)
 
 Legend: `[x]` done and checked on the test PC, `[ ]` pending. "Checked" means a unit test, script or browser test ran
