@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { useEffect, useRef, useState } from 'react'
 import { activityAt, buildTimeline, locate, type Timeline, type Peaks } from './timeline'
 import { apiUrl, detectBackend, wsUrl } from '../base'
 import type { Capabilities } from './browserBench'
@@ -123,7 +124,11 @@ export function validateInput(row: RegistryRow, v: number | string | null | unde
 export const RESULTS_KEY = 'ns.results.v1'
 export const RESULTS_VERSION = 1
 export const RUN_ALL_ORDER: ComponentId[] = ['cpu1', 'cpun', 'cache', 'ram', 'storage', 'gpu']   // never net, energy or downloads
-export interface Snapshot { at: string; scale: Scale | null; results: Record<string, TestResult> }
+export interface Snapshot { at: string; scale: Scale | null; results: Record<string, TestResult>; name?: string }
+/** The visitor's own name (stays on this device, never sent anywhere). Loaded lazily: store.ts must not be a static dependency. */
+let nameOf = (): string => ''
+import('../store').then((m) => { nameOf = () => m.useStore.getState().name ?? '' }).catch(() => { /* no store in this context */ })
+export const visitorName = () => { try { return nameOf() } catch { return '' } }
 const HISTORY_MAX = 10
 const validResult = (r: any): r is TestResult => !!r && r.v === 1 && typeof r.component === 'string' && Array.isArray(r.samples) && typeof r.value === 'number' && !!r.input && !!r.workload
 /** Reads the stored results. Unknown versions, bad JSON and missing storage all give an empty store. */
@@ -135,7 +140,7 @@ export function loadStored(): { results: Record<string, TestResult>; history: Sn
     const d = JSON.parse(raw)
     if (!d || d.v !== RESULTS_VERSION) { try { localStorage.removeItem(RESULTS_KEY) } catch { /* ignore */ } return empty }
     const clean = (o: any) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([, r]) => validResult(r))) as Record<string, TestResult>
-    const history = (Array.isArray(d.history) ? d.history : []).filter((h: any) => h && typeof h.at === 'string').map((h: any) => ({ at: h.at, scale: h.scale ?? null, results: clean(h.results) })).slice(-HISTORY_MAX)
+    const history = (Array.isArray(d.history) ? d.history : []).filter((h: any) => h && typeof h.at === 'string').map((h: any) => ({ at: h.at, scale: h.scale ?? null, results: clean(h.results), ...(typeof h.name === 'string' ? { name: h.name } : {}) })).slice(-HISTORY_MAX)
     return { results: clean(d.results), history }
   } catch { return empty }
 }
@@ -325,7 +330,7 @@ export const useHW = create<HW>((set, get) => ({
     set((s) => {
       const first = Object.values(s.results)[0]
       if (!first) return {}
-      const history = [...s.history, { at: new Date().toISOString(), scale: first.scale, results: s.results }].slice(-HISTORY_MAX)
+      const history = [...s.history, { at: new Date().toISOString(), scale: first.scale, results: s.results, ...(visitorName() ? { name: visitorName() } : {}) }].slice(-HISTORY_MAX)
       storeResults(s.results, history)
       return { history }
     })
@@ -488,6 +493,25 @@ export const useHW = create<HW>((set, get) => ({
   setTdp(tdp) { set({ tdp }) },
   setAiInBrowser(aiInBrowser) { set({ aiInBrowser }) },
 }))
+
+/** For live readings (10 Hz telemetry, power samples): re-renders at most every `ms` (default 250 ms = 4 a second), with the
+ *  newest value, and only when the selected value changed (Object.is, or pass `eq`, e.g. zustand's shallow). The first
+ *  value is immediate. Measured: 10 Hz telemetry into subscribers cost about 46 ms of long tasks per second without it. */
+export function useHWThrottled<T>(select: (s: HW) => T, ms = 250, eq: (a: T, b: T) => boolean = Object.is): T {
+  const [v, setV] = useState<T>(() => select(useHW.getState()))
+  const sel = useRef(select); sel.current = select
+  useEffect(() => {
+    let last = 0, timer: ReturnType<typeof setTimeout> | null = null, cur = select(useHW.getState())
+    const flush = () => { timer = null; last = performance.now(); const next = sel.current(useHW.getState()); if (!eq(next, cur)) { cur = next; setV(next) } }
+    const un = useHW.subscribe(() => {
+      if (timer) return
+      const wait = ms - (performance.now() - last)
+      if (wait <= 0) flush(); else timer = setTimeout(flush, wait)
+    })
+    return () => { un(); if (timer) clearTimeout(timer) }
+  }, [ms]) // eslint-disable-line react-hooks/exhaustive-deps
+  return v
+}
 
 export type PowerMode = 'recording' | 'replay' | 'live' | 'journey' | 'none'
 

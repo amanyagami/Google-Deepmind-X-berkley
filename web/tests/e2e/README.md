@@ -61,6 +61,26 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 | L6 | companion idle watts, page open vs blank, information only (was `idlecost`; tier 3) | | |
 | T1, T2 | tier 3 smoke: real Hub reachable, real companion answers, first real score | | |
 
+## Round 2 checks (SKIP until the hook exists; `needs` names are feature probes run on a fresh profile)
+| ID | Measures | Needs (probe) | Owner |
+| --- | --- | --- | --- |
+| A1 | contrast in dark AND light (`localStorage ns.theme`, `data-theme` on `<html>`, emulated `prefers-color-scheme`); light runs only when `[data-theme-toggle]` exists | theme | S1 (tokens), all |
+| A8' | no click: first Hub model-file request <= 2 s after navigation, `[role=progressbar]` present (rate: A9b tier 3) | auto | S4 |
+| A9 | progress bar with aria values and a Cancel button while downloading, no start click | auto | S4, S6 |
+| A10' | service worker allowed; second load with `setOffline(true)`: page renders, zero model requests, zero failed app files | sw, auto | S4 (cache), S1 (`/sw.js`; needs a hashed build) |
+| A13' | `.pair` stages side by side at 1480 and 1100 (gap 0..16 px), stacked at 390, no `[data-drawer]` open on a fresh profile, `[data-drawer-toggle]` open+close CLS <= 0.02 | pair | S1 |
+| A27 | cards `[data-explainer]` visible on load, hidden <= 7 s, `[data-explainer-bulb]` hover shows, leave hides <= 300 ms | bulb | S7 (mounts: S5, S6, S8) |
+| A28 | rAF p95 <= 33 ms and no long task > 100 ms during `__hw.getState().runAll()`; idle p95 <= 20 ms | runAll | S8 (S5/S2 for the action) |
+| A29 | `[data-theme-toggle]` reaches `data-theme=light`, survives reload, no visible element (not canvas, not `[data-keep-dark]`) keeps a near-black background | theme | S1 |
+| A30 | `[data-score-strip]` in the first viewport; `[data-hero]` first in the drawer; 5 `[data-pillar]` rows; click toggles `aria-expanded` or `data-open`; card nesting <= 2 | strip, pillar | S5 |
+| A31 | `[data-namecard]` (with an input) first, gone after Enter, absent after reload, name inside `[data-hero]`, no request URL or body carries it; share PNG pixels are not machine-read | name | S5 (card: S1) |
+| A32 | `[data-pad]` canvas: mouse and CDP-touch stroke of a 3 gives `[data-pad-result]` containing 3 within 300 ms; width >= 280 at 390; Clear and Undo buttons (`[data-pad-clear]`, `[data-pad-undo]` or text) | pad | S6 |
+| A33 | no Stress/Robustness/sweep/scan controls in the zoo DOM or UI strings of `dist/assets/*.js` | | S6 |
+| A34 | `[data-lang-picker]` (select) or `[data-lang=code]` buttons for en es fr de hi zh ar pt fill `[data-prompt]` (or the first textarea), run via `[data-start]`/`[data-run]`, `[data-token]` tiles render, no page error | lang | S6 |
+| A35 | gzip sizes from `dist` (entry script <= 90 kB, three/stageKit chunk <= 280 kB); cold first paint <= 1.0 s at 20 Mbit; `performance.mark('ns:first-frame')` <= 2.5 s cold and <= 1.0 s repeat; <= 3 long tasks > 50 ms after it; JS heap <= 400 MB (set `NS_DIST` for another dist folder) | | S1 (mark: S8) |
+
+Extra hooks: `window.__studio.getState().autoStart` (S4), `window.__hw.getState().runAll()` and `benchRunning` (S5), `[data-drawer]` with `data-open="true|false"`, `[data-drawer-toggle]`, `[data-hero]`, `[data-pillar]`, `[data-score-strip]`, `[data-namecard]`, `[data-theme-toggle]`, `[data-explainer]`, `[data-explainer-bulb]`, `[data-pad]`, `[data-pad-result]`, `[data-lang-picker]`, `[data-prompt]`, `[data-token]`, `performance.mark('ns:first-frame')`.
+
 ## Hooks the owners expose (selectors and window APIs the checks use)
 - S1: `[data-topbar]`, `[data-dock]` (all dock controls inside it), `[data-primary]` on the main action, `[data-panel]` on side-by-side panels, `[data-testall]` on Test all.
 - S3: `window.__score = { components: string[], final(results: Record<componentId, number>) => number | {score:number} }`.
