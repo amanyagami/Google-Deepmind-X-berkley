@@ -79,6 +79,13 @@ export function onFinalScore(f: Final): void {
   } catch { /* results of two scales: no single score to send */ }
 }
 
+/** A model run that finishes after Test all changes the score on screen: send that one too, so the leaderboard and the strip agree. */
+if (typeof window !== 'undefined') window.addEventListener('ns-model-scored', () => {
+  if (!useUI.getState().batchDone || busyNow()) return
+  const h = useHW.getState(), f = computeFinal(h.results, h.history)
+  if (f.score != null) onFinalScore(f)
+})
+
 /** Test all: the one batch. Records power while it runs (useHW.runAll), then hands the final score to onFinalScore. */
 async function testAll() {
   if (busyNow()) return

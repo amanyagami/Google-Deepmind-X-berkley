@@ -770,7 +770,7 @@ function InputBox({ compact = false }: { compact?: boolean }) {
               ? <input id="s6text" data-prompt className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
               : <textarea id="s6text" data-prompt rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
             {task === 'fill-mask' && <button className="btn2 sm" disabled={replay} onClick={insertMask}>[MASK]</button>}
-            <button className="btn2 sm" disabled={replay} onClick={() => set(dflt)} title="Put the example text back">Example</button>
+            <button className="btn2 sm s6ex" disabled={replay} onClick={() => set(dflt)} title="Put the example text back">Example</button>
           </div>
           {replay && !compact && <p className="s6line">Recorded run. Pick a browser model to type your own.</p>}
         </>

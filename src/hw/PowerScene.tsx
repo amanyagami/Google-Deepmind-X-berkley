@@ -46,14 +46,18 @@ export function liveOf(k: LiveKey, s: any): string {
   const prog = s.running ? s.progress : null
   const bw = (id: string) => (s.running === id && prog?.value != null ? `${prog.value >= 100 ? Math.round(prog.value) : prog.value.toFixed(1)} ${prog.unit ?? ''}`.trim() : '')
   const bl = s.bl as import('./liveBrowser').BrowserLive | null
-  const gb = (b: number) => (b >= 1e11 ? `${Math.round(b / 2 ** 30)}` : b >= 1e10 ? (b / 2 ** 30).toFixed(1) : (b / 2 ** 30).toFixed(2))
   const kbs = (b: number) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB/s` : `${Math.round(b / 1e3)} KB/s`)
   if (k === 'psu') {
     if (!companion && bl?.battery) return bl.battery.charging ? 'plugged in' : `battery ${Math.round(bl.battery.level * 100)}%`
     const w = powerNow(s).s?.pkg_w
     return w != null && w > 0 && (companion || s.benchRunning) ? `${w.toFixed(1)} W` : ''
   }
-  if (k === 'screen' && !companion) return bl?.fps != null ? `${bl.fps} fps` : ''
+  if (k === 'screen' && !companion) {
+    // the real panel: its pixel size and the frame rate this page is drawing at
+    const dpr = window.devicePixelRatio || 1
+    const px = typeof screen !== 'undefined' && screen.width ? `${Math.round(screen.width * dpr)}×${Math.round(screen.height * dpr)}` : ''
+    return [px, bl?.fps != null ? `${bl.fps} fps` : ''].filter(Boolean).join(' · ')
+  }
   if (k === 'kbd' || k === 'screen') {
     if (s.pMode !== 'journey' || !s.journey) return ''
     const id = s.tl?.segs?.[locate(s.tl, s.playhead).i]?.id
@@ -65,9 +69,12 @@ export function liveOf(k: LiveKey, s: any): string {
     return t
   }
   if (!bl) return ''
-  if (k === 'cpu') return bl.cpu != null ? `${bl.cpu}% busy · ${bl.cores} cores` : `${bl.cores} cores`
-  if (k === 'ram') return [bl.memBytes ? `${gb(bl.memBytes)} GB used` : '', bw('ram')].filter(Boolean).join(' · ')
-  if (k === 'ssd') return [bl.storUsage != null ? `${gb(bl.storUsage)} GB used` : '', bw('storage')].filter(Boolean).join(' · ')
+  // A page sees its own memory and its own saved files, never the whole machine's: say so. navigator.hardwareConcurrency
+  // counts threads (logical processors), and deviceMemory is capped at 8 by browsers.
+  const mb = (x: number) => (x >= 2 ** 30 ? `${(x / 2 ** 30).toFixed(x >= 10 * 2 ** 30 ? 0 : 1)} GB` : `${Math.max(1, Math.round(x / 2 ** 20))} MB`)
+  if (k === 'cpu') return bl.cpu != null ? `~${bl.cpu}% busy · ${bl.cores} threads` : `${bl.cores} threads`
+  if (k === 'ram') return [bw('ram') || (bl.memBytes && !(typeof innerWidth === 'number' && innerWidth < 600) ? `this page ${mb(bl.memBytes)}` : ''), bl.memTotalGB ? `${bl.memTotalGB >= 8 ? '8 GB+' : `${bl.memTotalGB} GB`} fitted` : ''].filter(Boolean).join(' · ')
+  if (k === 'ssd') return bw('storage') || (bl.storUsage != null ? `this page saved ${mb(bl.storUsage)}` : '')
   if (k === 'nic') return `↓ ${kbs(bl.netBps)}`
   return ''
 }

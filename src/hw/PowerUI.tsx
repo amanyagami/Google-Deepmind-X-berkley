@@ -64,13 +64,15 @@ export function PowerHUD() {
           {load != null ? <><b className="pbig mono">{load}<small> %</small></b><span className="psub">· CPU load</span></> : <span className="psub">CPU load</span>}
         </>} details={<>
           {rest && bl && <div className="prow mono">
-            <div><span>cores</span><b>{bl.cores}</b></div>
-            {bl.memBytes != null && <div><span>memory used</span><b>{(bl.memBytes / 2 ** 30).toFixed(2)} GB{bl.memTotalGB ? ` of ~${bl.memTotalGB}` : ''}</b></div>}
+            <div><span>CPU threads</span><b>{bl.cores}</b></div>
+            {bl.memTotalGB != null && <div><span>memory fitted</span><b>{bl.memTotalGB >= 8 ? '8 GB or more' : `about ${bl.memTotalGB} GB`}</b></div>}
+            {bl.memBytes != null && <div><span>this page uses</span><b>{Math.max(1, Math.round(bl.memBytes / 2 ** 20))} MB</b></div>}
+            {typeof screen !== 'undefined' && screen.width > 0 && <div><span>screen</span><b>{Math.round(screen.width * (window.devicePixelRatio || 1))}×{Math.round(screen.height * (window.devicePixelRatio || 1))}</b></div>}
             {bl.fps != null && <div><span>frame rate</span><b>{bl.fps} fps</b></div>}
             <div><span>network</span><b>↓ {Math.round(bl.netBps / 1e3)} KB/s{bl.net.type ? ` · ${bl.net.type}` : ''}</b></div>
-            {bl.storUsage != null && <div><span>storage used</span><b>{(bl.storUsage / 2 ** 30).toFixed(2)} GB</b></div>}
+            {bl.storUsage != null && <div><span>saved by this page</span><b>{Math.max(0, Math.round(bl.storUsage / 2 ** 20))} MB</b></div>}
             {bl.battery && <div><span>battery</span><b>{bl.battery.charging ? 'plugged in' : `${Math.round(bl.battery.level * 100)}%`}</b></div>}
-            {caps?.gpu?.available && <div className="pwide"><span>graphics</span><b>{caps.gpu.software ? 'software' : 'WebGPU'}{caps.gpu.adapter ? ` · ${String(caps.gpu.adapter).slice(0, 40)}` : ''}</b></div>}
+            {(caps?.gpu?.available || caps?.gpu?.adapter) && <div className="pwide"><span>graphics chip</span><b>{caps.gpu.adapter ? String(caps.gpu.adapter).slice(0, 48) : 'name hidden'}{caps.gpu.available ? (caps.gpu.software ? ' · software' : ' · WebGPU') : ''}</b></div>}
           </div>}
           <p className="t5-line">
             {browser ? 'Load is estimated from how fast a small job runs on this page.' : 'Load from the operating system.'}
@@ -178,17 +180,23 @@ export function MachineTimeline() {
       const x = scaleLinear().domain([0, T]).range([0, w]), y = scaleLinear().domain([0, 100]).range([H - 16, 6])
       const xt = (b: { t: number }) => x(T - (t1 - b.t))
       const line = (f: (b: (typeof blHist)[number]) => number | null) => blHist.filter((b) => f(b) != null).map((b, i) => `${i ? 'L' : 'M'}${xt(b).toFixed(1)} ${y(f(b)!).toFixed(1)}`).join(' ')
-      const memMax = Math.max(1, ...blHist.map((b) => b.memBytes ?? 0)) * 1.25
-      const cpu = line((b) => b.cpu), fps = line((b) => (b.fps == null ? null : Math.min(100, (b.fps / 60) * 100))), mem = line((b) => (b.memBytes == null ? null : (b.memBytes / memMax) * 100))
+      // one axis, one measure: only the CPU load is a percentage. Frame rate and page memory are shown as their real numbers.
+      const cpu = line((b) => b.cpu), nowB = blHist[blHist.length - 1]
+      const cpuArea = cpu ? `${cpu} L${xt(nowB).toFixed(1)} ${y(0).toFixed(1)} L${xt(blHist.find((b) => b.cpu != null) ?? nowB).toFixed(1)} ${y(0).toFixed(1)} Z` : ''
       return (
-        <div className="pchart" ref={setBox} role="img" aria-label="Live CPU load, memory and frame rate of the last 15 seconds">
+        <div className="pchart" ref={setBox} role="img" aria-label="Live CPU load of the last 15 seconds, with the frame rate and this page's memory now">
+          <div className="plegend plnow mono" data-live-now>
+            <span><i style={{ background: 'var(--pos)' }} />CPU load{nowB.cpu != null ? <b> ~{nowB.cpu}%</b> : null}</span>
+            {nowB.fps != null && <span>screen<b> {nowB.fps} fps</b></span>}
+            {nowB.memBytes != null && <span className="plwide">this page<b> {Math.max(1, Math.round(nowB.memBytes / 2 ** 20))} MB</b></span>}
+          </div>
           <svg width={w} height={H}>
             {[0, 50, 100].map((v) => <g key={v}><line x1={0} x2={w} y1={y(v)} y2={y(v)} stroke="var(--line)" opacity={0.45} /><text x={2} y={y(v) - 2} className="pbl">{v}%</text></g>)}
-            {cpu && <path d={cpu} fill="none" stroke="var(--pos)" strokeWidth={1.8} />}
-            {mem && <path d={mem} fill="none" stroke="var(--neg)" strokeWidth={1.3} />}
-            {fps && <path d={fps} fill="none" stroke="var(--muted)" strokeWidth={1.1} strokeDasharray="3 3" />}
+            {cpuArea && <path d={cpuArea} fill="var(--pos)" opacity={0.14} />}
+            {cpu && <path d={cpu} fill="none" stroke="var(--pos)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />}
+            {nowB.cpu != null && <circle cx={xt(nowB)} cy={y(nowB.cpu)} r={3.5} fill="var(--pos)" stroke="var(--panel)" strokeWidth={2} />}
           </svg>
-          <div className="plegend mono"><span style={{ color: 'var(--pos)' }}>CPU load</span><span style={{ color: 'var(--neg)' }}>memory</span><span>fps</span></div>
+
         </div>
       )
     }

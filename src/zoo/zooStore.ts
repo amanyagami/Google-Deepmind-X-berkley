@@ -129,13 +129,13 @@ export const useZoo = create<Z>((set, get) => ({
   async loadCaps() {
     if (get().caps) return
     const hw: any = useHW.getState().caps
-    if (hw) { const mem = hw.deviceMemoryGB ?? null; set({ caps: { deviceMemoryGB: mem, line: `${hw.cores} cores · ${hw.gpu?.available ? (hw.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}` } }); return }
+    if (hw) { const mem = hw.deviceMemoryGB ?? null; set({ caps: { deviceMemoryGB: mem, line: `${hw.cores} threads · ${hw.gpu?.available ? (hw.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}` } }); return }
     let line = '', mem: number | null = (navigator as any).deviceMemory ?? null
     try {
       const m: any = await import('../hw/browserBench')
       const c = await m.probe()
       mem = c.deviceMemoryGB ?? mem
-      line = `${c.cores} cores · ${c.gpu?.available ? (c.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}`
+      line = `${c.cores} threads · ${c.gpu?.available ? (c.gpu.adapter || 'GPU') + ' with WebGPU' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}`
     } catch {
       const gpu = !!(navigator as any).gpu
       line = `${navigator.hardwareConcurrency || '?'} cores · ${gpu ? 'WebGPU ready' : 'no WebGPU, so the CPU'}${mem ? ` · ${mem} GB memory` : ''}`

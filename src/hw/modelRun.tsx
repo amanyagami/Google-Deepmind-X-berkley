@@ -17,6 +17,7 @@ export function syncModelRun(): void {
   if (!r) return
   useHW.getState().addResult(r)
   useHW.getState().snapshot()
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ns-model-scored'))
 }
 let installed = false
 /** Starts following finished runs (idempotent). Called when the machine section or the facts below load. */

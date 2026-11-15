@@ -25,7 +25,30 @@ export interface Capabilities {
 export type Emit = (m: any) => void
 
 /* ------------------------------------------------------------------------------------- info */
+/** "ANGLE (AMD, AMD Radeon(TM) 780M Graphics (0x000015BF) Direct3D11 vs_5_0 ps_5_0, D3D11)" -> "AMD Radeon 780M Graphics". */
+export function cleanGpuName(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  let s = String(raw).trim()
+  const m = /^ANGLE \((?:[^,]*),\s*(.+?)(?:,\s*[^,]*)?\)$/.exec(s)
+  if (m) s = m[1]
+  if (/swiftshader|llvmpipe/i.test(s)) return 'Software renderer'
+  s = s.replace(/^ANGLE Metal Renderer:\s*/i, '').replace(/\s*\(0x[0-9a-f]+\)/gi, '').replace(/\s+(Direct3D|OpenGL|Vulkan|Metal|D3D)\d*(\s.*)?$/i, '').replace(/\((TM|R|C)\)/gi, '').replace(/^ANGLE Metal Renderer:\s*/i, '').replace(/\s{2,}/g, ' ').trim()
+  return s || null
+}
+/** The graphics chip's real name as the drawing API reports it (WebGL), which is more specific than WebGPU's vendor + family. */
+export function webglGpuName(): string | null {
+  try {
+    const gl = (document.createElement('canvas').getContext('webgl2') ?? document.createElement('canvas').getContext('webgl')) as WebGLRenderingContext | null
+    if (!gl) return null
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    const name = cleanGpuName(String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)))
+    try { gl.getExtension('WEBGL_lose_context')?.loseContext() } catch { /* ignore */ }
+    return name && !/^webkit webgl$|^mozilla$/i.test(name) ? name : null
+  } catch { return null }
+}
 async function gpuName(): Promise<string | null> {
+  const real = typeof document !== 'undefined' ? webglGpuName() : null
+  if (real) return real
   try {
     const ad = await (navigator as any).gpu?.requestAdapter?.()
     const i = ad?.info ?? (await ad?.requestAdapterInfo?.())
@@ -693,14 +716,15 @@ async function gpuCanary(device: any, f16: boolean): Promise<boolean> {
 
 const SOFTWARE_RE = /swiftshader|llvmpipe|software|basic render|microsoft basic|softpipe/i
 async function probeGpu(): Promise<Capabilities['gpu']> {
-  const none = { available: false, software: false, f16: false, timestamps: false, adapter: null, canaryOk: null, maxBuffer: null }
+  const real = typeof document !== 'undefined' ? webglGpuName() : null
+  const none = { available: false, software: false, f16: false, timestamps: false, adapter: real, canaryOk: null, maxBuffer: null }
   const gpu = (navigator as any).gpu
   if (!gpu) return none
   const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' })
   if (!adapter) return none
   const info = adapter.info ?? (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {})
-  const name = [info.vendor, info.architecture, info.description].filter(Boolean).join(' ') || null
-  const software = !!(adapter.isFallbackAdapter ?? info.isFallbackAdapter) || (name != null && SOFTWARE_RE.test(name))
+  const name = real ?? ([info.vendor, info.architecture, info.description].filter(Boolean).join(' ') || null)
+  const software = !!(adapter.isFallbackAdapter ?? info.isFallbackAdapter) || SOFTWARE_RE.test([info.vendor, info.architecture, info.description].filter(Boolean).join(' '))
   let f16 = adapter.features?.has('shader-f16') ?? false
   const timestamps = adapter.features?.has('timestamp-query') ?? false
   const out = { available: true, software, f16, timestamps, adapter: name, canaryOk: null as boolean | null, maxBuffer: (adapter.limits?.maxBufferSize as number) ?? null }

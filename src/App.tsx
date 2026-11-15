@@ -20,13 +20,19 @@ const CUP = 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 
 const PLAY = 'M7 4.5v15l12-7.5z', SHIELD = 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z', CHEV = 'M6 9l6 6 6-6'
 
 /** What this device offers, in one short phrase. Uses the capability probe when it exists, else a quick guess. */
+let deviceLine: Promise<string> | null = null
 function useDevice() {
   const [t, setT] = useState('This device · checking…')
   useEffect(() => {
     let live = true
-    const mem = (c: number | null) => (c ? ` · ~${c} GB` : '')
-    const guess = () => `This device · ${(navigator as any).gpu ? 'WebGPU' : 'WebAssembly (slower)'}${mem((navigator as any).deviceMemory ?? null)}`
-    Promise.all([import('./hw/browserBench'), import('./hw/hwStore')]).then(([b, h]) => b.probe().then((c) => { h.useHW.getState().setCaps(c); return c })).then((c) => live && setT(`This device · ${c.gpu.available && !c.gpu.software ? 'WebGPU' : 'WebAssembly (slower)'}${mem(c.deviceMemoryGB)}`)).catch(() => live && setT(guess()))
+    deviceLine ??= new Promise<string>((done) => {
+    // what this browser really reports: the graphics chip's name, logical processors, memory (capped at 8 GB by browsers)
+    const mem = (c: number | null) => (c ? ` · ${c >= 8 ? '8 GB+' : `~${c} GB`} memory` : '')
+    const thr = navigator.hardwareConcurrency ? ` · ${navigator.hardwareConcurrency} threads` : ''
+    const guess = () => `This device${thr}${mem((navigator as any).deviceMemory ?? null)} · ${(navigator as any).gpu ? 'WebGPU' : 'WebAssembly (slower)'}`
+    Promise.all([import('./hw/browserBench'), import('./hw/hwStore')]).then(([b, h]) => b.probe().then((c) => { h.useHW.getState().setCaps(c); return c })).then((c) => done(`${c.gpu.adapter ? String(c.gpu.adapter).slice(0, 44) : 'This device'}${thr}${mem(c.deviceMemoryGB)} · ${c.gpu.available && !c.gpu.software ? 'WebGPU' : 'WebAssembly (slower)'}`)).catch(() => done(guess()))
+    })
+    void deviceLine.then((x) => live && setT(x))
     return () => { live = false }
   }, [])
   return t
@@ -86,6 +92,7 @@ function NameCard() {
       <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
         <div className="namefields">
           <div className="namebrand"><KundaliLogo size={20} /><span>Kundali</span></div>
+          <p className="nametag">Watch a real AI model think on your own device, then score your hardware.</p>
           <h3 id="nm-t">What is your name?</h3>
           <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
           <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
@@ -205,6 +212,25 @@ function DetailsBar() {
   return <button className="drawer-tab dock-details" data-drawer-toggle aria-expanded={open} onClick={() => setRail(which, !open)}>{open ? 'Close' : 'Details'}</button>
 }
 
+/** Phones, Machine view: the bottom bar names the real device (the prompt belongs to the Model view). */
+function DeviceDock() {
+  // the device probe starts only once the Machine view is on screen, so the first paint of the Model view pays nothing for it
+  const view = useStore((s) => s.appView)
+  const [on, setOn] = useState(false)
+  useEffect(() => { if (view === 'power') setOn(true) }, [view])
+  return on ? <DeviceDockLine /> : <div className="devdock" data-device-dock />
+}
+function DeviceDockLine() {
+  const device = useDevice()
+  const [name, ...rest] = device.split(' · ')
+  return (
+    <div className="devdock" data-device-dock>
+      <span className="devico" aria-hidden><Ico d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M7 5h10a2 2 0 012 2v10a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2zM9.5 9.5h5v5h-5z" /></span>
+      <span className="devtxt"><b>{name}</b><span className="mono">{rest.join(' · ')}</span></span>
+    </div>
+  )
+}
+
 /** Default dock: the prompt and Run. S5 and S6 fill #dock-slot with Test all, progress and Cancel. */
 function Dock() {
   const ref = useRef<HTMLElement>(null)
@@ -237,6 +263,7 @@ function Dock() {
     <footer className="dock" data-dock ref={ref}>
       <div id="dock-slot">
       </div>
+      <DeviceDock />
     </footer>
   )
 }
@@ -382,7 +409,7 @@ export default function App() {
   useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first === 'journey' ? 'power' : first, false)) }, [])
   useEffect(() => { try { history.replaceState(null, '', view === 'model' ? location.pathname + location.search : `${location.search}#${view}`) } catch { /* ignore */ } }, [view])
   return (
-    <div className="app">
+    <div className="app" data-view={view}>
       <TopBar view={view} />
       <OfflineStrip />
       <UpdateStrip />
