@@ -238,7 +238,7 @@ textarea:disabled { opacity: 0.7; }
 /* Drawer: the rail is closed by default and slides over the stage (transform only). Details tab on the stage edge. */
 .rail, .inspector { display: flex; flex-direction: column; position: absolute; top: 0; right: 0; bottom: 0; width: min(340px, 100%); z-index: 15; border-left: 1px solid var(--line); background: var(--panel); box-shadow: -12px 0 32px #0006; transform: translateX(105%); visibility: hidden; transition: transform var(--d2) var(--ease), visibility 0s linear var(--d2); }
 .sect[data-rail='open'] .rail, .sect[data-rail='open'] .inspector { transform: none; visibility: visible; transition: transform var(--d2) var(--ease); }
-.drawer-tab { position: absolute; z-index: 16; right: 0; top: 50%; translate: 0 -50%; display: inline-flex; align-items: center; gap: 6px; min-height: 96px; min-width: 32px; padding: 8px 6px; writing-mode: vertical-rl; font: 600 12px var(--body); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-right: 0; border-radius: var(--r-md) 0 0 var(--r-md); cursor: pointer; transition: transform var(--d2) var(--ease); }
+.drawer-tab { position: absolute; z-index: 45; right: 0; top: 50%; translate: 0 -50%; display: inline-flex; align-items: center; gap: 6px; min-height: 96px; min-width: 32px; padding: 8px 6px; writing-mode: vertical-rl; font: 600 12px var(--body); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-right: 0; border-radius: var(--r-md) 0 0 var(--r-md); cursor: pointer; transition: transform var(--d2) var(--ease); }
 .drawer-tab:hover { border-color: var(--pos); }
 .sect[data-rail='open'] .drawer-tab { transform: translateX(calc(-1 * min(340px, 100%))); }
 .stage { height: 100%; }
