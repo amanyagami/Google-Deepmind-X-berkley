@@ -599,6 +599,7 @@ const T5_CSS = `
 .main.machine .phud .nspeek-txt,.main.machine .caption .nspeek-txt,.main.machine .mtl .nspeek-txt{display:flex;align-items:center;gap:8px}
 .main.machine .phud .nspeek-det{right:auto;min-width:268px}
 .main.machine .phud .nspeek{min-width:196px}
+.main.machine .phud .nspeek-sum{min-height:28px}
 .main.machine .phud .nspeek-txt{white-space:nowrap}
 .main.machine .phud .pbig{min-width:2.2ch;text-align:right;font-variant-numeric:tabular-nums}
 .main.machine .mtl .tlpeek .nspeek-det{right:auto;min-width:260px;top:auto;bottom:calc(100% - 1px);border-top:1px solid var(--line);border-bottom:0;border-radius:var(--peek-r,16px) var(--peek-r,16px) 0 0}
