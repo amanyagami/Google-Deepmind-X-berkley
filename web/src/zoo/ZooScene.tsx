@@ -230,7 +230,7 @@ export function fitBox(box: THREE.Box3, dir: THREE.Vector3, fov: number, W: numb
 }
 
 /* -------------------------------------------------------------------------- label layout (the chips) */
-interface Item { el: HTMLElement; kind: 'chip' | 'word'; dx: number; dy: number; show: boolean; lead: string }
+interface Item { el: HTMLElement; kind: 'chip' | 'word'; dx: number; dy: number; show: boolean; lead: string; ok?: number }
 type Reg = Map<HTMLElement, Item>
 const KitCtx = createContext<Reg | null>(null)
 
@@ -256,14 +256,23 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   }
   const placed: B[] = [...obst]
 
-  const hit = (b: B) => placed.some((p) => Math.abs(b.x - p.x) < (b.w + p.w) / 2 + 3 && Math.abs(b.y - p.y) < (b.h + p.h) / 2 + 2)
+  let pad = 0 // extra clearance, used to leave a chip's current spot only when it truly collides
+  const hit = (b: B) => placed.some((p) => Math.abs(b.x - p.x) < (b.w + p.w) / 2 + 3 + pad && Math.abs(b.y - p.y) < (b.h + p.h) / 2 + 2 + pad)
   const clampX = (b: B, x: number) => (W - 16 < b.w ? W / 2 : Math.min(W - 8 - b.w / 2, Math.max(8 + b.w / 2, x)))
   const clampY = (b: B, y: number) => (H - top - 8 < b.h ? (H + top) / 2 : Math.min(H - 8 - b.h / 2, Math.max(top + b.h / 2, y)))
   chips.sort((a, b) => b.p - a.p || a.ax - b.ax)
   for (const b of chips) {
     const offs: [number, number][] = [[0, 0], [0, -b.h], [0, b.h], [-b.w, 0], [b.w, 0], [-b.w, -b.h], [b.w, -b.h], [-b.w, b.h], [b.w, b.h], [0, -2 * b.h], [0, 2 * b.h], [-b.w * 1.6, 0], [b.w * 1.6, 0]]
     let done = false
-    for (const [ox, oy] of offs) { b.x = clampX(b, b.ax + ox); b.y = clampY(b, b.ay + oy); if (!hit(b)) { done = true; break } }
+    // Steady tags: keep the spot the chip had unless it now collides; go back to the anchor only when that is clearly free.
+    const pdx = b.it.dx, pdy = b.it.dy
+    if (pdx || pdy) {
+      pad = 8; b.x = clampX(b, b.ax); b.y = clampY(b, b.ay)
+      if (!hit(b)) done = true
+      pad = 0
+      if (!done) { b.x = clampX(b, b.ax + pdx); b.y = clampY(b, b.ay + pdy); if (!hit(b)) done = true }
+    }
+    if (!done) for (const [ox, oy] of offs) { b.x = clampX(b, b.ax + ox); b.y = clampY(b, b.ay + oy); if (!hit(b)) { done = true; break } }
     if (!done) { // no free slot nearby: take the nearest free spot anywhere on the stage
       let best = Infinity, bx = clampX(b, b.ax), by = clampY(b, b.ay)
       for (let gy = top + b.h / 2; gy <= H - 8 - b.h / 2; gy += 10) for (let gx = 8 + b.w / 2; gx <= W - 8 - b.w / 2; gx += 10) {
@@ -271,9 +280,12 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
         b.x = gx; b.y = gy; if (!hit(b)) { best = dd; bx = gx; by = gy }
       }
       b.x = bx; b.y = by
-      if (best === Infinity && b.p < 2) { b.it.show = false; continue } // no free spot on a crowded stage: a low-priority chip steps aside
+      if (best === Infinity && b.p < 2) { // no free spot on a crowded stage: a low-priority chip steps aside, but only after 1.5 s without one (no blinking)
+        if (b.it.ok !== undefined && performance.now() - b.it.ok < 1500) { b.x = clampX(b, b.ax + pdx); b.y = clampY(b, b.ay + pdy); b.it.show = true; placed.push(b); continue }
+        b.it.show = false; continue
+      }
     }
-    b.it.show = true
+    b.it.show = true; b.it.ok = performance.now()
     placed.push(b)
   }
   for (const b of words) {
@@ -286,7 +298,9 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
   for (const b of words) {
     const inside = b.ax - b.w / 2 >= 2 && b.ax + b.w / 2 <= W - 2 && b.ay - b.h / 2 >= 2 && b.ay + b.h / 2 <= H - 2
     b.x = b.ax; b.y = b.ay
-    b.it.show = inside && !hit(b)
+    const now = performance.now(), fits = inside && !hit(b)
+    if (fits) b.it.ok = now
+    b.it.show = fits || (b.it.ok !== undefined && now - b.it.ok < 600 && b.it.show) // a word leaves only after 0.6 s of not fitting
     if (b.it.show) placed.push(b)
   }
   // writes
