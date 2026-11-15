@@ -17,7 +17,6 @@ real Hub: T1, T2, A9, L6 pass (default model, first result 22.9 s on WebGPU over
 - [ ] Light-mode scene polish (floor colour, HUD card over a label): with S8.
 - [ ] Final plain-words copy pass beyond A26's sampling, and a fresh-eyes design review of every view in both themes.
 - [ ] SSRF-safe fetch helper (`security.py`) is written and tested but not wired to any endpoint.
-- [ ] Drop `server/app/bench.py` split? No: kept as its own module (size).
 
 ---
 
