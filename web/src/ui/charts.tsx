@@ -55,14 +55,59 @@ export function DimBars({ values, height = 56 }: { values: number[]; height?: nu
   )
 }
 
-export function Spark({ values, height = 44, label }: { values: number[]; height?: number; label: string }) {
-  const m = Math.max(1e-9, ...values)
-  const pts = values.map((v, i) => `${(i / Math.max(1, values.length - 1)) * 100},${height - 3 - (v / m) * (height - 8)}`).join(' ')
+/** The one sparkline. `values` scale to their own maximum; `data` is a percent series (max 100 unless `max` is given). */
+export function Spark({ values, data, height, label, color = 'var(--pos)', max }: { values?: number[]; data?: number[]; height?: number; label?: string; color?: string; max?: number }) {
+  const v = values ?? data ?? []
+  const H = height ?? (data && !values ? 38 : 44)
+  const m = Math.max(1e-9, max ?? (values ? Math.max(...v) : 100))
+  const pts = v.map((x, i) => `${(i / Math.max(1, v.length - 1)) * 100},${(H - 3 - (Math.min(x, m) / m) * (H - 8)).toFixed(2)}`).join(' ')
   return (
-    <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" className="spark" style={{ height }} role="img" aria-label={label}>
-      <polyline points={`0,${height} ${pts} 100,${height}`} fill="color-mix(in srgb, var(--pos) 18%, transparent)" stroke="none" />
-      <polyline points={pts} fill="none" stroke="var(--pos)" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+    <svg viewBox={`0 0 100 ${H}`} preserveAspectRatio="none" className="spark" style={{ height: H }} role={label ? 'img' : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
+      <polyline points={`0,${H} ${pts} 100,${H}`} fill={`color-mix(in srgb, ${color} 18%, transparent)`} stroke="none" />
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
     </svg>
+  )
+}
+
+const prefersReduced = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+
+/** The one animated counter: eases from the last shown value to the new one (instant under reduced motion). */
+export function Counter({ value, digits = 0 }: { value: number | null; digits?: number }) {
+  const [v, setV] = useState(value ?? 0)
+  const from = useRef(value ?? 0)
+  useEffect(() => {
+    if (value === null) return
+    if (prefersReduced() || from.current === value) { from.current = value; setV(value); return }
+    const a = from.current, t0 = performance.now(), dur = 500
+    let raf = requestAnimationFrame(function step(t) {
+      const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3)
+      from.current = a + (value - a) * e; setV(from.current)
+      if (k < 1) raf = requestAnimationFrame(step)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [value])
+  return <>{value === null ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })}</>
+}
+
+/** The one arc gauge: score on a 0..max arc, an animated number in the middle, an optional label under it. */
+export function Gauge({ score, size = 150, max = 2000, label, small, aria }: { score: number | null; size?: number; max?: number; label?: string; small?: boolean; aria?: string }) {
+  const r = size / 2 - 12, c = size / 2
+  const frac = score === null ? 0 : Math.max(0, Math.min(1, score / max))
+  const a0 = Math.PI * 0.8, a1 = Math.PI * 2.2
+  const pt = (a: number) => `${c + r * Math.cos(a)} ${c + r * Math.sin(a)}`
+  const arc = `M ${pt(a0)} A ${r} ${r} 0 1 1 ${pt(a1)}`
+  const [shown, setShown] = useState(0)
+  useEffect(() => { const id = requestAnimationFrame(() => setShown(frac)); return () => cancelAnimationFrame(id) }, [frac])
+  const sw = small ? 6 : 9
+  return (
+    <div className="gauge" style={{ width: size, height: size * (small ? 0.82 : 0.9) }}>
+      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} role="img" aria-label={aria ?? `${label ?? 'score'} ${score ?? 'not measured'}`}>
+        <path d={arc} fill="none" stroke="var(--line)" strokeWidth={sw} strokeLinecap="round" />
+        <path d={arc} fill="none" stroke="var(--pos)" strokeWidth={sw} strokeLinecap="round" pathLength={1} strokeDasharray="1 1" strokeDashoffset={1 - shown}
+          style={{ opacity: shown > 0 ? 1 : 0, transition: prefersReduced() ? 'none' : 'stroke-dashoffset .7s cubic-bezier(.2,.8,.2,1)', filter: 'drop-shadow(0 0 6px color-mix(in srgb, var(--pos) 60%, transparent))' }} />
+      </svg>
+      <div className="gnum"><b className={small ? 's' : ''}><Counter value={score} /></b>{label && <span>{label}</span>}</div>
+    </div>
   )
 }
 
@@ -257,7 +302,15 @@ const Bulb = ({ on }: { on: boolean }) => (
   </svg>
 )
 
-/** An explanation behind a bulb. Click opens. The mouse can leave toward the bubble (150 ms grace). Tap opens and a tap
+/** The info mark (ⓘ) for Hint. The bulb belongs to the one scene explainer per stage. */
+const Info = ({ on }: { on: boolean }) => (
+  <svg viewBox="0 0 28 28" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+    <circle cx="14" cy="14" r="8.6" fill={on ? 'currentColor' : 'none'} fillOpacity={on ? 0.16 : 0} />
+    <path d="M14 13v5.4" /><circle cx="14" cy="9.6" r="0.6" fill="currentColor" />
+  </svg>
+)
+
+/** An explanation behind an ⓘ. Click opens. The mouse can leave toward the bubble (150 ms grace). Tap opens and a tap
  *  outside closes on touch. Esc closes. Focus moving into the bubble keeps it open. */
 export function Hint({ children, label = 'More info' }: { children: React.ReactNode; label?: string }) {
   useInjectedStyle('ns-hint', HINT_CSS)
@@ -292,9 +345,70 @@ export function Hint({ children, label = 'More info' }: { children: React.ReactN
   return (
     <span ref={wrap} className="hintwrap nshint" onMouseEnter={cancel} onMouseLeave={closeLater}
       onBlur={(e) => { if (!wrap.current?.contains(e.relatedTarget as Node | null)) setOpen(false) }}>
-      <button type="button" className="nshint-btn hintbtn" aria-label={label} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => { cancel(); setOpen((o) => !o) }}><Bulb on={open} /></button>
+      <button type="button" className="nshint-btn hintbtn" aria-label={label} aria-expanded={open} aria-describedby={open ? id : undefined} onClick={() => { cancel(); setOpen((o) => !o) }}><Info on={open} /></button>
       {open && <span ref={pop} id={id} role="tooltip" tabIndex={-1} className={`nshint-pop hintpop${up ? ' up' : ''}`}>{children}</span>}
     </span>
+  )
+}
+
+/* ------------------------------------------------------------------ Peek (D16: calm cards) */
+
+const PEEK_CSS = `
+.nspeek{position:relative}
+.nspeek-sum{display:flex;align-items:center;gap:8px;min-width:0;min-height:24px}
+.nspeek-txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nspeek-tog{all:unset;box-sizing:border-box;flex:none;width:var(--hit,40px);height:var(--hit,40px);margin:-8px -10px -8px 0;display:inline-flex;align-items:center;justify-content:center;border-radius:var(--r-md,12px);cursor:pointer;color:var(--muted,#9aa5c7);-webkit-tap-highlight-color:transparent}
+.nspeek-tog svg{width:18px;height:18px;display:block}
+.nspeek-tog:hover{color:var(--fg,#e8ecf8)}
+.nspeek-tog:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:-4px}
+.nspeek-det{position:absolute;z-index:3;left:-1px;right:-1px;top:calc(100% - 1px);box-sizing:border-box;display:flex;flex-direction:column;gap:6px;padding:4px 16px 14px;background:var(--peek-bg,color-mix(in srgb,var(--bg,#0a0e19) 95%,transparent));border:1px solid var(--line,#27314f);border-top:0;border-radius:0 0 var(--peek-r,16px) var(--peek-r,16px);box-shadow:0 18px 40px var(--nsx-shadow,rgba(0,0,0,.5));color:var(--fg,#e8ecf8);opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--d1,120ms) linear,visibility 0s linear var(--d1,120ms)}
+.nspeek-det p{margin:0}
+.nspeek[data-open]>.nspeek-det,.nspeek:not([data-shut]):focus-within>.nspeek-det{opacity:1;visibility:visible;pointer-events:auto;transition:opacity var(--d1,120ms) linear,visibility 0s}
+@media (hover:hover){.nspeek:not([data-shut]):hover>.nspeek-det{opacity:1;visibility:visible;pointer-events:auto;transition:opacity var(--d1,120ms) linear,visibility 0s}}
+.nspeek[data-vis]{border-bottom-left-radius:0;border-bottom-right-radius:0}
+.nspeek-tog[aria-expanded="true"] svg{transform:rotate(180deg)}
+@media (prefers-reduced-motion:reduce){.nspeek-det,.nspeek[data-open]>.nspeek-det,.nspeek:focus-within>.nspeek-det,.nspeek:hover>.nspeek-det{transition:none}}
+`
+const Chevron = () => <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M5.5 8l4.5 4.5L14.5 8" /></svg>
+
+/** A calm card: `summary` (one line) is always shown; `details` overlay downward on hover, keyboard focus or a tap on the
+ *  toggle. The box never changes size (no layout shift). Esc closes. Opacity-only fade, none under reduced motion. */
+export function Peek({ summary, details, label = 'Show details', className, ...rest }: {
+  summary: React.ReactNode; details: React.ReactNode; label?: string; className?: string
+} & Omit<React.HTMLAttributes<HTMLDivElement>, 'children'>) {
+  useInjectedStyle('ns-peek', PEEK_CSS)
+  const [open, setOpen] = useState(false)      // pinned by a tap / click
+  const [shut, setShut] = useState(false)      // closed by Esc / toggle until the pointer or focus leaves
+  const [hov, setHov] = useState(false)
+  const [foc, setFoc] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const id = useId()
+  const vis = !shut && (open || hov || foc)
+  const close = useCallback(() => { setOpen(false); setShut(true) }, [])
+  useEffect(() => {
+    if (!vis) return
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { close(); if (root.current?.contains(document.activeElement)) e.stopPropagation() } }
+    const down = (e: Event) => { if (open && !root.current?.contains(e.target as Node)) close() }
+    document.addEventListener('keydown', key, true); document.addEventListener('pointerdown', down, true)
+    return () => { document.removeEventListener('keydown', key, true); document.removeEventListener('pointerdown', down, true) }
+  }, [vis, open, close])
+  const toggle = (e: React.MouseEvent) => {
+    const touch = (e.nativeEvent as PointerEvent).pointerType === 'touch'
+    if (touch ? open : vis) close()
+    else { setShut(false); setOpen(true) }
+  }
+  return (
+    <div {...rest} ref={root} className={`nspeek${className ? ' ' + className : ''}`} data-peek data-open={open && !shut ? '' : undefined} data-shut={shut ? '' : undefined} data-vis={vis ? '' : undefined}
+      onPointerEnter={(e) => { if (e.pointerType !== 'touch') setHov(true) }}
+      onPointerLeave={(e) => { if (e.pointerType !== 'touch') { setHov(false); if (!foc) setShut(false) } }}
+      onFocus={() => setFoc(true)}
+      onBlur={(e) => { if (!root.current?.contains(e.relatedTarget as Node | null)) { setFoc(false); setOpen(false); if (!hov) setShut(false) } }}>
+      <div className="nspeek-sum">
+        <div className="nspeek-txt">{summary}</div>
+        <button type="button" className="nspeek-tog" aria-label={label} aria-expanded={vis} aria-controls={id} onClick={toggle}><Chevron /></button>
+      </div>
+      <div className="nspeek-det" id={id} data-peek-details>{details}</div>
+    </div>
   )
 }
 
@@ -390,14 +504,14 @@ export function inspectParent(i: Inspect): Inspect {
   return null
 }
 
-/* ------------------------------------------------------------------ inspect mode toggle (persistent) */
+/* ------------------------------------------------------------------ inspect: no mode any more (B6) */
 
-const modeSubs = new Set<() => void>()
-let modeOn = (() => { try { return localStorage.getItem('ns.inspect') === '1' } catch { return false } })()
-/** The persistent `Inspect` toggle. S8 reads isInspectOn() to decide whether hover outlines show. */
-export const isInspectOn = () => modeOn
-export const setInspectOn = (v: boolean) => { modeOn = v; try { localStorage.setItem('ns.inspect', v ? '1' : '0') } catch { /* private mode */ } modeSubs.forEach((f) => f()) }
-export const useInspectOn = () => useSyncExternalStore((f) => { modeSubs.add(f); return () => { modeSubs.delete(f) } }, () => modeOn, () => false)
+/** There is no Inspect mode: clicking a block always inspects, and hover outlines always show. These stay so the
+ *  scene code that reads them keeps working; they always answer "on". */
+export const isInspectOn = () => true
+/** @deprecated no-op: the Inspect switch is gone. */
+export const setInspectOn = (_v: boolean) => {}
+export const useInspectOn = () => true
 
 /** A small tooltip chip for hover (state 1). S8 renders it near the pointer. */
 export function InspectTip({ label, x, y }: { label: string; x: number; y: number }) {
@@ -1025,7 +1139,6 @@ export function Inspector({ className }: { className?: string }) {
   useInjectedStyle('ns-inspector', INSPECTOR_CSS)
   const inspect = useZoo((s) => s.inspect)
   const setInspect = useZoo((s) => s.setInspect)
-  const on = useInspectOn()
   const [pill, setPill] = useState(() => { try { return localStorage.getItem(PILL_KEY) !== '1' } catch { return true } })
   const dismiss = useCallback(() => { setPill(false); try { localStorage.setItem(PILL_KEY, '1') } catch { /* private mode */ } }, [])
   useEffect(() => { if (inspect && pill) dismiss() }, [inspect, pill, dismiss])
@@ -1047,10 +1160,10 @@ export function Inspector({ className }: { className?: string }) {
   useEffect(() => { if (sel && sel.kind === 'block' && sel.name) useZoo.getState().setInspect({ kind: 'tensor', name: sel.name }) }, [sel])
   useEffect(() => { if (window.__ns7) window.__ns7.set = (i: Inspect) => useZoo.getState().setInspect(i) }, [])
   if (!inspect) {
+    if (!pill) return null
     return (
       <div className={`nsx-bar ${className ?? ''}`}>
-        <button type="button" className="nsx-btn" aria-pressed={on} onClick={() => setInspectOn(!on)}>{on ? '● ' : '○ '}Inspect</button>
-        {pill && <span className="nsx-pill" role="status">Click any block to inspect<button type="button" aria-label="Dismiss" onClick={dismiss}>×</button></span>}
+        <span className="nsx-pill" role="status">Click any block to inspect it.<button type="button" aria-label="Dismiss" onClick={dismiss}>×</button></span>
       </div>
     )
   }
@@ -1066,11 +1179,11 @@ const INSPECTOR_CSS = `
 .nsx-bar{display:flex;gap:var(--s2,8px);align-items:center;flex-wrap:wrap}
 .nsx-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 12px;border-radius:var(--r-pill,999px);background:var(--surface2,#1b2542);border:1px solid var(--line,#27314f);color:var(--fg,#e8ecf8);font:400 var(--t0,14px)/1.3 var(--body,system-ui,sans-serif)}
 .nsx-pill button{all:unset;cursor:pointer;width:var(--hit,40px);height:var(--hit,40px);margin:-8px 0;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;color:var(--muted,#9aa5c7)}
-.nsx-tip{position:fixed;z-index:70;pointer-events:none;padding:5px 10px;border-radius:var(--r-sm,8px);background:var(--panel,#0f1526);border:1px solid var(--line,#27314f);color:var(--fg,#e8ecf8);font:400 var(--t-1,11.5px)/1.3 var(--body,system-ui,sans-serif);transform:translate(10px,10px)}
+.nsx-tip{position:fixed;z-index:70;pointer-events:none;padding:5px 10px;border-radius:var(--r-sm,8px);background:var(--panel,#0f1526);border:1px solid var(--line,#27314f);color:var(--fg,#e8ecf8);font:400 13px/1.3 var(--body,system-ui,sans-serif);transform:translate(10px,10px)}
 .nsx-card{box-sizing:border-box;width:100%;max-width:760px;padding:var(--s4,16px);border-radius:var(--r-lg,18px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);color:var(--fg,#e8ecf8);font:400 var(--t0,14px)/1.45 var(--body,system-ui,sans-serif);display:flex;flex-direction:column;gap:var(--s3,12px)}
 .nsx-card .mono,.nsx-bar .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
 .nsx-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s2,8px)}
-.nsx-crumb{font-size:var(--t-1,11.5px);color:var(--muted,#9aa5c7);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nsx-crumb{font-size:13px;color:var(--muted,#9aa5c7);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nsx-crumb i{font-style:normal}
 .nsx-crumb [aria-current]{color:var(--fg,#e8ecf8);font-weight:600;text-shadow:0 0 14px color-mix(in srgb,var(--nsx-pos) 75%,transparent)}
 .nsx-link{all:unset;cursor:pointer;color:var(--muted,#9aa5c7);text-decoration:underline;text-underline-offset:2px;padding:10px 0}
@@ -1079,23 +1192,25 @@ const INSPECTOR_CSS = `
 .nsx-title{margin:0;font:600 var(--t2,20px)/1.2 var(--body,system-ui,sans-serif);display:flex;align-items:center;flex-wrap:wrap}
 .nsx-role{margin:0;color:var(--muted,#9aa5c7)}
 .nsx-facts{display:flex;flex-wrap:wrap;gap:var(--s2,8px) var(--s5,24px);margin:0}
-.nsx-facts dt{font-size:var(--t-1,11.5px);color:var(--faint,#8a95b8)}
+.nsx-facts dt{font-size:12px;color:var(--faint,#8a95b8)}
 .nsx-facts dd{margin:0}
 .nsx-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;margin:0}
 .nsx-actions,.nsx-tools{display:flex;flex-wrap:wrap;gap:var(--s2,8px);align-items:center}
 .nsx-sp{flex:1}
-.nsx-btn{all:unset;box-sizing:border-box;cursor:pointer;min-height:var(--hit,40px);padding:0 var(--s4,16px);display:inline-flex;align-items:center;justify-content:space-between;gap:var(--s3,12px);border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--surface,#141c32);color:var(--fg,#e8ecf8);font:500 var(--t0,14px)/1 var(--body,system-ui,sans-serif);transition:border-color var(--d1,120ms),background var(--d1,120ms)}
+.nsx-btn{all:unset;box-sizing:border-box;cursor:pointer;min-height:var(--hit,40px);padding:0 14px;display:inline-flex;align-items:center;justify-content:space-between;gap:var(--s3,12px);border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:transparent;color:var(--fg,#e8ecf8);font:600 13px/1 var(--body,system-ui,sans-serif);transition:border-color var(--d1,120ms),background var(--d1,120ms)}
 .nsx-btn:hover:not(:disabled){border-color:var(--muted,#9aa5c7)}
+.nsx-link{font-weight:600}
 .nsx-btn:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:2px}
-.nsx-btn.primary{background:var(--nsx-grad);border-color:transparent;color:#fff;box-shadow:0 4px 16px -4px color-mix(in srgb,#7c5cff 60%,transparent)}
-.nsx-btn.primary:hover:not(:disabled){filter:brightness(1.1)}
+.nsx-btn.primary{background:var(--pos,#ffa94d);border-color:transparent;color:var(--on-pos,#0a0e19)}
+.nsx-btn.primary:hover:not(:disabled){filter:brightness(1.08)}
+.nsx-btn.primary:focus-visible{outline:2px solid var(--on-pos,#0a0e19);outline-offset:-4px;box-shadow:0 0 0 2px var(--fg,#e8ecf8)}
 .nsx-btn.sm{min-width:var(--hit,40px);padding:0;justify-content:center}
 .nsx-btn:disabled{opacity:.45;cursor:default}
 .nsx-btn[aria-pressed="true"]{border-color:var(--pos,#ffa94d)}
 .nsx-tlist{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .nsx-tlist .nsx-btn{width:100%}
-.nsx-muted{margin:0;color:var(--faint,#8a95b8);font-size:var(--t-1,11.5px)}
-.nsx-note{margin:0;padding:8px 12px;border-radius:var(--r-sm,8px);background:var(--surface,#141c32);border:1px dashed var(--line,#27314f);font-size:var(--t-1,11.5px)}
+.nsx-muted{margin:0;color:var(--faint,#8a95b8);font-size:13px}
+.nsx-note{margin:0;padding:8px 12px;border-radius:var(--r-sm,8px);background:var(--surface,#141c32);border:1px dashed var(--line,#27314f);font-size:13px}
 .nsx-err{margin:0;color:var(--bad,#ff7a7a)}
 .nsx-load{display:flex;flex-direction:column;gap:var(--s2,8px);align-items:flex-start}
 .nsx-prog{width:100%;height:8px;border-radius:4px;background:var(--surface,#141c32);overflow:hidden}
@@ -1108,15 +1223,15 @@ const INSPECTOR_CSS = `
 .nsx-thumb{position:absolute;right:8px;top:8px;border:1px solid var(--line,#27314f);border-radius:6px;overflow:hidden;opacity:.92;cursor:pointer;background:var(--nsx-canvas)}
 .nsx-thumb canvas{display:block;width:100%;height:100%}
 .nsx-thumbwin{position:absolute;border:1.5px solid #fff;outline:1px solid #000a;box-sizing:border-box;pointer-events:none;min-width:3px;min-height:3px}
-.nsx-scale{position:absolute;left:8px;top:8px;padding:3px 9px;border-radius:var(--r-pill,999px);background:var(--nsx-grad);box-shadow:0 0 14px color-mix(in srgb,#7c5cff 45%,transparent);font-size:11px;font-weight:600;color:#fff;pointer-events:none}
+.nsx-scale{position:absolute;left:8px;top:8px;padding:3px 9px;border-radius:var(--r-pill,999px);background:var(--nsx-grad);box-shadow:0 0 14px color-mix(in srgb,#7c5cff 45%,transparent);font-size:12px;font-weight:600;color:#fff;pointer-events:none}
 .nsx-readout{position:absolute;left:8px;bottom:8px;padding:3px 8px;border-radius:6px;background:color-mix(in srgb,var(--panel,#0f1526) 90%,transparent);border:1px solid var(--line,#27314f);font-size:12px;color:var(--fg,#e8ecf8);pointer-events:none;max-width:calc(100% - 16px)}
 .nsx-readout:empty{display:none}
 .nsx-legend{display:flex;flex-direction:column;gap:3px}
 .nsx-lbar{height:10px;border-radius:5px;background:linear-gradient(90deg,var(--nsx-neg),var(--nsx-mid) 50%,var(--nsx-pos))}
-.nsx-llab{display:flex;justify-content:space-between;font-size:var(--t-1,11.5px);color:var(--muted,#9aa5c7)}
+.nsx-llab{display:flex;justify-content:space-between;font-size:12px;color:var(--muted,#9aa5c7)}
 .nsx-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px;margin:0}
 .nsx-stats div{padding:6px 8px;border-radius:var(--r-sm,8px);background:var(--surface,#141c32)}
-.nsx-stats dt{font-size:11px;color:var(--faint,#8a95b8)}
+.nsx-stats dt{font-size:12px;color:var(--faint,#8a95b8)}
 .nsx-stats dd{margin:0;font-size:var(--t0,14px)}
 .nsx-hist{width:100%;height:44px;display:block}
 .nsx-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--s3,12px)}
@@ -1166,15 +1281,15 @@ if (typeof window !== 'undefined') {
   }
 }
 
-/* ------------------------------------------------------------------ Explainer (round 2, R2-3) */
+/* ------------------------------------------------------------------ Explainer (round 3, B4) */
 
 const EXPL_CSS = `
 .nsx-ecard>span{display:block}
 .nsx-expl{position:absolute;z-index:5;pointer-events:none;width:0;height:0}
-.nsx-expl[data-p="top-left"]{top:8px;left:calc(8px + var(--off,0px))}
-.nsx-expl[data-p="top-right"]{top:8px;right:calc(8px + var(--off,0px))}
-.nsx-expl[data-p="bottom-left"]{bottom:8px;left:calc(8px + var(--off,0px))}
-.nsx-expl[data-p="bottom-right"]{bottom:8px;right:calc(8px + var(--off,0px))}
+.nsx-expl[data-p="top-left"]{top:8px;left:8px}
+.nsx-expl[data-p="top-right"]{top:8px;right:8px}
+.nsx-expl[data-p="bottom-left"]{bottom:8px;left:8px}
+.nsx-expl[data-p="bottom-right"]{bottom:8px;right:8px}
 .nsx-ebulb{all:unset;box-sizing:border-box;pointer-events:auto;position:absolute;width:var(--hit,40px);height:var(--hit,40px);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;color:var(--muted,#9aa5c7);-webkit-tap-highlight-color:transparent}
 .nsx-expl[data-p$="left"] .nsx-ebulb{left:0}.nsx-expl[data-p$="right"] .nsx-ebulb{right:0}
 .nsx-expl[data-p^="top"] .nsx-ebulb{top:0}.nsx-expl[data-p^="bottom"] .nsx-ebulb{bottom:0}
@@ -1184,97 +1299,67 @@ const EXPL_CSS = `
 .nsx-ecard{position:fixed;inset:auto;margin:0;pointer-events:none;width:max-content;max-width:min(280px,calc(100vw - 32px));padding:10px 14px;border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);color:var(--fg,#e8ecf8);box-shadow:0 12px 32px var(--nsx-shadow,rgba(0,0,0,.45)),0 0 0 1px color-mix(in srgb,#7c5cff 25%,transparent);font:400 var(--t0,14px)/1.45 var(--body,system-ui,sans-serif);overflow:visible}
 .nsx-ecard::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--nsx-grad,linear-gradient(135deg,#5b3df5,#0a7d9c 55%,#c2255c))}
 .nsx-ecard p{margin:0}.nsx-ecard p+p{margin-top:4px}.nsx-ecard{white-space:normal}
+.nsx-ecard[data-probe]{visibility:hidden}
 @media (prefers-reduced-motion:no-preference){
-.nsx-ecard{opacity:0;transform:translateY(4px);transition:opacity 90ms linear,transform 90ms linear,display 90ms allow-discrete,overlay 90ms allow-discrete}
-.nsx-ecard:popover-open,.nsx-ecard[data-open]{opacity:1;transform:none;transition:transform 200ms var(--ease,ease)}}
-@supports (anchor-name:--a){
-.nsx-ecard[data-anchored]{position-anchor:var(--nsx-anc);position-try-fallbacks:flip-block,flip-inline}
-.nsx-ecard[data-anchored][data-p^="top"]{top:calc(anchor(bottom) + 6px)}
-.nsx-ecard[data-anchored][data-p^="bottom"]{bottom:calc(anchor(top) + 6px)}
-.nsx-ecard[data-anchored][data-p$="left"]{left:anchor(left)}
-.nsx-ecard[data-anchored][data-p$="right"]{right:anchor(right)}}
+.nsx-ecard{opacity:0;transition:opacity 60ms linear,display 60ms allow-discrete,overlay 60ms allow-discrete}
+.nsx-ecard:popover-open,.nsx-ecard[data-open]{opacity:1}}
 `
-const supportsAnchor = () => typeof CSS !== 'undefined' && !!CSS.supports?.('anchor-name', '--a') && !!CSS.supports?.('position-anchor', '--a')
 const idDelay = (id: string) => (strSeed(id) % 5) * 30
+const SEEN_KEY = (id: string) => `ns.expl.seen.${id}`
+const wasSeen = (id: string) => { try { return localStorage.getItem(SEEN_KEY(id)) === '1' } catch { return false } }
+const markSeen = (id: string) => { try { localStorage.setItem(SEEN_KEY(id), '1') } catch { /* private mode */ } }
 
-/** True for ~`ms` after mount (after a small per-id delay so several explainers do not pop together). Restarts on refresh. */
+/** True for ~`ms` once per explainer id, ever (then bulb only). Waits for the name card. The caller may still veto it
+ *  (see Explainer: never over a control or the pad). */
 export function useExplainerIntro(id: string, ms = 5000): boolean {
   const [on, setOn] = useState(false)
   // on a first visit the name card is modal: hold the intro until it is answered
   const named = useStore((st) => !!st.name)
   useEffect(() => {
-    if (!named) { setOn(false); return }
-    const a = window.setTimeout(() => setOn(true), idDelay(id))
-    const b = window.setTimeout(() => setOn(false), idDelay(id) + ms)
+    if (!named || wasSeen(id)) { setOn(false); return }
+    const a = window.setTimeout(() => setOn(true), idDelay(id) + 400)
+    const b = window.setTimeout(() => setOn(false), idDelay(id) + 400 + ms)
     return () => { clearTimeout(a); clearTimeout(b) }
   }, [id, ms, named])
   return on
 }
 
 type Corner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
-const INTERACTIVE = 'button,a[href],input,select,textarea,[role=button],[tabindex]:not([tabindex="-1"])'
-/** The corner for the bulb: the wanted one unless a control sits there (needs an 8 px gap); then the first free corner. */
-function useBulbCorner(wrap: { current: HTMLDivElement | null }, want: Corner): { corner: Corner; off: number } {
-  const [c, setC] = useState<{ corner: Corner; off: number }>({ corner: want, off: 0 })
-  useEffect(() => {
-    const w = wrap.current, parent = w?.parentElement
-    if (!w || !parent) return
-    let raf = 0
-    const compute = () => {
-      raf = 0
-      const pr = parent.getBoundingClientRect()
-      if (!pr.width) return
-      const size = 40, gap = 8
-      const ctl = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)].filter((e) => !w.contains(e) && !e.closest('[data-explainer-bulb]')).map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0 && r.right > pr.left - 60 && r.left < pr.right + 60 && r.bottom > pr.top - 60 && r.top < pr.bottom + 60)
-      const spot = (k: Corner, off: number) => ({ x: k.endsWith('left') ? pr.left + 8 + off : pr.right - 8 - size - off, y: k.startsWith('top') ? pr.top + 8 : pr.bottom - 8 - size })
-      const free = (k: Corner, off: number) => { const o = spot(k, off); return !ctl.some((r) => o.x < r.right + gap && o.x + size > r.left - gap && o.y < r.bottom + gap && o.y + size > r.top - gap) }
-      const order: Corner[] = [want, 'top-right', 'top-left', 'bottom-right', 'bottom-left']
-      let pick = { corner: want, off: 0 }, found = false
-      for (const off of [0, 48, 96, 144, 192, 240, 288]) {
-        if (off + 56 > pr.width) break
-        const k = order.find((k2) => free(k2, off))
-        if (k) { pick = { corner: k, off }; found = true; break }
-      }
-      if (!found) pick = { corner: want, off: 0 }
-      w.setAttribute('data-p', pick.corner); w.style.setProperty('--off', `${pick.off}px`) // at once, before the next paint
-      setC((cur) => (cur.corner === pick.corner && cur.off === pick.off ? cur : pick))
-    }
-    const kick = () => { if (!raf) raf = requestAnimationFrame(compute) }
-    compute()
-    const ro = new ResizeObserver(kick); ro.observe(parent)
-    // controls elsewhere (dock, picker strip) can appear later: watch the whole page, re-check at most every 150 ms
-    let last = 0, tm = 0
-    const slow = () => { const n = performance.now(); if (n - last > 40) { last = n; compute() } else if (!tm) tm = window.setTimeout(() => { tm = 0; last = performance.now(); compute() }, 40) }
-    const mo = new MutationObserver(slow); mo.observe(document.body, { childList: true, subtree: true })
-    const iv = window.setInterval(kick, 400)
-    window.addEventListener('resize', kick)
-    document.addEventListener('transitionend', slow, true); document.addEventListener('animationend', slow, true)
-    return () => { cancelAnimationFrame(raf); clearTimeout(tm); ro.disconnect(); mo.disconnect(); clearInterval(iv); window.removeEventListener('resize', kick); document.removeEventListener('transitionend', slow, true); document.removeEventListener('animationend', slow, true) }
-  }, [wrap, want])
-  return c
+const INTERACTIVE = 'button,a[href],input,select,textarea,[role=button],[tabindex]:not([tabindex="-1"]),[data-pad],[data-label]'
+const hits = (a: DOMRect, b: DOMRect, gap = 4) => a.left < b.right + gap && a.right > b.left - gap && a.top < b.bottom + gap && a.bottom > b.top - gap
+/** Does this rectangle cover any visible control (or the draw pad / a 3D label)? One look, no polling. */
+function coversControl(r: DOMRect, mine: HTMLElement): boolean {
+  if (mine.closest('[data-pad-wrap]')) return true // never over the pad
+  for (const e of document.querySelectorAll<HTMLElement>(INTERACTIVE)) {
+    if (mine.contains(e)) continue
+    const b = e.getBoundingClientRect()
+    if (b.width <= 0 || b.height <= 0) continue
+    const s = getComputedStyle(e)
+    if (s.visibility === 'hidden' || s.display === 'none' || +s.opacity < 0.05) continue
+    if (hits(r, b)) return true
+  }
+  return false
 }
 
-/** A floating card with 2-3 short lines. Mount it inside the positioned stage wrapper. It shows itself for ~6 s on load,
- *  then a bulb stays: hover or click shows it again and it goes as soon as the pointer leaves the bulb (150 ms grace).
- *  Touch: tap opens, tap elsewhere closes. Esc closes. It never takes pointer events (only the bulb does). */
-export function Explainer({ id, children, placement: want = 'top-right' }: { id: string; children: React.ReactNode; placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' }): React.ReactElement | null {
+/** One bulb per stage, in a fixed corner (`placement`). Its card shows once on a first visit for ~5 s, but only when it
+ *  covers no control and not the pad; after that the bulb alone stays: hover, focus or a click shows the card, and it
+ *  goes when the pointer leaves (150 ms grace). Touch: tap opens, tap elsewhere closes. Esc closes. */
+export function Explainer({ id, children, placement = 'top-right' }: { id: string; children: React.ReactNode; placement?: Corner }): React.ReactElement | null {
   useInjectedStyle('ns-expl', EXPL_CSS)
   useInjectedStyle('ns-inspector', INSPECTOR_CSS)
   const intro = useExplainerIntro(id)
+  const [introOk, setIntroOk] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
-  const { corner: placement, off } = useBulbCorner(wrap, want)
   const [hover, setHover] = useState(false)
   const [tapped, setTapped] = useState(false)
-  const open = intro || hover || tapped
+  const open = (intro && introOk) || hover || tapped
   const uid = useId()
-  const anc = '--nsx-a' + uid.replace(/[^a-zA-Z0-9]/g, '')
   const btn = useRef<HTMLButtonElement>(null)
   const card = useRef<HTMLDivElement>(null)
   const timer = useRef(0)
-  const anchored = supportsAnchor()
   const place = useCallback(() => {
     const c = card.current, b = btn.current
-    if (!c || !b || anchored) return
+    if (!c || !b) return
     const r = b.getBoundingClientRect(), w = c.offsetWidth, h = c.offsetHeight
     let left = placement.endsWith('left') ? r.left : r.right - w
     let top = placement.startsWith('top') ? r.bottom + 6 : r.top - h - 6
@@ -1282,19 +1367,25 @@ export function Explainer({ id, children, placement: want = 'top-right' }: { id:
     if (top < 8) top = r.bottom + 6
     left = clamp(left, 8, Math.max(8, innerWidth - w - 8))
     c.style.left = `${left}px`; c.style.top = `${top}px`; c.style.right = 'auto'; c.style.bottom = 'auto'
-  }, [placement, anchored])
+  }, [placement])
+  const show = (c: HTMLDivElement) => { try { if (typeof (c as any).showPopover === 'function' && !c.matches(':popover-open')) (c as any).showPopover() } catch { /* shown */ } }
+  const hide = (c: HTMLDivElement) => { try { if (typeof (c as any).hidePopover === 'function' && c.matches(':popover-open')) (c as any).hidePopover() } catch { /* hidden */ } }
+  // the intro: measure the card where it would go (hidden), and show it only if it covers nothing you can use
+  useLayoutEffect(() => {
+    const c = card.current, w = wrap.current
+    if (!intro || !c || !w) { setIntroOk(false); return }
+    c.setAttribute('data-probe', ''); show(c); place()
+    const ok = !coversControl(c.getBoundingClientRect(), w)
+    c.removeAttribute('data-probe')
+    if (!ok) hide(c)
+    else markSeen(id)
+    setIntroOk(ok)
+  }, [intro, id, place])
   useLayoutEffect(() => {
     const c = card.current
     if (!c) return
-    const pop = c as any
-    if (open) {
-      try { if (typeof pop.showPopover === 'function' && !c.matches(':popover-open')) pop.showPopover() } catch { /* already shown */ }
-      c.setAttribute('data-open', '')
-      place()
-    } else {
-      c.removeAttribute('data-open')
-      try { if (typeof pop.hidePopover === 'function' && c.matches(':popover-open')) pop.hidePopover() } catch { /* already hidden */ }
-    }
+    if (open) { show(c); c.setAttribute('data-open', ''); place() }
+    else { c.removeAttribute('data-open'); hide(c) }
   }, [open, place])
   useEffect(() => {
     if (!open) return
@@ -1310,18 +1401,18 @@ export function Explainer({ id, children, placement: want = 'top-right' }: { id:
     return () => { document.removeEventListener('pointerdown', down, true); document.removeEventListener('keydown', key) }
   }, [tapped, hover])
   useEffect(() => () => clearTimeout(timer.current), [])
+  // once the visitor uses the bulb, the intro has done its job
+  useEffect(() => { if (hover || tapped) markSeen(id) }, [hover, tapped, id])
   const enter = (e: React.PointerEvent) => { if (e.pointerType === 'touch') return; clearTimeout(timer.current); setHover(true) }
   const leave = (e: React.PointerEvent) => { if (e.pointerType === 'touch') return; clearTimeout(timer.current); timer.current = window.setTimeout(() => { setHover(false); setTapped(false) }, 150) }
   const arr = Children.toArray(children)
   const lines = arr.length > 1 && arr.every((c) => typeof c === 'string') ? arr.map((c, k) => <p key={k}>{c}</p>) : [children]
   return (
-    <div ref={wrap} className="nsx-expl" data-p={placement} style={{ ["--off" as any]: `${off}px` }}>
+    <div ref={wrap} className="nsx-expl" data-p={placement}>
       <button ref={btn} type="button" className="nsx-ebulb" data-explainer-bulb={id} aria-label="What am I looking at?" aria-expanded={open} aria-controls={uid}
-        style={anchored ? ({ anchorName: anc } as React.CSSProperties) : undefined}
         onPointerEnter={enter} onPointerLeave={leave} onFocus={() => setHover(true)} onBlur={() => setHover(false)}
         onClick={(e) => { if ((e.nativeEvent as PointerEvent).pointerType === 'touch') setTapped((t) => !t); else setTapped(true) }}><Bulb on={open} /></button>
-      <div ref={card} id={uid} className="nsx-ecard" data-explainer={id} role="note" {...({ popover: 'manual' } as any)} data-p={placement} data-anchored={anchored ? '' : undefined}
-        style={anchored ? ({ ['--nsx-anc' as any]: anc } as React.CSSProperties) : undefined}>
+      <div ref={card} id={uid} className="nsx-ecard" data-explainer={id} role="note" {...({ popover: 'manual' } as any)} data-p={placement}>
         {lines}
       </div>
     </div>

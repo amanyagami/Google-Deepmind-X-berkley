@@ -251,14 +251,68 @@ export const checks = [
     return ok(avg <= 12 && longest <= 20 && fk <= 8 && !banned.length, `${sent.length} sentences; avg ${avg.toFixed(1)} words; longest ${longest}; grade ${fk.toFixed(1)}; banned: ${banned.join(',') || 'none'}`) } },
 
   // ---- legacy intent (nine old scripts): 3D drawing, no page errors on a tour, replay, recorded score, zoo nets, idle cost
-  { id: 'A27', title: 'explainers: card on load hides <= 7 s later; bulb hover shows it; mouse-leave hides <= 300 ms', needs: ['bulb'], run: async (env) => {
-    const p = await env.open(); await p.page.addInitScript(() => { window.__seen = 0; new MutationObserver(() => { window.__seen = Math.max(__seen, [...document.querySelectorAll('[data-explainer]')].filter(__h.vis).length) }).observe(document, { subtree: true, attributes: true, childList: true }) })
-    await p.goto('', 600); const seen = await p.page.evaluate(() => window.__seen), stages = await p.page.locator('[data-explainer-bulb]').count()
-    await p.page.waitForFunction(() => ![...document.querySelectorAll('[data-explainer]')].some(__h.vis), null, { timeout: 7000 }).catch(() => {})
-    const left = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer]')].filter(__h.vis).length)
-    const bulb = p.page.locator('[data-explainer-bulb]').first(); await bulb.hover(); await p.page.waitForTimeout(250); const shown = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer]')].filter(__h.vis).length)
+  // Round 3 (B4): an explainer card shows at most once (first visit), only where it covers no control and never the pad;
+  // after that the bulb alone stays. Before round 3 this check wanted a card on every load ("card on load hides <= 7 s later").
+  { id: 'A27', title: 'explainers: shown once at most, never over a control or the pad; reload shows none; bulb hover shows; leave hides <= 300 ms', needs: ['bulb'], run: async (env) => {
+    const p = await env.open(); await p.page.addInitScript(() => { window.__seen = new Set(); window.__ov = []
+      const look = () => { for (const c of document.querySelectorAll('[data-explainer]')) { if (!c.matches(':popover-open,[data-open]') || c.hasAttribute('data-probe')) continue; __seen.add(c.dataset.explainer)
+        const r = c.getBoundingClientRect(); for (const e of [...__h.interactive(), ...document.querySelectorAll('[data-pad]')]) { if (e.closest('.nsx-expl')) continue; const b = e.getBoundingClientRect()
+          if (b.width > 0 && b.height > 0 && r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top) __ov.push(`${c.dataset.explainer} over "${(e.textContent || e.getAttribute('aria-label') || e.className).trim().slice(0, 16)}"`) } } }
+      addEventListener('DOMContentLoaded', () => new MutationObserver(look).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-open'] })) })
+    await p.goto('', 600); const stages = await p.page.locator('[data-explainer-bulb]').count()
+    await p.page.waitForFunction(() => ![...document.querySelectorAll('[data-explainer]')].some((c) => c.matches(':popover-open,[data-open]')), null, { timeout: 7500 }).catch(() => {})
+    const first = await p.page.evaluate(() => ({ seen: [...__seen], ov: [...new Set(__ov)], left: [...document.querySelectorAll('[data-explainer]')].filter((c) => c.matches(':popover-open,[data-open]')).length }))
+    await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(3000)
+    const again = await p.page.evaluate(() => [...__seen].filter((id) => document.querySelector(`[data-explainer="${id}"]`)?.matches(':popover-open,[data-open]')))
+    const second = await p.page.evaluate(() => [...__seen])
+    // the mock model's error box in the dock can lie over the bottom of both stages (that overlay is A2/A6's business): hide it
+    await p.page.evaluate(() => document.querySelectorAll('[data-error]').forEach((e) => { e.style.display = 'none' }))
+    // hover a bulb nothing covers (a model error box in the dock can sit over a stage's bottom edge; that is A2/A6's business)
+    const bi = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer-bulb]')].findIndex((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }))
+    if (bi < 0) return F('every explainer bulb is covered by something else')
+    const bulb = p.page.locator('[data-explainer-bulb]').nth(bi); await bulb.hover(); await p.page.waitForTimeout(250); const shown = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer]')].filter(__h.vis).length)
     await p.page.mouse.move(5, 5); const t = Date.now(); await p.page.waitForFunction(() => ![...document.querySelectorAll('[data-explainer]')].some(__h.vis), null, { timeout: 1500 }).catch(() => {}); const ms = Date.now() - t
-    return ok(seen >= Math.min(stages, 2) && !left && shown > 0 && ms <= 300, `${seen} cards on load for ${stages} bulbs; ${left} still visible after 7 s; hover shows ${shown}; leave hides in ${ms} ms`) } },
+    const repeat = second.filter((id) => first.seen.includes(id))
+    return ok(!first.ov.length && !first.left && !repeat.length && shown > 0 && ms <= 300, `${stages} bulbs; first load showed [${first.seen.join(',') || 'none (every card would cover a control)'}]${first.ov.length ? `; OVER CONTROLS: ${first.ov.slice(0, 3).join('; ')}` : '; none over a control'}; ${first.left} still open after 7 s; reload re-showed [${repeat.join(',') || 'none'}]${again.length ? ' (open now: ' + again.join(',') + ')' : ''}; hover shows ${shown}; leave hides in ${ms} ms`) } },
+
+  { id: 'A38', title: 'HUD cards (Peek): at rest <= 2 lines, details hidden; hover, keyboard focus and tap show the rest; Esc closes; CLS 0', run: async (env) => {
+    const probe = () => [...document.querySelectorAll('[data-peek]')].filter(__h.vis).map((el) => {
+      const tops = [], w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      for (let n; (n = w.nextNode());) { if (!n.textContent.trim() || n.parentElement.closest('[data-peek-details]') || !__h.vis(n.parentElement)) continue
+        const rg = document.createRange(); rg.selectNodeContents(n); for (const r of rg.getClientRects()) if (r.width > 0 && !tops.some((t) => Math.abs(t - r.top) < 6)) tops.push(r.top) }
+      const det = el.querySelector('[data-peek-details]'), b = el.getBoundingClientRect()
+      return { name: (el.dataset.hud || el.className).slice(0, 18), lines: tops.length, open: !!det && __h.vis(det), w: Math.round(b.width), h: Math.round(b.height) } })
+    const cls = () => { window.__cls = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__cls += e.value }).observe({ type: 'layout-shift' }) }
+    // the zoo timeline plays on its own and its caption can wrap (a shift that is not the card's): pause it first
+    const setNet = async (pg) => { await pg.evaluate(() => window.__zoo?.getState().setNet('cnn')); await pg.waitForTimeout(600); await pg.evaluate(() => window.__zoo?.getState().pause?.()) }
+    const out = [], bad = []
+    // wide, mouse + keyboard
+    const p = await env.open({ w: 1480 }); await p.goto('#zoo', 1500); await setNet(p.page); await p.page.waitForTimeout(900); await p.page.evaluate(cls)
+    const rest = await p.page.evaluate(probe); if (!rest.length) return F('no visible [data-peek] card (zoo net HUD) at 1480')
+    for (const [k, r] of rest.entries()) {
+      if (r.lines > 2) bad.push(`${r.name} ${r.lines} lines at rest`); if (r.open) bad.push(`${r.name} details open at rest`)
+      const card = p.page.locator('[data-peek]').filter({ visible: true }).nth(k)
+      await card.hover(); await p.page.waitForTimeout(250); const hv = (await p.page.evaluate(probe))[k]
+      if (!hv.open) bad.push(`${r.name}: hover does not open`); if (hv.w !== r.w || hv.h !== r.h) bad.push(`${r.name}: box changed on hover ${r.w}x${r.h} -> ${hv.w}x${hv.h}`)
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(200); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close while hovered`)
+      await p.page.mouse.move(3, 300); await p.page.waitForTimeout(250); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: stays open after the mouse leaves`)
+      await card.locator('.nspeek-tog').focus(); await p.page.waitForTimeout(250); if (!(await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: keyboard focus does not open`)
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(200); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close on focus`)
+      await p.page.evaluate(() => document.activeElement?.blur())
+      out.push(`${r.name} ${r.lines} line(s) ${r.w}x${r.h}`) }
+    const c1 = await p.page.evaluate(() => window.__cls)
+    // phone, touch
+    const q = await env.open({ w: 390, touch: true }); await q.goto('#zoo', 1500); await setNet(q.page); await q.page.waitForTimeout(900); await q.page.evaluate(cls)
+    const tr = await q.page.evaluate(probe); let c2 = 0
+    if (!tr.length) bad.push('390: no visible [data-peek] card')
+    else { const tg = q.page.locator('[data-peek]').filter({ visible: true }).first().locator('.nspeek-tog')
+      if (tr[0].lines > 2) bad.push(`390: ${tr[0].lines} lines at rest`)
+      await tg.tap(); await q.page.waitForTimeout(250); const t1 = (await q.page.evaluate(probe))[0]; if (!t1.open) bad.push('390: tap does not open'); if (t1.h !== tr[0].h) bad.push('390: box changed on tap')
+      await tg.tap(); await q.page.waitForTimeout(250); if ((await q.page.evaluate(probe))[0].open) bad.push('390: second tap does not close')
+      await tg.tap(); await q.page.waitForTimeout(250); await q.page.touchscreen.tap(366, 240); await q.page.waitForTimeout(250); if ((await q.page.evaluate(probe))[0].open) bad.push('390: tap outside does not close')
+      c2 = await q.page.evaluate(() => window.__cls); out.push(`390 ${tr[0].lines} line(s)`) }
+    if (c1 > 0.0005 || c2 > 0.0005) bad.push(`CLS ${c1.toFixed(4)} / ${c2.toFixed(4)}`)
+    return ok(!bad.length, `${out.join('; ')}; CLS ${c1.toFixed(4)} (1480) ${c2.toFixed(4)} (390)${bad.length ? ' | ' + bad.join('; ') : ''}`) } },
 
   { id: 'A28', title: 'frame budget: p95 <= 33 ms and no long task > 100 ms during runAll; idle p95 <= 20 ms', needs: ['runAll'], run: async (env) => {
     const p = await env.open(); await p.page.addInitScript(() => { window.__lt = []; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) __lt.push(e.duration) }).observe({ type: 'longtask', buffered: true }) } catch {} })

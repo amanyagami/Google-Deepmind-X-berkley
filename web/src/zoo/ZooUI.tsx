@@ -8,7 +8,7 @@ import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
-import { Explainer, Hint, Inspector, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
+import { Explainer, Hint, Inspector, Peek, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
@@ -836,13 +836,16 @@ export function ZooView() {
           {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} onClick={() => useZoo.getState().setNet(n.id as NetId)} title="A tiny network that reads 8×8 handwritten digits">{n.short}</button>)}
         </div>
         {p && (
-          <div className="phud zoohud">
-            <p className="eyebrow">{p.title}<Hint>{p.blurb}</Hint></p>
-            <div className="prow mono"><div><span>parameters</span><b>{p.params.toLocaleString()}</b></div><div><span>{p.accuracy_note ?? 'test accuracy'}</span><b>{(p.accuracy * 100).toFixed(1)}%</b></div></div>
-            <p className="small mono">{FLOPS[net as DigitNet].split('≈').pop()?.trim()}<Hint>Work per image: {FLOPS[net as DigitNet]}. Computed in this page, on this device.</Hint></p>
-          </div>
+          <Peek className="phud zoohud" data-hud="net" label={`More about the ${p.title}`}
+            summary={<p className="zoohud-sum"><b>{NETS.find((n) => n.id === net)?.short ?? p.title}</b> · <span className="mono">{Math.round(p.accuracy * 100)}%</span> right</p>}
+            details={<>
+              <p className="zoohud-title">{p.title}</p>
+              <div className="prow mono"><div><span>Parameters</span><b>{p.params.toLocaleString()}</b></div><div><span>{p.accuracy_note ? p.accuracy_note[0].toUpperCase() + p.accuracy_note.slice(1) : 'Test accuracy'}</span><b>{(p.accuracy * 100).toFixed(1)}%</b></div></div>
+              <p className="small">{((w) => <><span className="mono">{w}</span>{/per /.test(w) ? '' : ' per image'}. Computed on this device.</>)(FLOPS[net as DigitNet].split('≈').pop()?.trim() ?? '')}</p>
+              <p className="zoohud-blurb">{p.blurb}</p>
+            </>} />
         )}
-        <Explainer key={net} id={net === 'llm' ? 'model' : `net-${net}`} placement={net === 'llm' ? 'top-left' : 'bottom-left'}><Say id={net} /></Explainer>
+        <Explainer key={net} id={net === 'llm' ? 'model' : `net-${net}`} placement="bottom-left"><Say id={net} /></Explainer>
         <Empty />
         <Crumb />
         <Legend />
