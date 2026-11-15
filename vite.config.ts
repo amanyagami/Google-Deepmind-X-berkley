@@ -3,8 +3,6 @@ import react from '@vitejs/plugin-react'
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
-// @ts-ignore pure ESM module in server-web
-import { createApi, fileStore } from './server-web/server.mjs'
 
 // The FastAPI backend serves /api and /ws on :8000. In dev, Vite proxies to it.
 // base './': the build is a static web app that works from any host and any sub-path.
@@ -30,7 +28,11 @@ const devLeaderboard = (): Plugin => ({
   transformIndexHtml(html) {
     return html.includes('kundali-board') ? html : html.replace('</head>', '    <meta name="kundali-board" content="on" />\n  </head>')
   },
-  configureServer(s) {
+  async configureServer(s) {
+    // loaded only by the dev server, so a build never depends on server-web/ (it may be absent or uninstalled)
+    // @ts-ignore pure ESM module in server-web
+    const { createApi, fileStore } = await import('./server-web/server.mjs').catch(() => ({ createApi: null, fileStore: null })) as any
+    if (!createApi) return
     const store = fileStore(resolve(__dirname, '.kundali-scores.json'))
     const api = createApi({ store, trustProxy: true })
     s.middlewares.use(async (req, res, next) => {
