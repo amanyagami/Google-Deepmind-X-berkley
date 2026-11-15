@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
-import { MODEL_REF, rowFor, useHW } from './hwStore'
+import { MODEL_REF, rowFor, useHW, visitorName } from './hwStore'
+import type { Snapshot } from './hwStore'
 import type { ComponentId, Flag, Pillar, Scale, TestResult } from './hwStore'
 import type { Fit, RunStats } from '../api'
 
@@ -151,13 +152,24 @@ const scoreCi = (r: TestResult, s: number): [number, number] => {
   return m > 0 ? [s * (r.ci95[0] / m), s * (r.ci95[1] / m)] : [s, s]
 }
 
-export interface PillarResult { score: number | null; status: 'scored' | 'unavailable' | 'not-tested'; components: Partial<Record<ComponentId, number | 'unavailable'>> }
+/** Tier colour key for the dashboard: pick the colour token by this string. */
+export type TierKey = 'none' | 'entry' | 'everyday' | 'strong' | 'excellent' | 'exceptional'
+export const tierKey = (s: number | null): TierKey => (s === null ? 'none' : s < 400 ? 'entry' : s < 800 ? 'everyday' : s < 1200 ? 'strong' : s < 1800 ? 'excellent' : 'exceptional')
+/** One dashboard row, ready to draw (S5 needs no logic).
+ *  id     compute | memory | gpu | storage | model
+ *  score  pillar score, 1000 = reference; null when nothing was tested
+ *  status 'measured' all parts ran | 'imputed' some parts did not run (counted 50) | 'unavailable' this device cannot run it (50) | 'untested' (50)
+ *  delta  score minus the same pillar in the previous history entry; null without both
+ *  components ids of the tests in the pillar; values their scores (or 'unavailable') */
+export interface PillarRow { id: Pillar; score: number | null; status: 'measured' | 'imputed' | 'unavailable' | 'untested'; delta: number | null; components: ComponentId[]; values: Partial<Record<ComponentId, number | 'unavailable'>>; tierKey: TierKey }
+interface PillarCore { score: number | null; status: 'scored' | 'unavailable' | 'not-tested'; components: Partial<Record<ComponentId, number | 'unavailable'>>; missing: number; total: number }
 export interface FinalScore {
-  score: number; ci95: [number, number]; tier: string
+  score: number; ci95: [number, number]; tier: string; tierKey: TierKey
   coverage: { ran: number; of: 5 }
   provisional: boolean
   limiting: ComponentId | Pillar | null
-  pillars: Record<Pillar, PillarResult>
+  /** five rows in dashboard order: compute, memory, gpu, storage, model */
+  pillars: PillarRow[]
   /** components counted as 50 because the device cannot run them ("not available") */
   unavailable: ComponentId[]
   /** components that were not tested; they also count as 50 so that leaving one out can never raise the score */
@@ -180,7 +192,7 @@ const NOT_AVAILABLE = 50
  * and one more pillar exist. (Guarantee: holds for every tested component scoring 50 or more.)
  * Net and energy never count. Results of different scales cannot be combined: this throws.
  */
-export function finalScore(results: Record<string, TestResult>): FinalScore {
+export function finalScore(results: Record<string, TestResult>, previous?: Record<string, TestResult> | null): FinalScore {
   const all = Object.values(results).filter((r) => r.input.kind !== 'custom' && !r.flags.includes('custom') && r.component !== 'net' && r.component !== 'energy')
   const scales = [...new Set(all.map((r) => r.scale))]
   if (scales.length > 1) throw new Error(`Cannot combine ${scales.join(' and ')} results in one score`)
@@ -188,14 +200,14 @@ export function finalScore(results: Record<string, TestResult>): FinalScore {
   for (const r of all) by[r.component] = r
 
   type Leaf = { id: ComponentId | Pillar; w: number; s: number; sd: number; measured: boolean }
-  const leaves: Leaf[] = [], pillars = {} as Record<Pillar, PillarResult>, imputed: ComponentId[] = [], unavailable: ComponentId[] = [], flags = new Set<Flag>()
+  const leaves: Leaf[] = [], pillars = {} as Record<Pillar, PillarCore>, imputed: ComponentId[] = [], unavailable: ComponentId[] = [], flags = new Set<Flag>()
   const workloads: FinalScore['workloads'] = {}
   const lnsd = (r: TestResult, s: number) => { const [lo, hi] = scoreCi(r, s); return lo > 0 && hi > lo ? Math.log(hi / lo) / 3.92 : r.cv / 100 }
   const note = (r: TestResult) => { r.flags.forEach((f) => flags.add(f)); workloads[r.component] = r.workload }
 
   for (const p of Object.keys(PILLAR_WEIGHT) as Pillar[]) {
     const pw = PILLAR_WEIGHT[p]
-    const out: PillarResult = { score: null, status: 'not-tested', components: {} }
+    const out: PillarCore = { score: null, status: 'not-tested', components: {}, missing: 0, total: 0 }
     if (p === 'model') {
       const ms = all.filter((r) => r.component.startsWith('model:'))
       const scored = ms.map((r) => ({ r, s: componentScore(r) })).filter((x): x is { r: TestResult; s: number } => x.s !== null && x.s > 0)
@@ -208,6 +220,7 @@ export function finalScore(results: Record<string, TestResult>): FinalScore {
         out.status = 'unavailable'; unavailable.push(ms.find(isUnavailable)!.component)
         leaves.push({ id: 'model', w: pw, s: NOT_AVAILABLE, sd: 0, measured: false })
       } else { imputed.push('model:*'); leaves.push({ id: 'model', w: pw, s: NOT_AVAILABLE, sd: 0, measured: false }) }
+      out.total = 1; out.missing = out.status === 'scored' ? 0 : 1
       pillars[p] = out
       continue
     }
@@ -223,6 +236,7 @@ export function finalScore(results: Record<string, TestResult>): FinalScore {
     }
     const tested = parts.filter((x) => x.kind !== 'missing')
     if (tested.length) out.status = tested.some((x) => x.kind === 'scored') ? 'scored' : 'unavailable'
+    out.total = parts.length; out.missing = parts.length - tested.length
     out.score = out.status === 'not-tested' ? null : Math.exp(parts.reduce((a, x) => a + x.w * Math.log(x.s), 0))
     for (const x of parts) leaves.push({ id: x.id, w: pw * x.w, s: x.s, sd: x.sd, measured: x.kind !== 'missing' })
     pillars[p] = out
@@ -240,8 +254,14 @@ export function finalScore(results: Record<string, TestResult>): FinalScore {
   const lim = leaves.filter((l) => l.measured && anyTested).map((l) => ({ id: l.id, v: l.w * Math.log(l.s / score) })).sort((a, b) => a.v - b.v)[0]
   const meas = leaves.filter((l) => l.measured)
   const mw = meas.reduce((a, l) => a + l.w, 0)
+  const prev = previous && Object.keys(previous).length ? finalScore(previous).pillars : null
+  const rows: PillarRow[] = (Object.keys(PILLAR_WEIGHT) as Pillar[]).map((id) => {
+    const c = pillars[id], before = prev?.find((x) => x.id === id)?.score ?? null
+    const status: PillarRow['status'] = c.status === 'not-tested' ? 'untested' : c.status === 'unavailable' ? 'unavailable' : c.missing ? 'imputed' : 'measured'
+    return { id, score: c.score, status, delta: c.score !== null && before !== null ? c.score - before : null, components: Object.keys(c.components) as ComponentId[], values: c.components, tierKey: tierKey(c.score) }
+  })
   return {
-    score, ci95, tier: tierOf(anyTested ? score : null), coverage: { ran, of: 5 }, provisional, limiting: lim ? lim.id : null, pillars, unavailable, imputed,
+    score, ci95, tier: tierOf(anyTested ? score : null), tierKey: tierKey(anyTested ? score : null), coverage: { ran, of: 5 }, provisional, limiting: lim ? lim.id : null, pillars: rows, unavailable, imputed,
     measured: mw ? Math.exp(meas.reduce((a, l) => a + l.w * Math.log(l.s), 0) / mw) : null, flags: [...flags], workloads, scale: scales[0] ?? null,
   }
 }
@@ -329,13 +349,24 @@ function fromRun(st: RunStats, ctx: FromBenchCtx): TestResult {
 }
 
 /* ------------------------------------------------------------------ export */
-/** JSON of the current results. Device strings (adapter name, CPU name) only with includeDevice. */
-export function exportResults(opts: { includeDevice: boolean }, results: Record<string, TestResult> = useHW.getState().results, info: any = useHW.getState().info): string {
+/** The final score of the current results, with each pillar's delta against the previous history entry. */
+export function finalNow(results: Record<string, TestResult>, history: Snapshot[]): FinalScore {
+  const last = history[history.length - 1]
+  const prev = last && last.results === results ? history[history.length - 2] : last
+  let before: Record<string, TestResult> | null = prev?.results ?? null
+  try { if (before && Object.values(before)[0]?.scale !== Object.values(results)[0]?.scale) before = null } catch { before = null }
+  return finalScore(results, before)
+}
+
+/** JSON of the current results. Device strings (adapter name, CPU name) only with includeDevice. The visitor's own name
+ *  is included unless includeName is false (their own card; it is never sent over the network). The theme is never included. */
+export function exportResults(opts: { includeDevice: boolean; includeName?: boolean }, results: Record<string, TestResult> = useHW.getState().results, info: any = useHW.getState().info, name: string = visitorName()): string {
   const rs = Object.entries(results).map(([k, r]) => [k, opts.includeDevice ? r : { ...r, env: { ...r.env, adapter: undefined } }] as const)
   let final: FinalScore | null = null
   try { final = finalScore(results) } catch { /* mixed scales: export the raw results only */ }
   const doc = {
     app: 'neural-studio', v: 1, at: new Date().toISOString(),
+    ...(opts.includeName !== false && name ? { name } : {}),
     final: final && { score: Math.round(final.score), ci95: final.ci95.map(Math.round), provisional: final.provisional, coverage: final.coverage, limiting: final.limiting, scale: final.scale, workloads: final.workloads, flags: final.flags },
     results: Object.fromEntries(rs),
     ...(opts.includeDevice && info ? { device: { cpu: info.cpu?.name ?? null, gpu: info.gpu?.name ?? null, cores: info.cpu?.cores ?? null } } : {}),
