@@ -4,7 +4,7 @@ import * as api from '../api'
 import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
 import type { InputCaps, LangId } from './nets'
 import { useHW } from '../hw/hwStore'
-import { cnn, mlp, rnn, timeNet, vit, vlm, vlmWords, type Pack, type Speed } from './nets'
+import { inputHash, readFrom, runNet, timeNet, type Pack, type Read, type Speed } from './nets'
 
 /** 'llm' is the real model loaded at the top of the page, run on the shared prompt; the others are the five tiny
  *  digit networks, all reading the same 8x8 image. */
@@ -76,6 +76,8 @@ interface Z {
   setWords: (w: string) => void
   timing: Partial<Record<DigitNet, Speed>>
   out: any
+  /** What each tiny net reads from the current picture: ONE forward pass each, the source for the table, the pad verdict and the 3D label. */
+  reads: Partial<Record<DigitNet, NetRead>>
   err: string | null
   t: number
   playing: boolean
@@ -93,7 +95,26 @@ interface Z {
   pause: () => void
   setSpeed: (s: number) => void
   select: (s: Sel) => void
+  /** The real counterpart of a tiny net, run in the page (small ViT for the ViT tab, small vision-language model for the VLM tab) */
+  real: Real
+  /** Run the real counterpart on the picture now. `tap` is the user's own click (the VLM download starts only on one). */
+  runReal: (tap?: boolean) => void
 }
+/** A net's answer, with the fingerprint of the input it came from and when it was computed. */
+export interface NetRead extends Read { net: DigitNet; hash: string; at: number }
+export interface Real {
+  net: 'vit' | 'vlm' | null
+  state: 'idle' | 'running' | 'ok' | 'err' | 'off' | 'ask'
+  title: string; repo: string; size: string
+  items: { token: string; p: number }[]; text: string
+  ms: number | null; device: string | null
+  /** download progress 0..1 while the first run fetches the model */
+  dl: number | null
+  err: string | null
+}
+const NO_REAL: Real = { net: null, state: 'idle', title: '', repo: '', size: '', items: [], text: '', ms: null, device: null, dl: null, err: null }
+export const REAL_VIT = { repo: 'Xenova/mobilevit-small', title: 'MobileViT small', size: '6 MB' }
+export const REAL_VLM = { repo: api.VLM_REPO, title: 'SmolVLM 256M', size: 'about 190 MB' }
 
 let raf = 0, last = 0
 const base = () => `${import.meta.env.BASE_URL}zoo/`
@@ -163,6 +184,8 @@ export const useZoo = create<Z>((set, get) => ({
     if (p && p.consent === 'size') await useStore.getState().confirmDownload()
   },
 
+  real: NO_REAL, reads: {},
+  runReal(tap) { realKick(tap === true) },
   net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, timing: {}, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
 
   async init() {
@@ -182,12 +205,14 @@ export const useZoo = create<Z>((set, get) => ({
       const p = await (await fetch(base() + `${net}.json`)).json()
       set((s) => ({ packs: { ...s.packs, [net]: p } }))
     }
-    set({ net, sel: null, t: 0 })
+    set({ net, sel: null, t: 0, real: net === 'vit' || net === 'vlm' ? { ...NO_REAL, net } : NO_REAL })
     get().recompute()
     if (!get().out?.draft) get().play()
+    if (net === 'vit' || net === 'vlm') realKick(false)
+    else if (net === 'llm') llmAgain()
   },
 
-  setImg(base, label = null) { set({ base, img: base, label }); get().recompute() },
+  setImg(base, label = null) { set({ base, img: base, label }); get().recompute(); if (get().net === 'vit' || get().net === 'vlm') realKick(false) },
   words: 'this is', setWords(words) { set({ words }); if (get().net === 'vlm') get().recompute() },
 
   /** All five networks, so they can be compared side by side; then time each one on this device. */
@@ -195,6 +220,7 @@ export const useZoo = create<Z>((set, get) => ({
     const missing = NETS.map((n) => n.id).filter((id) => !get().packs[id])
     const got = await Promise.all(missing.map(async (id) => [id, await (await fetch(base() + `${id}.json`)).json()] as const))
     set((s) => ({ packs: { ...s.packs, ...Object.fromEntries(got) } }))
+    get().recompute()
     const d = get().digits
     if (!d) return
     for (const n of NETS) {
@@ -205,19 +231,28 @@ export const useZoo = create<Z>((set, get) => ({
 
   recompute() {
     const { net, packs, img, words } = get()
+    // one forward pass per net on this picture; the table, the pad verdict and the 3D scene all read these same results
+    const hash = inputHash(img, words.trim().toLowerCase())
+    const outs: Partial<Record<DigitNet, any>> = {}
+    let reads = get().reads
+    const stale = NETS.some((n) => packs[n.id] && reads[n.id]?.hash !== hash)
+    if (stale) {
+      const at = performance.now(), next: Partial<Record<DigitNet, NetRead>> = {}
+      for (const n of NETS) { const p = packs[n.id]; if (!p) continue; const o = runNet(n.id, p, img, words); outs[n.id] = o; next[n.id] = { ...readFrom(n.id, p, o), net: n.id, hash, at } }
+      reads = next
+    }
     if (net === 'llm') {
       const out: any = llmOut(), was = get().out
-      set({ out })
+      set({ out, reads })
       // typed but not run yet: show the words as they arrive, with the blocks waiting
       if (out?.draft && !was?.draft) { get().pause(); set({ t: STAGES.llm[0].dur }) }
       else if (!out?.draft && was?.draft) { set({ t: 0 }); get().play() }
       return
     }
     const p = packs[net]
-    if (!p) return
-    const fn: any = { mlp, cnn, rnn, vit }[net as 'mlp']
-    const out = net === 'vlm' ? vlm(p.weights, img, p.vocab!, undefined, vlmWords(words, p.vocab!).ids) : fn(p.weights, img)
-    set({ out })
+    if (!p) { set({ reads }); return }
+    const out = outs[net] ?? runNet(net, p, img, words)
+    set({ out: { ...out, hash }, reads })
   },
 
   setT(t) { set({ t: Math.max(0, Math.min(totalZ(get().net), t)) }) },
@@ -316,4 +351,87 @@ useStore.subscribe((s, p) => {
   if (z.net !== 'llm' || (s.layers === p.layers && s.final === p.final && s.tokens === p.tokens && s.input === p.input && s.running === p.running && !s.download === !p.download && !s.pendingDownload === !p.pendingDownload && s.probing === p.probing)) return
   z.recompute()
   if (s.final && s.final !== p.final) { z.pause(); useZoo.setState({ t: 0 }); z.play() }
+})
+
+
+/* ------------------------------------------------------------------ the real counterparts (never recorded: each answer is computed just now) */
+let realCtl: AbortController | null = null
+let realBusy = false
+let realDirty = false
+const realSpecs = new Map<string, Promise<{ spec: ModelSpec; fit: Fit }>>()
+const specFor = (repo: string) => {
+  let p = realSpecs.get(repo)
+  if (!p) { p = (async () => { const spec = await api.resolveModel(repo); return { spec, fit: api.checkFit(spec, await api.deviceBudget()) } })(); realSpecs.set(repo, p); p.catch(() => realSpecs.delete(repo)) }
+  return p
+}
+/** The 8 by 8 picture as a 224 by 224 PNG (white ink on black, hard pixel edges): what a real vision model is shown. */
+function picture(img: number[]): string {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 224
+  const c = cv.getContext('2d')!
+  c.fillStyle = '#000'; c.fillRect(0, 0, 224, 224)
+  img.slice(0, 64).forEach((v, i) => { const g = Math.round(255 * Math.max(0, Math.min(1, v))); c.fillStyle = `rgb(${g},${g},${g})`; c.fillRect((i % 8) * 28, Math.floor(i / 8) * 28, 28, 28) })
+  return cv.toDataURL('image/png')
+}
+const setReal = (r: Partial<Real>) => useZoo.setState((s) => ({ real: { ...s.real, ...r } }))
+const VLM_ASKED = 'ns.vlm.ok'
+const lsHas = (k: string) => { try { return localStorage.getItem(k) === '1' } catch { return false } }
+
+/** Start (or queue) the real run for the current tab and picture: one at a time, the newest picture always gets its turn. */
+function realKick(tap: boolean) {
+  const net = useZoo.getState().net
+  if (net !== 'vit' && net !== 'vlm') return
+  if (net === 'vlm' && !tap && !lsHas(VLM_ASKED)) { const m = REAL_VLM; setReal({ net, state: 'ask', title: m.title, repo: m.repo, size: m.size }); return }
+  if (realBusy) { realDirty = true; return }
+  void realLoop(net)
+}
+async function realLoop(net: 'vit' | 'vlm') {
+  realBusy = true
+  const m = net === 'vit' ? REAL_VIT : REAL_VLM
+  try {
+    do {
+      realDirty = false
+      const z = useZoo.getState()
+      if (z.net !== net) break
+      if (z.img.every((v) => v === 0)) { setReal({ net, state: 'idle', title: m.title, repo: m.repo, size: m.size, items: [], text: '', err: null }); break }
+      const ctl = (realCtl = new AbortController())
+      setReal({ net, state: 'running', title: m.title, repo: m.repo, size: m.size, err: null, dl: null })
+      try {
+        const { spec, fit } = await specFor(net === 'vit' ? REAL_VIT.repo : 'Xenova/mobilevit-small')
+        const where = fit.where
+        if (where !== 'webgpu' && where !== 'wasm') { setReal({ state: 'off', err: 'This device cannot run a real model in the page.' }); break }
+        const url = picture(z.img)
+        const onProgress = (d: number, t: number | null) => setReal({ dl: t && d < t ? d / t : null })
+        if (net === 'vit') {
+          let items: Real['items'] = []
+          const stats = await api.runInBrowser(spec, { kind: 'image', url }, (f) => { if (f.type === 'final' && f.labels) items = f.labels.map((l: any) => ({ token: String(l.label), p: l.score })) }, { device: where, signal: ctl.signal, onProgress })
+          setReal({ state: 'ok', items, ms: stats.totalMs, device: stats.where, dl: null })
+        } else {
+          setReal({ text: '' })
+          try { localStorage.setItem(VLM_ASKED, '1') } catch { /* private mode */ }
+          const r = await api.askVlm({ image: url, question: 'What number is written in this picture? Answer in one short sentence.', device: where }, { signal: ctl.signal, onProgress, onToken: (t) => setReal({ text: useZoo.getState().real.text + t }) })
+          setReal({ state: 'ok', text: r.text, ms: r.ms, device: r.device, dl: null })
+        }
+      } catch (e: any) {
+        if (e?.code === 'aborted') break
+        setReal({ state: 'err', err: String(e?.message ?? e), dl: null }); break
+      }
+    } while (realDirty)
+  } finally { realBusy = false; realCtl = null }
+}
+
+/** Back on the language-model tab: a result that is not live for this prompt is computed again by the real model. */
+function llmAgain() {
+  const s = useStore.getState()
+  const w = s.fit?.where
+  if (!s.spec || s.running || s.download || s.pendingDownload || s.probing || (w !== 'webgpu' && w !== 'wasm')) return
+  const typed = s.input.kind === 'text' ? s.input.text : s.prompt
+  if (s.provenance === 'live' && s.ranPrompt === typed) return
+  if (s.runErr && !s.runErrCode) return
+  void s.run({ auto: true })
+}
+
+// Clicking a block, token or output in the 3D asks for real data: if what is on screen is not a live result for this prompt, the real model runs first.
+useZoo.subscribe((z, p) => {
+  if (!z.inspect || z.inspect === p.inspect || z.net !== 'llm') return
+  llmAgain()
 })

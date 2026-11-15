@@ -10,6 +10,8 @@ export interface ExampleMeta { id: string; title: string; repo: string; prompt?:
 const reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
 let timer: ReturnType<typeof setInterval> | null = null
 let loadSeq = 0
+let downloading = false           // the model files are being fetched now (a run's own progress callbacks do not count)
+let runToken = 0                // the newest run: an older one that is still finishing must not touch the state
 let dlAbort: AbortController | null = null
 let autoEnabled = false          // autoStart() was called: every model picked later also starts at once
 const autoDone = new Set<string>()
@@ -58,6 +60,12 @@ interface S {
   /** the optional side panel of the two machine sections (score, timings, charts, specs) */
   details: boolean
   setDetails: (v: boolean) => void
+  /** Where the shown result came from: 'live' = this model computed it just now (in the page or on the companion); 'recorded' = a saved run that plays only while the real model downloads; null = nothing yet */
+  provenance: 'live' | 'recorded' | null
+  /** the text the live result was computed for (null until a live run finishes) */
+  ranPrompt: string | null
+  /** whether the browser run could also hand out per-block numbers; `note` says so plainly when it could not */
+  inside: { live: boolean; note: string | null } | null
   backend: 'unknown' | 'online' | 'offline'
   mode: 'live' | 'replay'
   examples: ExampleMeta[]
@@ -162,7 +170,7 @@ interface S {
 
 const resetRun = {
   tokens: [], embed: null, layers: [], final: null, revealed: 0, running: false, streaming: false,
-  runStatus: null, runErr: null, runErrCode: null as string | null, lastStats: null as RunStats | null, maxes: { attn: 1, mlp: 1, head: 1 },
+  runStatus: null, runErr: null, runErrCode: null as string | null, provenance: null as 'live' | 'recorded' | null, inside: null as { live: boolean; note: string | null } | null, lastStats: null as RunStats | null, maxes: { attn: 1, mlp: 1, head: 1 },
 }
 
 /** Can the Run button work now? True for a recorded replay, a browser-runnable model, or a model the companion can run. */
@@ -211,14 +219,15 @@ export const useStore = create<S>((set, get) => {
           },
         }
       })
-    } else if (f.type === 'final') set({ final: f })
+    } else if (f.type === 'inside') set({ inside: { live: !!f.live, note: f.note ?? null } })
+    else if (f.type === 'final') set({ final: f })
   }
 
   /** play the recorded run (a pack): the scene is never empty while a model downloads */
   function playRecorded() {
     const s = get()
     if (!s.pack) return
-    set({ ...resetRun, running: true, streaming: true, tab: 'run' })
+    set({ ...resetRun, running: true, streaming: true, tab: 'run', provenance: 'recorded' })
     startReveal()
     for (const f of s.pack.run.frames) onFrame(f)
     set({ streaming: false })
@@ -239,6 +248,7 @@ export const useStore = create<S>((set, get) => {
   async function downloadModel(plan: DownloadPlan): Promise<RunStats | null> {
     const s = get()
     const ctl = (dlAbort = new AbortController())
+    downloading = true
     try {
       const loaded = await loadInBrowser(s.spec!, { device: s.fit!.where as 'webgpu' | 'wasm', dtype: plan.dtype, signal: ctl.signal, onProgress: progressMeter() })
       if (!plan.cached) void persistAfterDownload()   // the browser keeps what was just downloaded
@@ -250,6 +260,7 @@ export const useStore = create<S>((set, get) => {
       else set({ runErr: e?.message ?? String(e), runErrCode: code, running: false })
       return null
     } finally {
+      downloading = false
       dlAbort = null
       set({ download: null, pendingDownload: null })
     }
@@ -279,53 +290,61 @@ export const useStore = create<S>((set, get) => {
     try { plan = await planDownload(s.spec!, { device: where }) } catch (e: any) { set({ ...resetRun, tab: 'run', runErr: e.message ?? String(e) }); return }
     const mb = plan.bytes ? `${Math.round(plan.bytes / 1048576)} MB` : 'a model'
     set({ plan, pendingDownload: plan.cached ? null : plan, needsConsent: false, consent: null, note: plan.metered && !plan.cached ? `You may be on a metered connection. This model is ${mb}.` : null })
-    const keep = !!s.pack && s.mode === 'replay'   // a recorded example keeps its layers; the live run only fills in the result
     let loaded: RunStats | null = null
     if (!plan.cached) {
-      if (o.recordedFirst && s.pack) playRecorded()
+      if (o.recordedFirst && s.pack && !get().final) playRecorded()   // a recording stands in only while the real model downloads
       loaded = await downloadModel(plan)
       if (!loaded) return
     }
-    await execute({ live: true, keep, loaded })
-    // the recording only stood in while the model loaded: now that it runs here, the prompt box and Run use the real model
-    const after = get()
-    if (keep && after.repo === s.repo && after.mode === 'replay' && after.lastStats && !after.runErrCode) set({ mode: 'live' })
+    // the real model computes the answer: never the recording, whatever mode the page was in
+    const fresh = await execute({ live: true, loaded })
+    if (fresh && get().repo === s.repo && get().mode === 'replay' && get().lastStats && !get().runErrCode) set({ mode: 'live' })
   }
 
   /** Run now with what is in the store. `live`: use the browser even when a recording exists; `keep`: keep the recorded frames, take only the final result. */
-  async function execute(o: { live?: boolean; keep?: boolean; loaded?: RunStats | null } = {}) {
+  async function execute(o: { live?: boolean; loaded?: RunStats | null } = {}): Promise<boolean> {
+    const my = ++runToken
+    dlAbort?.abort()   // a run that is still going is cancelled: the newest click wins
     const s = get()
     const replay = !o.live && s.mode === 'replay' && !!s.pack
     const where = s.fit?.where ?? 'none'
     const viaBrowser = !replay && (where === 'webgpu' || where === 'wasm')
-    if (o.keep) set({ running: true, streaming: true, runErr: null, runErrCode: null })
-    else set({ ...resetRun, running: true, streaming: true, tab: 'run', pendingDownload: null, needsConsent: false })
-    if (!o.keep) startReveal()
-    const frame = o.keep ? (f: any) => { if (f.type === 'final') set({ final: f }) } : onFrame
+    set({ ...resetRun, running: true, streaming: true, tab: 'run', pendingDownload: null, needsConsent: false, provenance: replay ? 'recorded' : null })
+    startReveal()
+    const text = s.input.kind === 'text' ? s.input.text : s.prompt
+    // the result is live only when it came from the model just now
+    const frame = (f: any) => { if (my !== runToken) return; onFrame(f); if (f.type === 'final' && !replay) set({ provenance: 'live', ranPrompt: text }) }
     const t0 = performance.now()
+    const ctl = new AbortController()
     try {
       if (replay) {
         for (const f of s.pack.run.frames) onFrame(f)
       } else if (viaBrowser) {
-        const ctl = (dlAbort = new AbortController())
+        dlAbort = ctl
         const stats: RunStats = await runInBrowser(s.spec!, s.input, frame, { device: where as 'webgpu' | 'wasm', signal: ctl.signal, onProgress: progressMeter() })
+        if (my !== runToken) return false
         // the model was fetched and compiled just before the run: report that load, not the warm one
         if (o.loaded) Object.assign(stats, { loadMs: o.loaded.loadMs, cached: (o.loaded as any).cached })
         set({ lastStats: stats })
         const fin = get().final
         if (fin) { const last = { repo: s.repo, task: s.spec?.task ?? '', at: Date.now(), final: fin, stats }; set({ last }); remember('lastRun', last) }
       } else {
-        await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], onFrame)
+        dlAbort = ctl
+        await streamRun(s.repo, s.prompt, s.useEdits ? s.edits : [], frame)
         const totalMs = performance.now() - t0, fin = get().final
-        set({ lastStats: { where: 'companion', repo: s.repo, task: s.spec?.task ?? 'text-generation', loadMs: 0, firstMs: (fin?.seconds ?? totalMs / 1000) * 1000, totalMs, items: 1, unit: 'items', perSec: 1000 / totalMs, memBytes: null, joules: null, estimatedEnergy: false } })
+        set({ provenance: 'live', ranPrompt: s.prompt, lastStats: { where: 'companion', repo: s.repo, task: s.spec?.task ?? 'text-generation', loadMs: 0, firstMs: (fin?.seconds ?? totalMs / 1000) * 1000, totalMs, items: 1, unit: 'items', perSec: 1000 / totalMs, memBytes: null, joules: null, estimatedEnergy: false } })
       }
     } catch (e: any) {
+      if (my !== runToken) return false   // a newer click took over: its state is the one that counts
       const code: string | null = e?.code ?? null
       set({ runErr: code === 'aborted' ? null : (e.message ?? String(e)), runErrCode: code, running: false })
     } finally {
-      dlAbort = null
-      set((st) => ({ streaming: false, download: null, runSeq: st.runSeq + 1, ...(o.keep ? { running: false } : {}) }))
+      if (my === runToken) {
+        if (dlAbort === ctl) dlAbort = null
+        set((st) => ({ streaming: false, download: null, runSeq: st.runSeq + 1 }))
+      }
     }
+    return my === runToken
   }
 
   return {
@@ -339,7 +358,7 @@ export const useStore = create<S>((set, get) => {
     setAppView: (appView: AppView) => set({ appView } as any),
     visible: { model: true }, setVisible: (visible) => set({ visible } as any),
     details: readDetails(), setDetails: (details) => { set({ details } as any); try { localStorage.setItem(DETAILS_KEY, details ? '1' : '0') } catch { /* private mode */ } },
-    plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, note: null, language: lsGet('ns.lang') || 'en', last: recall('lastRun'), backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
+    plan: null, pendingDownload: null, needsConsent: false, consent: null, download: null, note: null, language: lsGet('ns.lang') || 'en', last: recall('lastRun'), ranPrompt: null, backend: 'unknown', mode: 'live', examples: [], pack: null, repo: '', spec: null, fit: null, input: { kind: 'text', text: 'The capital of France is' } as TaskInput, probe: null, probing: false, probeErr: null,
     prompt: 'The capital of France is', ...resetRun, selLayer: null, selHead: null, qpos: -1, hover: null, tab: 'model',
     runSeq: 0, tensors: {}, tensorErr: null, edits: [], useEdits: true, compare: null, comparing: false, compareErr: null,
     calc: null, calcing: false, calcErr: null,
@@ -450,7 +469,8 @@ export const useStore = create<S>((set, get) => {
         set({ ...resetRun, tab: 'run', runErr: `${s.fit.reason}${alt ? ` Try ${alt.repo} instead, a smaller model for the same task.` : ''}` })
         return
       }
-      const viaBrowser = !replay && (where === 'webgpu' || where === 'wasm')
+      // the real model runs in the browser whenever it can, also when a recording is loaded (the recording only plays while it downloads)
+      const viaBrowser = where === 'webgpu' || where === 'wasm'
       // the companion path, also for repos the probe can read but the fit rules do not list (kept from before)
       const viaCompanion = !replay && !viaBrowser && s.mode === 'live' && !!s.probe
       if (!replay && !viaBrowser && !viaCompanion) {
@@ -458,7 +478,12 @@ export const useStore = create<S>((set, get) => {
         set({ ...resetRun, tab: 'run', runErr: s.fit?.reason ?? 'This model cannot run on this computer.' })
         return
       }
-      if (viaBrowser) { await beginBrowser({}); return }
+      if (viaBrowser) {
+        if (downloading) return   // the model is still downloading: the run starts by itself, with whatever is in the box then
+        if (s.running) { dlAbort?.abort() }           // a click while a run is under way: the newest prompt wins, the old run is cancelled cleanly
+        await beginBrowser({ recordedFirst: replay })
+        return
+      }
       await execute()
     },
 

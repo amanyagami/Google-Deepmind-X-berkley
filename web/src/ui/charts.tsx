@@ -942,6 +942,8 @@ function TensorBody({ t, repo }: { t: TInfo; repo: string }) {
   useEffect(() => { setLd({ st: 'idle' }); return () => ctl.current?.abort() }, [t.name])
   // mock data is generated locally (no fetch), so it shows at once
   useEffect(() => { if (isMock() && t.name === 'w') void loadRef.current(true) }, [t.name]) // eslint-disable-line react-hooks/exhaustive-deps
+  // a click on a block shows real weights at once when they are small (under 1.5 MB); larger tensors keep their size-labelled button
+  useEffect(() => { const sz = t.params * (ITEM[t.dtype.toUpperCase()] ?? 4); if (!isMock() && repo && sz <= 1.5 * 1048576) void loadRef.current(true) }, [t.name, repo]) // eslint-disable-line react-hooks/exhaustive-deps
   const { rows, cols, rank1 } = dims(t.shape)
   const n = rows * cols
   const bytes = n * (ITEM[t.dtype.toUpperCase()] ?? 4)
@@ -970,7 +972,7 @@ function TensorBody({ t, repo }: { t: TInfo; repo: string }) {
   loadRef.current = load
   if (ld.st === 'ready') {
     const label = `${shortName(t.name)}, ${t.shape.join(' by ')}`
-    return ld.rank1 ? <VectorView data={ld.data} label={label} name={t.name} /> : <MatrixView data={ld.data} rows={ld.rows} cols={ld.cols} stride={ld.stride} pooledOnly={ld.stride > 1} label={label} name={t.name} />
+    return <>{ld.rank1 ? <VectorView data={ld.data} label={label} name={t.name} /> : <MatrixView data={ld.data} rows={ld.rows} cols={ld.cols} stride={ld.stride} pooledOnly={ld.stride > 1} label={label} name={t.name} />}{!isMock() && <p className="nsx-muted" data-weights-source="hub">Live: these numbers are the model's real weights, read from Hugging Face by byte range.</p>}</>
   }
   return (
     <div className="nsx-load">
@@ -1027,6 +1029,7 @@ function TokenBody({ i, info }: { i: NonNullable<Inspect>; info: ModelInfo | nul
 function OutputBody({ info }: { info: ModelInfo | null }) {
   const [T, setT] = useState(1)
   const [more, setMore] = useState(false)
+  const prov = useStore((s) => s.provenance), ran = useStore((s) => s.ranPrompt), busy = useStore((s) => s.running)
   const real = info?.topk ?? []
   const items = real.length ? real.map((x) => ({ token: x.token, logit: Math.log(Math.max(1e-12, x.p)) })) : isMock() ? mockLogits() : []
   const probs = softmaxT(items.map((x) => x.logit), T)
@@ -1036,6 +1039,8 @@ function OutputBody({ info }: { info: ModelInfo | null }) {
   const top = shown[0]?.p || 1
   return (
     <div>
+      <p className="nsx-muted" data-provenance={prov ?? ''}>{prov === 'live' ? `Live: the real model scored these just now${ran ? ` for “${ran.slice(0, 60)}”` : ''}.` : prov === 'recorded' ? 'Recorded: a saved run, shown only while the real model downloads.' : ''}
+        {prov !== 'live' && <> <button className="nsx-btn sm" type="button" disabled={busy} onClick={() => { void useStore.getState().run() }}>{busy ? 'Running…' : 'Run the real model'}</button></>}</p>
       <label className="nsx-temp">Temperature <b className="mono">{T.toFixed(2)}</b>
         <input type="range" min="0.1" max="2" step="0.05" value={T} onChange={(e) => setT(Number(e.target.value))} aria-label="Temperature" />
       </label>
@@ -1068,6 +1073,16 @@ function Crumbs({ i }: { i: NonNullable<Inspect> }) {
       {tail && <span aria-current="page">{tail}</span>}
     </nav>
   )
+}
+
+/** Where the per-block numbers of this run came from, in plain words. */
+function InsideNote() {
+  const prov = useStore((s) => s.provenance), inside = useStore((s) => s.inside), has = useStore((s) => s.layers.length > 0)
+  const text = prov === 'recorded' ? 'Recorded: the per-block numbers on screen are from a saved run. The real model replaces them when it is ready.'
+    : prov === 'live' && has && inside?.live ? 'Live: per-block sizes come from the real model run you just made.'
+    : prov === 'live' ? (inside?.note ?? 'Needs the companion app for per-block numbers.') + ' The weights below are real, read from Hugging Face.'
+    : ''
+  return text ? <p className="nsx-muted" data-inside-note data-provenance={prov ?? ''}>{text}</p> : null
 }
 
 function Card({ i }: { i: NonNullable<Inspect> }) {
@@ -1120,6 +1135,7 @@ function Card({ i }: { i: NonNullable<Inspect> }) {
           </div>
           {pick && <ul className="nsx-tlist">{parts.map((t) => <li key={t.name}><button type="button" className="nsx-btn" onClick={() => openWeights(t)}><span>{shortName(t.name)}</span><span className="mono nsx-muted">{t.shape.join('×')}</span></button></li>)}</ul>}
           {!info && <p className="nsx-muted">Load a model to see its blocks.</p>}
+          <InsideNote />
         </>
       )}
       {i.kind === 'tensor' && <p className="nsx-muted">Key: ○ −1 blue is negative. ▲ +1 amber is positive. Dark is near 0.</p>}

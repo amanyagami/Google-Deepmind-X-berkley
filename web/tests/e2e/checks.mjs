@@ -34,7 +34,7 @@ async function autoRun(env, o) {
   await p.page.addInitScript(() => { window.__pv = []; addEventListener('DOMContentLoaded', () => new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document, { subtree: true, attributes: true, childList: true })) })
   const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' })
   const done = await p.page.waitForSelector('[data-runscore]', { state: 'attached', timeout: 240000 }).then(() => true, () => false), tRun = (Date.now() - t0) / 1000
-  const info = await p.page.evaluate(() => { const s = window.__studio.getState(); return { plan: s.plan, err: s.runErr, where: s.lastStats?.where, text: document.querySelector('[data-runscore]')?.innerText ?? '' } })
+  const info = await p.page.evaluate(() => { const s = window.__studio.getState(); return { plan: s.plan, err: s.runErr, prov: s.provenance, ran: s.ranPrompt, where: s.lastStats?.where, text: document.querySelector('[data-runscore]')?.innerText ?? '' } })
   const v = await p.page.evaluate(() => __pv), distinct = new Set(v.map((x) => x[1])).size, span = v.length ? (v.at(-1)[0] - v[0][0]) / 1000 : 0
   got = await p.page.evaluate(async () => { let n = 0; for (const k of await caches.keys()) { const c = await caches.open(k); for (const r of await c.keys()) if (/\/resolve\//.test(r.url)) n += (await (await c.match(r)).blob()).size } return n }).catch(() => 0)
   await p.shot('auto-run'); return { p, done, tRun, info, v, distinct, span, got, t0 }
@@ -465,6 +465,63 @@ export const checks = [
       out.push(`${w}px ${res.join(', ')}`)
     }
     return ok(good, out.join(' | ')) } },
+
+  { id: 'A43', title: 'real model on every click: Run gives provenance live (never recorded once the model runs), a second prompt gives a different answer, an output/block click shows live data or the needs-companion note', run: async (env) => {
+    const p = await env.open({ hub: false }); const pg = p.page
+    if (!(await fetch('https://huggingface.co/api/models/HuggingFaceTB/SmolLM2-135M-Instruct').then((r) => r.ok, () => false))) return S('real Hub unreachable')
+    await p.goto('', 500)
+    const st = (f) => pg.evaluate(f)
+    const idle = () => pg.waitForFunction(() => { const s = window.__studio.getState(); return !s.running && !s.download && s.lastStats && s.provenance === 'live' }, null, { timeout: 280000 }).then(() => true, () => false)
+    if (!(await idle())) return F('the default model never produced a live result: ' + JSON.stringify(await st(() => { const s = window.__studio.getState(); return { prov: s.provenance, err: s.runErr, run: s.running, dl: !!s.download } })))
+    const typeRun = async (text) => {
+      const before = await st(() => window.__studio.getState().runSeq)
+      await pg.locator('[data-prompt]').first().fill(text); await pg.waitForTimeout(150)
+      await pg.locator('[data-start]').first().click()
+      await pg.waitForFunction((b) => { const s = window.__studio.getState(); return s.runSeq > b && !s.running && s.provenance === 'live' }, before, { timeout: 120000 })
+      return st(() => { const s = window.__studio.getState(); return { prov: s.provenance, ran: s.ranPrompt, top: s.final?.topk?.slice(0, 3).map((x) => x.token + ':' + x.p.toFixed(3)), text: s.final?.text, inside: s.inside } })
+    }
+    const a = await typeRun('The capital of France is'), b = await typeRun('Two plus two equals')
+    const differ = JSON.stringify(a.top) !== JSON.stringify(b.top) && a.ran !== b.ran && b.ran === 'Two plus two equals'
+    // a click on the output of the model, and on a block, shows live data or says plainly that it needs the companion
+    const seen = []
+    for (const ins of [{ kind: 'output' }, { kind: 'block', layer: 2 }]) {
+      await pg.evaluate((i) => window.__zoo.getState().setInspect(i), ins); await pg.waitForTimeout(1200)
+      seen.push(await pg.evaluate(() => { const c = document.querySelector('[data-inspector]'); const pv = c?.querySelector('[data-provenance]'); const note = c?.querySelector('[data-inside-note]')?.textContent ?? ''; return { prov: pv?.getAttribute('data-provenance') ?? null, note: note.slice(0, 90), rows: c?.querySelectorAll('.nsx-logits li').length ?? 0 } }))
+    }
+    const outOk = seen[0].prov === 'live' && seen[0].rows >= 5
+    const blkOk = seen[1].prov === 'live' && /^(Live|Needs the companion)/.test(seen[1].note) && !/Recorded/.test(seen[1].note)
+    await p.shot('a43')
+    return ok(a.prov === 'live' && b.prov === 'live' && differ && outOk && blkOk, `1st ${a.top?.join(' ')} | 2nd ${b.top?.join(' ')} | inside ${JSON.stringify(b.inside)} | output ${JSON.stringify(seen[0])} | block ${JSON.stringify(seen[1])}`) } },
+  { id: 'A43b', title: 'drawn input: a stroke changes the 3D output scores within 100 ms; for all 5 nets the table digit/confidence equal the 3D label (+-1%) mid-stroke and after pointer-up, from one stored pass (same input hash)', run: async (env) => {
+    const p = await env.open(); const pg = p.page; await p.goto('', 2500)
+    if (!(await pg.evaluate(() => !!window.__zoo))) return S('no window.__zoo')
+    await pg.waitForFunction(() => Object.keys(window.__zoo.getState().packs).length === 5, null, { timeout: 20000 })
+    const snap = (n) => pg.evaluate((net) => {
+      const z = window.__zoo.getState(), r = z.reads[net], q = (s) => document.querySelector(s)
+      const row = q(`[data-net-row="${net}"]`), v = q(`[data-scene-verdict][data-scene-net="${net}"]`)
+      return { net: z.net, digit: r?.digit ?? null, conf: Math.round((r?.conf ?? 0) * 100), hash: r?.hash, outHash: z.out?.hash,
+        tab: row?.querySelector('[data-read-digit]')?.getAttribute('data-read-digit'), tabConf: row?.querySelector('[data-read-conf]')?.getAttribute('data-read-conf'), tabHash: row?.getAttribute('data-read-hash'),
+        sd: v?.dataset.sceneDigit, sc: v?.dataset.sceneConf, sh: v?.dataset.sceneHash }
+    }, n)
+    const agree = (x) => x.tab === String(x.digit ?? '-') && x.sd === String(x.digit ?? '-') && Math.abs(+x.tabConf - x.conf) <= 1 && Math.abs(+x.sc - x.conf) <= 1 && x.tabHash === x.hash && x.sh === x.hash && (x.net === 'vlm' || x.outHash === x.hash)
+    const out = []; let good = true, fast = 0
+    let pts = null
+    for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) {
+      await pg.evaluate((x) => window.__zoo.getState().setNet(x), n); await pg.waitForFunction((x) => window.__zoo.getState().net === x && window.__zoo.getState().out, n, { timeout: 10000 }); await pg.waitForTimeout(500)
+      await openFor(pg, '[data-pad]'); const pad = pg.locator('[data-pad]').first(); await pad.scrollIntoViewIfNeeded(); pts = three(await pad.boundingBox())
+      await pg.locator('[data-pad-clear]').first().click(); await pg.waitForTimeout(250)
+      const h0 = (await snap(n)).hash
+      await pg.mouse.move(pts[0][0], pts[0][1]); await pg.mouse.down()
+      await pg.mouse.move(pts[3][0], pts[3][1]); const t0 = Date.now()   // one stroke segment; the clock starts once the event is delivered
+      const ms = await pg.waitForFunction(([x, h]) => { const z = window.__zoo.getState(), v = document.querySelector(`[data-scene-verdict][data-scene-net="${x}"]`); return z.reads[x]?.hash !== h && v?.dataset.sceneHash === z.reads[x]?.hash }, [n, h0], { timeout: 1500, polling: 'raf' }).then(() => Date.now() - t0, () => -1)
+      const mid = await snap(n)
+      for (const q of pts.slice(4)) await pg.mouse.move(q[0], q[1], { steps: 2 })
+      await pg.mouse.up(); await pg.waitForTimeout(400); const end = await snap(n)
+      const ok1 = ms >= 0 && ms <= 100 && agree(mid) && agree(end) && end.hash !== h0; if (!ok1) good = false; fast = Math.max(fast, ms)
+      out.push(`${n}: ${ms}ms ${mid.digit}/${mid.conf}% -> ${end.digit}/${end.conf}% table ${end.tab}/${end.tabConf}% scene ${end.sd}/${end.sc}%${ok1 ? '' : ' MISMATCH ' + JSON.stringify(end)}`)
+    }
+    await p.shot('a43b')
+    return ok(good, out.join(' | ') + `; slowest first update ${fast} ms (from the delivered pointer event to the scene label)`) } },
   { id: 'L6', tier: 3, title: 'idle cost: companion watts with the page open vs blank (info only)', run: async (env) => {
     const pw = async () => { const xs = []; for (let i = 0; i < 8; i++) { xs.push((await fetch('http://127.0.0.1:8000/api/hw/power').then((r) => r.json())).pkg_w); await sleep(250) } return xs.reduce((a, b) => a + b, 0) / xs.length }
     try { const blank = await pw(); const p = await env.open({ companion: 'real', hub: false }); await p.goto('#machine', 3000); const page = await pw(); return P(`blank ${blank.toFixed(1)} W, page ${page.toFixed(1)} W`) } catch (e) { return S('companion power API unavailable: ' + e.message) } } },
@@ -474,6 +531,6 @@ export const checks = [
     return hub === 200 ? P(`Hub ${hub}; companion ${comp}`) : F(`Hub ${hub}; companion ${comp}`) } },
   { id: 'T2', tier: 3, title: 'smoke: real page, real Hub, no mocks: default model runs by itself and shows a run score; bytes ~ plan', needs: ['auto'], run: async (env) => {
     const r = await autoRun(env, {}), planned = r.info.plan?.bytes ?? 0, ratio = planned ? r.got / planned : 0
-    return ok(r.done && (r.got === 0 || (ratio > 0.5 && ratio < 1.5)), `${r.done ? 'run score' : 'NO run score'} after ${r.tRun.toFixed(1)} s on ${r.info.where ?? '?'}; planned ${(planned / 1048576).toFixed(0)} MB, downloaded ${(r.got / 1048576).toFixed(0)} MB (${r.got ? 'ratio ' + ratio.toFixed(2) : 'cached or streamed'}); "${r.info.text.replace(/\s+/g, ' ').slice(0, 60)}"`) } },
+    return ok(r.done && r.info.prov === 'live' && (r.got === 0 || (ratio > 0.5 && ratio < 1.5)), `${r.done ? 'run score' : 'NO run score'} provenance ${r.info.prov} after ${r.tRun.toFixed(1)} s on ${r.info.where ?? '?'}; planned ${(planned / 1048576).toFixed(0)} MB, downloaded ${(r.got / 1048576).toFixed(0)} MB (${r.got ? 'ratio ' + ratio.toFixed(2) : 'cached or streamed'}); "${r.info.text.replace(/\s+/g, ' ').slice(0, 60)}"`) } },
 
 ]
