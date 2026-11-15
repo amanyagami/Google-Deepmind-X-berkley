@@ -491,7 +491,7 @@ function ScoreStrip() {
         ? <><span className="t5-srun mono">{labelOf(running).replace(/^CPU, /, 'CPU ')}{batch ? ` ${idx + 1}/${batch.ids.length} · ${secs} s` : ''}
           <span className="t5-bar" role="progressbar" aria-label="Test progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)}><i style={{ width: `${Math.round(frac * 100)}%` }} /></span></span>
           <button type="button" className="t5-btn" onClick={cancelAll}>Cancel</button></>
-        : <><LeaderboardButton /><button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={() => runBatch(TEST_IDS)}>Test all</button></>}
+        : <><button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={() => runBatch(TEST_IDS)}>Test all</button></>}
     </div>
   )
 }
