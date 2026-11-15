@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useInsertionEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
+import { Children, useCallback, useEffect, useId, useInsertionEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 import { useStore } from "../store"
 import { useZoo, type Inspect } from "../zoo/zooStore"
 import * as api from "../api"
@@ -244,7 +244,7 @@ const HINT_CSS = `
 .nshint .nshint-btn:hover svg{color:var(--fg,#e8ecf8);transform:scale(1.06)}
 .nshint-btn[aria-expanded="true"] svg{color:var(--warn,#ffd36b)}
 .nshint-btn:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:-2px}
-.nshint .nshint-pop{--shift:0px;position:absolute;z-index:60;top:calc(100% + 2px);left:50%;transform:translateX(calc(-50% + var(--shift)));width:max-content;max-width:min(320px,calc(100vw - 32px));padding:10px 13px;border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);box-shadow:0 16px 40px #000a;font:400 var(--t0,14px)/1.5 var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);text-transform:none;letter-spacing:0;white-space:normal;text-align:left}
+.nshint .nshint-pop{--shift:0px;position:absolute;z-index:60;top:calc(100% + 2px);left:50%;transform:translateX(calc(-50% + var(--shift)));width:max-content;max-width:min(320px,calc(100vw - 32px));padding:10px 13px;border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);box-shadow:0 16px 40px var(--nsx-shadow,rgba(0,0,0,.55));font:400 var(--t0,14px)/1.5 var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);text-transform:none;letter-spacing:0;white-space:normal;text-align:left}
 .nshint .nshint-pop.up{top:auto;bottom:calc(100% + 2px)}
 @media (prefers-reduced-motion:no-preference){.nshint-pop{animation:nshintin var(--d1,120ms) var(--ease,ease-out)}}
 @keyframes nshintin{from{opacity:0}to{opacity:1}}
@@ -434,21 +434,44 @@ export function useMips(data: Float32Array | null, rows: number, cols: number): 
 /* ------------------------------------------------------------------ the semantic-zoom heatmap */
 
 const LUT_N = 1024
-let LUT: { c: Uint32Array; d: Uint32Array } | null = null
-function getLut() {
-  if (LUT) return LUT
-  const c = new Uint32Array(LUT_N + 1), d = new Uint32Array(LUT_N + 1)
-  const base = [16, 22, 40]
+type Lut = { c: Uint32Array; d: Uint32Array; bright: Uint8Array; bg: number }
+const LUTS: Partial<Record<'dark' | 'light', Lut>> = {}
+/** Diverging map. Dark: near zero dark, amber +, blue -. Light: near zero light, darker amber and blue ends. */
+function getLut(theme: 'dark' | 'light'): Lut {
+  const hit = LUTS[theme]
+  if (hit) return hit
+  const c = new Uint32Array(LUT_N + 1), d = new Uint32Array(LUT_N + 1), bright = new Uint8Array(LUT_N + 1)
+  const light = theme === 'light'
+  const base = light ? [247, 248, 252] : [16, 22, 40]
+  const P = light ? [180, 93, 0] : [255, 169, 77], N = light ? [31, 111, 209] : [85, 168, 255]
   for (let i = 0; i <= LUT_N; i++) {
     const t = (i / LUT_N) * 2 - 1, m = Math.pow(Math.abs(t), 0.6)
-    const tg = t >= 0 ? [255, 169, 77] : [85, 168, 255]
+    const tg = t >= 0 ? P : N
     const rgb = [0, 1, 2].map((k) => Math.round(base[k] + (tg[k] - base[k]) * m))
     c[i] = (255 << 24) | (rgb[2] << 16) | (rgb[1] << 8) | rgb[0]
     d[i] = (255 << 24) | (Math.round(rgb[2] * 0.55) << 16) | (Math.round(rgb[1] * 0.55) << 8) | Math.round(rgb[0] * 0.55)
+    bright[i] = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2] > 140 ? 1 : 0
   }
-  return (LUT = { c, d })
+  return (LUTS[theme] = { c, d, bright, bg: light ? (255 << 24) | (248 << 16) | (240 << 8) | 238 : (255 << 24) | (20 << 16) | (14 << 8) | 10 })
 }
-const BG = (255 << 24) | (20 << 16) | (14 << 8) | 10
+
+/** The active colour theme: <html data-theme="light|dark"> wins, else the system setting. */
+const themeSubs = new Set<() => void>()
+const readTheme = (): 'dark' | 'light' => {
+  if (typeof document === 'undefined') return 'dark'
+  const t = document.documentElement.getAttribute('data-theme')
+  if (t === 'light' || t === 'dark') return t
+  return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+let themeWatching = false
+function watchTheme() {
+  if (themeWatching || typeof document === 'undefined') return
+  themeWatching = true
+  const f = () => themeSubs.forEach((x) => x())
+  new MutationObserver(f).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  try { matchMedia('(prefers-color-scheme: light)').addEventListener('change', f) } catch { /* old browser */ }
+}
+export const useTheme = () => useSyncExternalStore((f) => { watchTheme(); themeSubs.add(f); return () => { themeSubs.delete(f) } }, readTheme, () => 'dark' as const)
 
 let curHm: { api: HmApi; name: string } | null = null
 export interface HmApi { fit(): void; zoomBy(f: number): void; isZoomed(): boolean; zoomTo(r: number, c: number, s: number): void; panBy(dx: number, dy: number): void; state(): { s: number; minS: number; ox: number; oy: number; tier: string; level: number; rows: number; cols: number }; valueAt(r: number, c: number): number }
@@ -466,12 +489,13 @@ export function Heatmap({ m, rows, cols, stride = 1, pooledOnly = false, label, 
   const sc = useRef<HTMLSpanElement>(null)
   const S = useRef({ s: 1, ox: 0, oy: 0, W: 0, H: 0, minS: 0.1, maxS: 100, raf: 0, hover: null as null | { x: number; y: number }, zoomed: false, img: null as ImageData | null })
   const draw = useRef<() => void>(() => {})
+  const theme = useTheme()
 
   useEffect(() => {
     const st = S.current, c = cv.current!, b = box.current!
     const maxL = m.levels.length - 1
     const inv = 1 / (m.stats.vmax || 1)
-    const { c: lutC, d: lutD } = getLut()
+    const { c: lutC, d: lutD, bright: lutB, bg: BG } = getLut(theme)
     const lvIdx = (v: number) => { const k = ((v * inv + 1) * 0.5 * LUT_N + 0.5) | 0; return k < 0 ? 0 : k > LUT_N ? LUT_N : k }
     st.maxS = pooledOnly ? 7.5 : 120
     const measure = () => { st.W = b.clientWidth; st.H = height; st.minS = Math.max(1e-4, Math.min(st.W / cols, st.H / rows)) }
@@ -533,7 +557,7 @@ export function Heatmap({ m, rows, cols, stride = 1, pooledOnly = false, label, 
           const t = fmt3(v, true).replace(/^([+−])0\./, '$1.').replace(/^0\./, '.')
           const fs = clamp((st.s * 0.86) / (Math.max(3, t.length) * 0.6), 6, 15)
           g.font = `${fs * dpr}px ui-monospace,Menlo,Consolas,monospace`
-          g.fillStyle = Math.abs(v) * inv > 0.55 ? '#10141f' : '#f2f5ff'
+          g.fillStyle = lutB[lvIdx(v)] ? '#10141f' : '#f2f5ff'
           g.fillText(t, (cc + 0.5 - st.ox) * sd, (r + 0.5 - st.oy) * sd)
           drawn++
         }
@@ -625,7 +649,7 @@ export function Heatmap({ m, rows, cols, stride = 1, pooledOnly = false, label, 
       if (window.__ns7 && window.__ns7.hm === api) window.__ns7.hm = null
       if (curHm?.api === api) curHm = null
     }
-  }, [m, rows, cols, stride, pooledOnly, height]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [m, rows, cols, stride, pooledOnly, height, theme]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const tw = 88, tt = rows >= cols ? tw : Math.max(24, Math.round((tw * rows) / cols)), tww = cols >= rows ? tw : Math.max(24, Math.round((tw * cols) / rows))
   return (
@@ -697,7 +721,7 @@ function Histogram({ h }: { h: number[] }) {
   const w = 96 / h.length
   return (
     <svg className="nsx-hist" viewBox="0 0 96 30" preserveAspectRatio="none" role="img" aria-label="Histogram of values: blue below zero, amber above">
-      {h.map((x, i) => { const hh = (Math.log1p(x) / mx) * 28; return <rect key={i} x={i * w + 0.1} width={w - 0.2} y={30 - hh} height={hh} fill={i < h.length / 2 ? 'var(--neg,#55a8ff)' : 'var(--pos,#ffa94d)'} /> })}
+      {h.map((x, i) => { const hh = (Math.log1p(x) / mx) * 28; return <rect key={i} x={i * w + 0.1} width={w - 0.2} y={30 - hh} height={hh} fill={i < h.length / 2 ? 'var(--nsx-neg)' : 'var(--nsx-pos)'} /> })}
       <line x1="48" x2="48" y1="0" y2="30" stroke="var(--line,#27314f)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
     </svg>
   )
@@ -1036,6 +1060,9 @@ export function Inspector({ className }: { className?: string }) {
 /* ------------------------------------------------------------------ styles */
 
 const INSPECTOR_CSS = `
+.nsx-card,.nsx-bar,.nsx-hmbox,.nshint,.nsx-expl{--nsx-neg:var(--neg,#55a8ff);--nsx-pos:var(--pos,#ffa94d);--nsx-mid:#101628;--nsx-canvas:#0a0e19;--nsx-grad:var(--brand-solid,linear-gradient(135deg,#5b3df5,#0a7d9c 55%,#c2255c));--nsx-shadow:rgba(0,0,0,.55)}
+:root[data-theme="light"] .nsx-card,:root[data-theme="light"] .nsx-bar,:root[data-theme="light"] .nsx-hmbox,:root[data-theme="light"] .nshint,:root[data-theme="light"] .nsx-expl{--nsx-neg:#1f6fd1;--nsx-pos:#b45d00;--nsx-mid:#f7f8fc;--nsx-canvas:#eef0f8;--nsx-shadow:rgba(20,26,60,.22)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .nsx-card,:root:not([data-theme="dark"]) .nsx-bar,:root:not([data-theme="dark"]) .nsx-hmbox,:root:not([data-theme="dark"]) .nshint,:root:not([data-theme="dark"]) .nsx-expl{--nsx-neg:#1f6fd1;--nsx-pos:#b45d00;--nsx-mid:#f7f8fc;--nsx-canvas:#eef0f8;--nsx-shadow:rgba(20,26,60,.22)}}
 .nsx-bar{display:flex;gap:var(--s2,8px);align-items:center;flex-wrap:wrap}
 .nsx-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 12px;border-radius:var(--r-pill,999px);background:var(--surface2,#1b2542);border:1px solid var(--line,#27314f);color:var(--fg,#e8ecf8);font:400 var(--t0,14px)/1.3 var(--body,system-ui,sans-serif)}
 .nsx-pill button{all:unset;cursor:pointer;width:var(--hit,40px);height:var(--hit,40px);margin:-8px 0;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;color:var(--muted,#9aa5c7)}
@@ -1045,6 +1072,7 @@ const INSPECTOR_CSS = `
 .nsx-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s2,8px)}
 .nsx-crumb{font-size:var(--t-1,11.5px);color:var(--muted,#9aa5c7);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nsx-crumb i{font-style:normal}
+.nsx-crumb [aria-current]{color:var(--fg,#e8ecf8);font-weight:600;text-shadow:0 0 14px color-mix(in srgb,var(--nsx-pos) 75%,transparent)}
 .nsx-link{all:unset;cursor:pointer;color:var(--muted,#9aa5c7);text-decoration:underline;text-underline-offset:2px;padding:10px 0}
 .nsx-link:hover{color:var(--fg,#e8ecf8)}
 .nsx-link:focus-visible,.nsx-chip:focus-visible,.nsx-hm:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:2px}
@@ -1059,7 +1087,8 @@ const INSPECTOR_CSS = `
 .nsx-btn{all:unset;box-sizing:border-box;cursor:pointer;min-height:var(--hit,40px);padding:0 var(--s4,16px);display:inline-flex;align-items:center;justify-content:space-between;gap:var(--s3,12px);border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--surface,#141c32);color:var(--fg,#e8ecf8);font:500 var(--t0,14px)/1 var(--body,system-ui,sans-serif);transition:border-color var(--d1,120ms),background var(--d1,120ms)}
 .nsx-btn:hover:not(:disabled){border-color:var(--muted,#9aa5c7)}
 .nsx-btn:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:2px}
-.nsx-btn.primary{background:color-mix(in srgb,var(--pos,#ffa94d) 18%,var(--surface,#141c32));border-color:var(--pos,#ffa94d)}
+.nsx-btn.primary{background:var(--nsx-grad);border-color:transparent;color:#fff;box-shadow:0 4px 16px -4px color-mix(in srgb,#7c5cff 60%,transparent)}
+.nsx-btn.primary:hover:not(:disabled){filter:brightness(1.1)}
 .nsx-btn.sm{min-width:var(--hit,40px);padding:0;justify-content:center}
 .nsx-btn:disabled{opacity:.45;cursor:default}
 .nsx-btn[aria-pressed="true"]{border-color:var(--pos,#ffa94d)}
@@ -1072,18 +1101,18 @@ const INSPECTOR_CSS = `
 .nsx-prog{width:100%;height:8px;border-radius:4px;background:var(--surface,#141c32);overflow:hidden}
 .nsx-prog i{display:block;height:100%;background:var(--pos,#ffa94d);transition:width var(--d2,220ms)}
 .nsx-tview{display:flex;flex-direction:column;gap:var(--s2,8px)}
-.nsx-hmbox{position:relative;width:100%;border-radius:var(--r-md,12px);overflow:hidden;background:#0a0e19;border:1px solid var(--line,#27314f)}
+.nsx-hmbox{position:relative;width:100%;border-radius:var(--r-md,12px);overflow:hidden;background:var(--nsx-canvas);border:1px solid var(--line,#27314f)}
 .nsx-hm{display:block;width:100%;cursor:grab;touch-action:pan-y}
 .nsx-hm:focus{touch-action:none}
 .nsx-hm:active{cursor:grabbing}
-.nsx-thumb{position:absolute;right:8px;top:8px;border:1px solid var(--line,#27314f);border-radius:6px;overflow:hidden;opacity:.92;cursor:pointer;background:#0a0e19}
+.nsx-thumb{position:absolute;right:8px;top:8px;border:1px solid var(--line,#27314f);border-radius:6px;overflow:hidden;opacity:.92;cursor:pointer;background:var(--nsx-canvas)}
 .nsx-thumb canvas{display:block;width:100%;height:100%}
-.nsx-thumbwin{position:absolute;border:1.5px solid var(--fg,#e8ecf8);box-sizing:border-box;pointer-events:none;min-width:3px;min-height:3px}
-.nsx-scale{position:absolute;left:8px;top:8px;padding:2px 7px;border-radius:6px;background:#0a0e19cc;font-size:11px;color:var(--muted,#9aa5c7);pointer-events:none}
-.nsx-readout{position:absolute;left:8px;bottom:8px;padding:3px 8px;border-radius:6px;background:#0a0e19dd;font-size:12px;color:var(--fg,#e8ecf8);pointer-events:none;max-width:calc(100% - 16px)}
+.nsx-thumbwin{position:absolute;border:1.5px solid #fff;outline:1px solid #000a;box-sizing:border-box;pointer-events:none;min-width:3px;min-height:3px}
+.nsx-scale{position:absolute;left:8px;top:8px;padding:3px 9px;border-radius:var(--r-pill,999px);background:var(--nsx-grad);box-shadow:0 0 14px color-mix(in srgb,#7c5cff 45%,transparent);font-size:11px;font-weight:600;color:#fff;pointer-events:none}
+.nsx-readout{position:absolute;left:8px;bottom:8px;padding:3px 8px;border-radius:6px;background:color-mix(in srgb,var(--panel,#0f1526) 90%,transparent);border:1px solid var(--line,#27314f);font-size:12px;color:var(--fg,#e8ecf8);pointer-events:none;max-width:calc(100% - 16px)}
 .nsx-readout:empty{display:none}
 .nsx-legend{display:flex;flex-direction:column;gap:3px}
-.nsx-lbar{height:10px;border-radius:5px;background:linear-gradient(90deg,#55a8ff,#101628 50%,#ffa94d)}
+.nsx-lbar{height:10px;border-radius:5px;background:linear-gradient(90deg,var(--nsx-neg),var(--nsx-mid) 50%,var(--nsx-pos))}
 .nsx-llab{display:flex;justify-content:space-between;font-size:var(--t-1,11.5px);color:var(--muted,#9aa5c7)}
 .nsx-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px;margin:0}
 .nsx-stats div{padding:6px 8px;border-radius:var(--r-sm,8px);background:var(--surface,#141c32)}
@@ -1098,15 +1127,15 @@ const INSPECTOR_CSS = `
 .nsx-table caption{text-align:left;color:var(--faint,#8a95b8);padding-bottom:4px}
 .nsx-table td{padding:4px 6px;border:1px solid var(--line,#27314f);white-space:nowrap}
 .nsx-table td b{font-weight:400;color:var(--faint,#8a95b8);margin-right:6px}
-.nsx-table td.pos{color:var(--pos,#ffa94d)}
-.nsx-table td.neg{color:var(--neg,#55a8ff)}
+.nsx-table td.pos{color:var(--pos-ink,var(--nsx-pos))}
+.nsx-table td.neg{color:var(--neg-ink,var(--nsx-neg))}
 .nsx-temp{display:flex;align-items:center;gap:var(--s3,12px);margin-bottom:var(--s3,12px)}
 .nsx-temp input{flex:1;min-height:var(--hit,40px)}
 .nsx-logits{list-style:none;margin:0 0 var(--s3,12px);padding:0;display:grid;gap:4px}
 .nsx-logits li{display:grid;grid-template-columns:minmax(64px,110px) 1fr 52px;gap:8px;align-items:center}
 .nsx-lt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nsx-lbarw{height:12px;border-radius:3px;background:var(--surface,#141c32);overflow:hidden}
-.nsx-lbarw i{display:block;height:100%;background:var(--pos,#ffa94d);transition:width var(--d2,220ms) var(--ease,ease)}
+.nsx-lbarw i{display:block;height:100%;background:var(--nsx-grad);transition:width var(--d2,220ms) var(--ease,ease)}
 .nsx-lp{text-align:right}
 @media (max-width:560px){.nsx-card{padding:var(--s3,12px)}.nsx-thumb{display:none}}
 `
@@ -1115,6 +1144,7 @@ const INSPECTOR_CSS = `
 
 if (typeof window !== 'undefined' && (import.meta.env.DEV || /[?&]inspectorDemo/.test(location.search))) {
   window.__ns7 = { fmt3, mipBuild, softmaxT, histogram, visibleWindow, clampView, tierFor, pickLevel, toTSV, mockValue, mockMatrix, inspectCrumb, inspectParent, hm: null, set: (i: Inspect) => useZoo.getState().setInspect(i) }
+  ;(window as any).__explainerDemo = async (el: HTMLElement) => { const { createRoot } = await import('react-dom/client'); createRoot(el).render(<><Explainer id="demo-a" placement="top-right">Each dot is a word.<br />Lines show what it listens to.</Explainer><Explainer id="demo-b" placement="bottom-left">Amber is plus. Blue is minus.</Explainer></>) }
   window.__inspectorDemo = async (el: HTMLElement) => { const { createRoot } = await import('react-dom/client'); createRoot(el).render(<Inspector />) }
 }
 
@@ -1136,6 +1166,117 @@ if (typeof window !== 'undefined') {
   }
 }
 
-/* ROUND 2 CONTRACT (owner S7): floating explainer for one animation. Shows itself for ~6 s on every page refresh, then a
- * bulb stays: hover or click shows it, it vanishes as soon as the mouse leaves the bulb. 2-3 short plain lines as children. */
-export function Explainer(_p: { id: string; children: React.ReactNode; placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' }): React.ReactElement | null { return null }
+/* ------------------------------------------------------------------ Explainer (round 2, R2-3) */
+
+const EXPL_CSS = `
+.nsx-expl{position:absolute;z-index:5;pointer-events:none;width:0;height:0}
+.nsx-expl[data-p="top-left"]{top:8px;left:8px}
+.nsx-expl[data-p="top-right"]{top:8px;right:8px}
+.nsx-expl[data-p="bottom-left"]{bottom:8px;left:8px}
+.nsx-expl[data-p="bottom-right"]{bottom:8px;right:8px}
+.nsx-ebulb{all:unset;box-sizing:border-box;pointer-events:auto;position:absolute;width:var(--hit,40px);height:var(--hit,40px);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;color:var(--muted,#9aa5c7);-webkit-tap-highlight-color:transparent}
+.nsx-expl[data-p$="left"] .nsx-ebulb{left:0}.nsx-expl[data-p$="right"] .nsx-ebulb{right:0}
+.nsx-expl[data-p^="top"] .nsx-ebulb{top:0}.nsx-expl[data-p^="bottom"] .nsx-ebulb{bottom:0}
+.nsx-ebulb svg{width:28px;height:28px;display:block;transition:color var(--d1,120ms),filter var(--d1,120ms)}
+.nsx-ebulb:hover svg,.nsx-ebulb[aria-expanded="true"] svg{color:var(--pos,#ffa94d);filter:drop-shadow(0 0 6px color-mix(in srgb,var(--pos,#ffa94d) 60%,transparent))}
+.nsx-ebulb:focus-visible{outline:2px solid var(--pos,#ffa94d);outline-offset:-2px}
+.nsx-ecard{position:fixed;inset:auto;margin:0;pointer-events:none;width:max-content;max-width:min(280px,calc(100vw - 32px));padding:10px 14px;border-radius:var(--r-md,12px);border:1px solid var(--line,#27314f);background:var(--panel,#0f1526);color:var(--fg,#e8ecf8);box-shadow:0 12px 32px var(--nsx-shadow,rgba(0,0,0,.45)),0 0 0 1px color-mix(in srgb,#7c5cff 25%,transparent);font:400 var(--t0,14px)/1.45 var(--body,system-ui,sans-serif);overflow:visible}
+.nsx-ecard::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--nsx-grad,linear-gradient(135deg,#5b3df5,#0a7d9c 55%,#c2255c))}
+.nsx-ecard p{margin:0}.nsx-ecard p+p{margin-top:4px}.nsx-ecard{white-space:normal}
+@media (prefers-reduced-motion:no-preference){
+.nsx-ecard{opacity:0;transform:translateY(4px);transition:opacity var(--d3,360ms) var(--ease,ease),transform var(--d3,360ms) var(--ease,ease),display var(--d3,360ms) allow-discrete,overlay var(--d3,360ms) allow-discrete}
+.nsx-ecard:popover-open,.nsx-ecard[data-open]{opacity:1;transform:none}
+@starting-style{.nsx-ecard:popover-open{opacity:0;transform:translateY(4px)}}}
+@supports (anchor-name:--a){
+.nsx-ecard[data-anchored]{position-anchor:var(--nsx-anc);position-try-fallbacks:flip-block,flip-inline}
+.nsx-ecard[data-anchored][data-p^="top"]{top:calc(anchor(bottom) + 6px)}
+.nsx-ecard[data-anchored][data-p^="bottom"]{bottom:calc(anchor(top) + 6px)}
+.nsx-ecard[data-anchored][data-p$="left"]{left:anchor(left)}
+.nsx-ecard[data-anchored][data-p$="right"]{right:anchor(right)}}
+`
+const supportsAnchor = () => typeof CSS !== 'undefined' && !!CSS.supports?.('anchor-name', '--a') && !!CSS.supports?.('position-anchor', '--a')
+const idDelay = (id: string) => (strSeed(id) % 5) * 150
+
+/** True for ~`ms` after mount (after a small per-id delay so several explainers do not pop together). Restarts on refresh. */
+export function useExplainerIntro(id: string, ms = 6000): boolean {
+  const [on, setOn] = useState(false)
+  useEffect(() => {
+    const a = window.setTimeout(() => setOn(true), 200 + idDelay(id))
+    const b = window.setTimeout(() => setOn(false), 200 + idDelay(id) + ms)
+    return () => { clearTimeout(a); clearTimeout(b) }
+  }, [id, ms])
+  return on
+}
+
+/** A floating card with 2-3 short lines. Mount it inside the positioned stage wrapper. It shows itself for ~6 s on load,
+ *  then a bulb stays: hover or click shows it again and it goes as soon as the pointer leaves the bulb (150 ms grace).
+ *  Touch: tap opens, tap elsewhere closes. Esc closes. It never takes pointer events (only the bulb does). */
+export function Explainer({ id, children, placement = 'top-right' }: { id: string; children: React.ReactNode; placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' }): React.ReactElement | null {
+  useInjectedStyle('ns-expl', EXPL_CSS)
+  useInjectedStyle('ns-inspector', INSPECTOR_CSS)
+  const intro = useExplainerIntro(id)
+  const [hover, setHover] = useState(false)
+  const [tapped, setTapped] = useState(false)
+  const open = intro || hover || tapped
+  const uid = useId()
+  const anc = '--nsx-a' + uid.replace(/[^a-zA-Z0-9]/g, '')
+  const btn = useRef<HTMLButtonElement>(null)
+  const card = useRef<HTMLDivElement>(null)
+  const wrap = useRef<HTMLDivElement>(null)
+  const timer = useRef(0)
+  const anchored = supportsAnchor()
+  const place = useCallback(() => {
+    const c = card.current, b = btn.current
+    if (!c || !b || anchored) return
+    const r = b.getBoundingClientRect(), w = c.offsetWidth, h = c.offsetHeight
+    let left = placement.endsWith('left') ? r.left : r.right - w
+    let top = placement.startsWith('top') ? r.bottom + 6 : r.top - h - 6
+    if (top + h > innerHeight - 8) top = r.top - h - 6
+    if (top < 8) top = r.bottom + 6
+    left = clamp(left, 8, Math.max(8, innerWidth - w - 8))
+    c.style.left = `${left}px`; c.style.top = `${top}px`; c.style.right = 'auto'; c.style.bottom = 'auto'
+  }, [placement, anchored])
+  useLayoutEffect(() => {
+    const c = card.current
+    if (!c) return
+    const pop = c as any
+    if (open) {
+      try { if (typeof pop.showPopover === 'function' && !c.matches(':popover-open')) pop.showPopover() } catch { /* already shown */ }
+      c.setAttribute('data-open', '')
+      place()
+    } else {
+      c.removeAttribute('data-open')
+      try { if (typeof pop.hidePopover === 'function' && c.matches(':popover-open')) pop.hidePopover() } catch { /* already hidden */ }
+    }
+  }, [open, place])
+  useEffect(() => {
+    if (!open) return
+    const re = () => place()
+    window.addEventListener('resize', re); window.addEventListener('scroll', re, true)
+    return () => { window.removeEventListener('resize', re); window.removeEventListener('scroll', re, true) }
+  }, [open, place])
+  useEffect(() => {
+    if (!tapped && !hover) return
+    const down = (e: Event) => { if (!wrap.current?.contains(e.target as Node)) { setTapped(false); setHover(false) } }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { setTapped(false); setHover(false) } }
+    document.addEventListener('pointerdown', down, true); document.addEventListener('keydown', key)
+    return () => { document.removeEventListener('pointerdown', down, true); document.removeEventListener('keydown', key) }
+  }, [tapped, hover])
+  useEffect(() => () => clearTimeout(timer.current), [])
+  const enter = (e: React.PointerEvent) => { if (e.pointerType === 'touch') return; clearTimeout(timer.current); setHover(true) }
+  const leave = (e: React.PointerEvent) => { if (e.pointerType === 'touch') return; clearTimeout(timer.current); timer.current = window.setTimeout(() => { setHover(false); setTapped(false) }, 150) }
+  const arr = Children.toArray(children)
+  const lines = arr.length > 1 && arr.every((c) => typeof c === 'string') ? arr.map((c, k) => <p key={k}>{c}</p>) : [children]
+  return (
+    <div ref={wrap} className="nsx-expl" data-p={placement} data-explainer={id}>
+      <button ref={btn} type="button" className="nsx-ebulb" aria-label="What am I looking at?" aria-expanded={open} aria-controls={uid}
+        style={anchored ? ({ anchorName: anc } as React.CSSProperties) : undefined}
+        onPointerEnter={enter} onPointerLeave={leave} onFocus={() => setHover(true)} onBlur={() => setHover(false)}
+        onClick={(e) => { if ((e.nativeEvent as PointerEvent).pointerType === 'touch') setTapped((t) => !t); else setTapped(true) }}><Bulb on={open} /></button>
+      <div ref={card} id={uid} className="nsx-ecard" role="note" {...({ popover: 'manual' } as any)} data-p={placement} data-anchored={anchored ? '' : undefined}
+        style={anchored ? ({ ['--nsx-anc' as any]: anc } as React.CSSProperties) : undefined}>
+        {lines}
+      </div>
+    </div>
+  )
+}
