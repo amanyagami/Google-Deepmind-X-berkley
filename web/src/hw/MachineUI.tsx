@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
 import { scaleLinear, scaleLog } from 'd3'
 import { useStore } from '../store'
 import { Explainer, Hint } from '../ui/charts'
-import { inputLimits, peaksOf, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
+import { inputLimits, peaksOf, useHWThrottled, type Snapshot, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
 import { probe } from './browserBench'
 import { activityAt, captionFor, layerOps } from './timeline'
-import { computeScores, exportResults, finalScore, componentScore, isUnavailable, tierOf, useScores } from './score'
+import { computeScores, exportResults, finalNow, componentScore, finalScore, isUnavailable, tierOf, useScores, type PillarRow } from './score'
 import { currentSample, PowerScene } from './PowerScene'
 import { EnergyTab, MachineTimeline, PowerHUD, STAGE_NAME } from './PowerUI'
 
@@ -70,7 +70,7 @@ interface UIs {
   open: string | null; more: boolean
 }
 const useUI = create<UIs>(() => ({
-  mrunning: null, mprog: null, batch: null, cancelled: false, merrors: {}, sel: null, tab: 'tests', open: null, more: false,
+  mrunning: null, mprog: null, batch: null, cancelled: false, merrors: {}, sel: null, tab: 'tests', open: 'compute', more: false,
   mock: MOCK ? Object.fromEntries((QS.get('pre') ?? '').split(',').filter((i) => MOCK_BASE[i]).map((i) => [i, mockResult(i as ComponentId)])) : {},
 }))
 let ctrl: AbortController | null = null
@@ -137,19 +137,23 @@ const select = (id: ComponentId) => {
 /* ---- final score: S3's finalScore ---- */
 const PILLAR_LABEL: Record<string, string> = { compute: 'Compute', memory: 'Memory', gpu: 'GPU', storage: 'File storage', model: 'Model' }
 const PILLAR_CARD: Record<string, ComponentId> = { compute: 'cpu1', memory: 'ram', gpu: 'gpu', storage: 'storage' }
-interface Final { score: number | null; lo: number | null; hi: number | null; tested: number; total: number; provisional: boolean; limiting: string | null; tier: string; pillars: Record<string, { score: number | null; status: string }> | null; rows: { id: ComponentId; label: string; score: number }[] }
-function computeFinal(res: Record<string, TestResult>): Final {
+interface Final { score: number | null; lo: number | null; hi: number | null; tested: number; total: number; provisional: boolean; limiting: string | null; tier: string; pillars: PillarRow[] | null; delta: number | null; rows: { id: ComponentId; label: string; score: number }[] }
+function overallDelta(res: Record<string, TestResult>, history: Snapshot[], now: number): number | null {
+  const last = history[history.length - 1], prev = last && last.results === res ? history[history.length - 2] : last
+  try { return prev ? Math.round(now) - Math.round(finalScore(prev.results).score) || null : null } catch { return null }
+}
+function computeFinal(res: Record<string, TestResult>, history: Snapshot[] = []): Final {
   const have = TEST_IDS.filter((i) => res[i] && !res[i].flags.includes('cancelled'))
   const rows = have.map((i) => ({ id: i, label: infoOf(i).label, score: componentScore(res[i]) })).filter((r): r is { id: ComponentId; label: string; score: number } => r.score != null && r.score > 0)
     .map((r) => ({ ...r, score: Math.round(r.score) }))
-  const base: Final = { score: null, lo: null, hi: null, tested: have.length, total: TEST_IDS.length, provisional: true, limiting: null, tier: tierOf(null), pillars: null, rows }
+  const base: Final = { score: null, lo: null, hi: null, tested: have.length, total: TEST_IDS.length, provisional: true, limiting: null, tier: tierOf(null), pillars: null, delta: null, rows }
   if (!have.length) return base
   try {
-    const f = finalScore(res)
-    return { ...base, score: Math.round(f.score), lo: Math.round(f.ci95[0]), hi: Math.round(f.ci95[1]), provisional: f.provisional, limiting: f.limiting, tier: f.tier, pillars: f.pillars }
+    const f = finalNow(res, history)
+    return { ...base, score: Math.round(f.score), lo: Math.round(f.ci95[0]), hi: Math.round(f.ci95[1]), provisional: f.provisional, limiting: f.limiting, tier: f.tier, pillars: f.pillars, delta: overallDelta(res, history, f.score) }
   } catch { return base }   // results of two scales cannot be combined
 }
-const useFinal = () => { const r = useResults(); return useMemo(() => computeFinal(r), [r]) }
+const useFinal = () => { const r = useResults(), h = useHW((s) => s.history); return useMemo(() => computeFinal(r, MOCK ? [] : h), [r, h]) }
 const labelOf = (id: string | null) => (id ? (PILLAR_LABEL[id] ?? infoOf(id as ComponentId).label) : '')
 const relPct = (f: Final) => (f.score && f.lo != null && f.hi != null ? Math.max(1, Math.round(((f.hi - f.lo) / 2 / f.score) * 100)) : null)
 
@@ -310,7 +314,7 @@ function SharePanel({ f, name: who, onClose }: { f: Final; name: string; onClose
   const link = () => `${location.origin}${location.pathname}#score=${f.score}&tested=${f.tested}of${f.total}`
   const say = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 2500) }
   const json = () => {
-    const txt = who ? JSON.stringify({ name: who, ...JSON.parse(exportResults({ includeDevice: withName }, res, info)) }, null, 2) : exportResults({ includeDevice: withName }, res, info)
+    const txt = exportResults({ includeDevice: withName, includeName: true }, res, info, who)
     const u = URL.createObjectURL(new Blob([txt], { type: 'application/json' })); download(u, 'neural-studio-results.json'); setTimeout(() => URL.revokeObjectURL(u), 1000)
   }
   const copy = async () => { try { history.replaceState(null, '', link()); await navigator.clipboard.writeText(link()); say('Link copied.') } catch { say('Could not copy. Use the address bar.') } }
@@ -345,19 +349,9 @@ function useRecordedScore(): number | null {
 }
 
 function useDeviceName() { return useStore((s) => s.name) }
-/** The last run that scored differently, as pillar scores: for the small deltas. */
-function usePrev(f: Final) {
-  const history = useHW((s) => s.history)
-  return useMemo(() => {
-    for (let i = history.length - 1; i >= 0; i--) { try { const x = finalScore(history[i].results); if (f.score != null && Math.round(x.score) > 0 && Math.round(x.score) !== f.score) return { score: Math.round(x.score), pillars: x.pillars } } catch { /* mixed scales */ } }
-    return null
-  }, [history, f.score])
-}
-
 function ScoreHero() {
   const f = useFinal()
   const name = useDeviceName()
-  const prev = usePrev(f)
   const runningNow = useRunning(), inBatch = useUI((s) => !!s.batch)
   const busy = !!runningNow || inBatch
   const res = useResults()
@@ -372,12 +366,12 @@ function ScoreHero() {
   }
   const browser = useHW((s) => s.source !== 'companion')
   const rest = TEST_IDS.filter((i) => !(res[i] && res[i].input.kind === 'default'))
-  const delta = f.score != null && prev ? f.score - prev.score : null
+  const delta = f.score != null ? f.delta : null
   const r = relPct(f)
   const rec = useRecordedScore()
   const shown = f.score ?? rec
   return (
-    <div className="card t5-hero" aria-label="Device score">
+    <div className="card t5-hero" data-hero aria-label="Device score">
       <div className="t5-kick">YOUR DEVICE{name ? ` · ${name}` : ''}</div>
       <div className="t5-big" aria-live="polite">
         <b className="t5-score">▲ {shown != null ? <Counter value={shown} /> : '—'}</b>
@@ -411,23 +405,21 @@ const PILLAR_HINT: Record<string, string> = {
   model: 'How well this device runs a real AI model.',
 }
 
-function PillarRow({ p, f, prev }: { p: (typeof PILLARS)[number]; f: Final; prev: ReturnType<typeof usePrev> }) {
+function PillarRowView({ p, f }: { p: (typeof PILLARS)[number]; f: Final }) {
   const open = useUI((u) => u.open === p.id)
   const runningNow = useRunning(), inBatch = useUI((s) => !!s.batch)
   const busy = !!runningNow || inBatch
-  const st = f.pillars?.[p.id]
-  const tested = !!st && st.status !== 'not-tested'
-  const score = tested && st!.score != null ? Math.round(st!.score as number) : null
-  const was = (prev?.pillars as any)?.[p.id]?.score as number | null | undefined
-  const delta = score != null && was != null && Math.round(was) !== score ? score - Math.round(was) : null
-  const set = () => useUI.setState({ open: open ? null : p.id })
+  const st = f.pillars?.find((x) => x.id === p.id)
+  const score = st && st.status === 'measured' && st.score != null ? Math.round(st.score) : null
+  const delta = score != null && st?.delta ? Math.round(st.delta) : null
+  const set = () => flushSync(() => useUI.setState({ open: open ? null : p.id }))
   return (
-    <div className={`t5-prow ${open ? 'open' : ''}`} style={{ ['--hue' as any]: p.hue }} data-pillar={p.id}>
+    <div data-open={open ? '1' : '0'} className={`t5-prow ${open ? 'open' : ''}`} style={{ ['--hue' as any]: p.hue }} data-pillar={p.id}>
       <div className="t5-phead">
         <button type="button" className="t5-pmain" aria-expanded={open} aria-controls={`t5-p-${p.id}`} onClick={set}>
           <span className="t5-plab"><i aria-hidden="true">{p.glyph}</i>{p.label}</span>
           <span className="t5-pbar" aria-hidden="true"><motion.i initial={{ width: 0 }} animate={{ width: `${logPct(score)}%` }} transition={reduced() ? { duration: 0 } : { type: 'spring', duration: 0.5, bounce: 0.15 }} /></span>
-          <b className="t5-pnum mono">{score != null ? <Counter value={score} /> : '—'}</b>
+          <b className="t5-pnum mono">{score != null ? <Counter value={score} /> : st?.status === 'unavailable' ? 'n/a' : '—'}</b>
           <span className="t5-pdelta mono">{delta != null ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : ''}</span>
         </button>
         {p.ids.length > 0
@@ -446,12 +438,11 @@ function PillarRow({ p, f, prev }: { p: (typeof PILLARS)[number]; f: Final; prev
 
 function TestsTab() {
   const f = useFinal()
-  const prev = usePrev(f)
   const more = useUI((u) => u.more)
   return (
     <div className="t5-list">
       <ScoreHero />
-      <div className="t5-rows">{PILLARS.map((p) => <PillarRow key={p.id} p={p} f={f} prev={prev} />)}</div>
+      <div className="t5-rows">{PILLARS.map((p) => <PillarRowView key={p.id} p={p} f={f} />)}</div>
       <div className="t5-more">
         <button type="button" className="t5-link t5-moreb" aria-expanded={more} onClick={() => useUI.setState({ more: !more })}>More {more ? '▴' : '▾'} <span className="t5-dim">Connection · Energy</span></button>
         {more && <div className="t5-pbody">{(['net', 'energy'] as ComponentId[]).map((id) => <TestCard key={id} id={id} />)}</div>}
@@ -472,7 +463,7 @@ function ScoreStrip() {
   const secs = batch ? Math.round((now - batch.t0) / 1000) : 0
   const r = relPct(f), rec = useRecordedScore(), shown = f.score ?? rec
   return (
-    <div className="t5-strip" role="group" aria-label="Device score">
+    <div className="t5-strip" data-score-strip role="group" aria-label="Device score">
       <b className="t5-ssc" {...(shown != null ? { 'data-score': shown } : {})}>▲ {shown != null ? shown.toLocaleString('en-US') : '—'}</b>
       {f.score != null && <span className="t5-stier">{f.tier}</span>}
       <span className="t5-sinfo">{f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span>
@@ -728,7 +719,7 @@ function DiveCard() {
   const back = useHW((s) => s.back)
   const { journey: j, act, peaks, info, bench } = usePlay()
   const recorded = useHW((s) => s.recorded)
-  const latest = useHW((s) => s.latest)
+  const latest = useHWThrottled((s) => s.latest, 250)
   const sc = useScores()
   const power = currentSample().s
   const comp = path[0]
@@ -904,7 +895,7 @@ function Spark({ data, color = 'var(--pos)', max = 100 }: { data: number[]; colo
 }
 
 function LiveTab() {
-  const { latest: l, telemetry: t, info } = useHW(useShallow((s) => ({ latest: s.latest, telemetry: s.telemetry, info: s.info })))
+  const l = useHWThrottled((s) => s.latest, 250), t = useHWThrottled((s) => s.telemetry, 250), info = useHW((s) => s.info)
   if (info?.source === 'browser') return <p className="hint">needs the companion<Hint>Live operating-system counters need the companion (start.ps1 on this PC). The page connects to it automatically when it is running.</Hint></p>
   if (!l) return <p className="hint"><span className="pulse" /> waiting for the first sample…</p>
   const cores = info?.cpu?.cores ?? 8
@@ -963,11 +954,11 @@ function SpeedTab() {
 
 type Tab = 'tests' | 'energy' | 'flow' | 'live' | 'speed' | 'specs'
 const TABS: [Tab, string][] = [['tests', 'Score'], ['energy', 'Energy'], ['flow', 'Flow'], ['live', 'Live'], ['speed', 'Speed'], ['specs', 'Specs']]
-function Sidebar() {
+function Sidebar({ open }: { open: boolean }) {
   const tab = useUI((u) => u.tab) as Tab
   const setTab = (t: Tab) => useUI.setState({ tab: t })
   return (
-    <aside className="inspector" aria-label="Machine details">
+    <aside className="inspector" aria-label="Machine details" hidden={!open} style={open ? undefined : { display: 'none' }}>
       <div className="tabs" role="tablist">{TABS.map(([id, l]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{l}</button>)}</div>
       <div className="pane" role="tabpanel">
         {tab === 'tests' && <TestsTab />}{tab === 'energy' && <EnergyTab />}{tab === 'flow' && <FlowTab />}{tab === 'live' && <LiveTab />}{tab === 'speed' && <SpeedTab />}{tab === 'specs' && <SpecsTab />}
@@ -998,13 +989,15 @@ function useSelectToCard() {
 
 function DetailsButton() {
   const details = useStore((s) => s.railOpen.machine)
-  return <div className="topright"><button className="detbtn" aria-expanded={details} onClick={() => useStore.getState().setRail('machine', !details)}>{details ? 'Hide details' : 'Details'}</button></div>
+  return <div className="topright"><button className="detbtn" data-drawer-toggle aria-expanded={details} onClick={() => useStore.getState().setRail('machine', !details)}>{details ? 'Hide details' : 'Details'}</button></div>
 }
 
 /** The one machine section: the electricity scene, live always, with the prompt's journey played on it. */
 export function MachineView() {
   useMachineBoot()
   useSelectToCard()
+  // a link straight to the machine opens its drawer once
+  useEffect(() => { if (/^#(machine|power|journey)/.test(location.hash)) useStore.getState().setRail('machine', true) }, [])
   // the same prompt the model just ran is replayed on the hardware (needs the companion: PyTorch on this PC)
   const runSeq = useStore((s) => s.runSeq)
   const first = useRef(runSeq)
@@ -1035,7 +1028,7 @@ export function MachineView() {
         </div>
         {path[0] === 'cpu' && path[1]?.startsWith('core') && <MicroLoader />}
       </section>
-      {details && <Sidebar />}
+      <Sidebar open={details} />
       <style>{T5_CSS}</style>
       <StripHost />
     </main>

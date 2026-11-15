@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { scaleLinear } from 'd3'
 import { useShallow } from 'zustand/react/shallow'
-import { journeyPowerAt, powerNow, SMOOTH_S, useHW, type PowerMode, type PowerSample } from './hwStore'
+import { journeyPowerAt, powerNow, SMOOTH_S, useHW, type PowerMode, type PowerSample, useHWThrottled } from './hwStore'
 import { LABEL, locate } from './timeline'
 import { useStore } from '../store'
 import { Hint } from '../ui/charts'
@@ -18,7 +18,9 @@ const STAGE_COL: Record<string, string> = {
 }
 
 function useNow(): { s: PowerSample | null; mode: PowerMode; energy: number } {
-  const h = useHW(useShallow((st) => ({ power: st.power, powerLive: st.powerLive, benchRunning: st.benchRunning, pHead: st.pHead, pMode: st.pMode, telemetry: st.telemetry, journey: st.journey, tl: st.tl, playhead: st.playhead, info: st.info, recorded: st.recorded, recordedPack: st.recordedPack, bench: st.bench })))
+  const live = useHWThrottled((st) => ({ powerLive: st.powerLive, telemetry: st.telemetry }), 250, (a, b) => a.powerLive === b.powerLive && a.telemetry === b.telemetry)
+  const h0 = useHW(useShallow((st) => ({ power: st.power, benchRunning: st.benchRunning, pHead: st.pHead, pMode: st.pMode, journey: st.journey, tl: st.tl, playhead: st.playhead, info: st.info, recorded: st.recorded, recordedPack: st.recordedPack, bench: st.bench })))
+  const h = { ...h0, ...live }
   return useMemo(() => {
     const { s, mode } = powerNow(h)
     const samples = mode === 'recording' ? h.powerLive : mode === 'replay' ? h.power?.samples ?? [] : []
@@ -76,7 +78,9 @@ export function PowerHUD() {
 /** The one bar under the machine. Its power chart is always there; what it scrubs depends on the mode:
  *  live (the last 15 s), the prompt's journey (stages, with modelled watts) or the recorded power test. */
 export function MachineTimeline() {
-  const h = useHW(useShallow((s) => ({ power: s.power, powerLive: s.powerLive, running: s.benchRunning, pHead: s.pHead, pPlaying: s.pPlaying, pSpeed: s.pSpeed, pMode: s.pMode, telemetry: s.telemetry, journey: s.journey, tl: s.tl, playhead: s.playhead, playing: s.playing, speed: s.speed, expanded: s.expanded, follow: s.follow, info: s.info, recorded: s.recorded, recordedPack: s.recordedPack, bench: s.bench, source: s.source, busy: s.journeyBusy, err: s.journeyErr })))
+  const live = useHWThrottled((s) => ({ powerLive: s.powerLive, telemetry: s.telemetry }), 250, (a, b) => a.powerLive === b.powerLive && a.telemetry === b.telemetry)
+  const h0 = useHW(useShallow((s) => ({ power: s.power, running: s.benchRunning, pHead: s.pHead, pPlaying: s.pPlaying, pSpeed: s.pSpeed, pMode: s.pMode, journey: s.journey, tl: s.tl, playhead: s.playhead, playing: s.playing, speed: s.speed, expanded: s.expanded, follow: s.follow, info: s.info, recorded: s.recorded, recordedPack: s.recordedPack, bench: s.bench, source: s.source, busy: s.journeyBusy, err: s.journeyErr })))
+  const h = { ...h0, ...live }
   const { power, running, journey, tl } = h
   const hw = useHW.getState()
   const hasLive = h.source === 'companion' && h.info?.power?.measured !== false
