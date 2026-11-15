@@ -344,7 +344,8 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
     b.x = b.ax; b.y = b.ay
     const now = performance.now(), fits = inside && !hit(b)
     if (fits) b.it.ok = now
-    b.it.show = fits || (b.it.ok !== undefined && now - b.it.ok < 600 && b.it.show) // a word leaves only after 0.6 s of not fitting
+    // an overlap hides the lower-priority word at once; only leaving the stage gets a 0.6 s grace
+    b.it.show = fits || (inside ? false : (b.it.ok !== undefined && now - b.it.ok < 600 && b.it.show))
     if (b.it.show) placed.push(b)
   }
   // writes
