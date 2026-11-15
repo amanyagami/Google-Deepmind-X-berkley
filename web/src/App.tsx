@@ -1,5 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
+import { BoardHost, BoardOptOut } from './board'
 // Each view loads its own code on first use, so the first page needs only what it shows.
 // the hint bubble lives in a lazy chunk so the first page does not pay for it
 const HintLazy = lazy(() => import('./ui/charts').then((m) => ({ default: m.Hint })))
@@ -102,7 +103,8 @@ function HowItWorks() {
   )
 }
 
-/** First visit: ask for a name (stays on this device). Enter continues; "Use Guest" skips. */
+/** First visit: ask for a name. It goes on the score card and, after Test all, on the public leaderboard (unless the
+ *  visitor ticks "Keep me off the leaderboard"). Enter continues; "Use Guest" skips. */
 function NameCard() {
   const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
   const [v, setV] = useState('')
@@ -113,8 +115,10 @@ function NameCard() {
     <div className="namewall" data-namecard>
       <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
         <div className="namefields">
-          <h3 id="nm-t">What is your name?<Hint label="About your name">It stays on this device. It goes on your score card.</Hint></h3>
-          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+          <h3 id="nm-t">What is your name?<Hint label="About your name">It goes on your score card. After Test all, your name and score go on the public leaderboard.</Hint></h3>
+          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+          <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
+          <BoardOptOut />
           <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
         </div>
         <HowItWorks />
@@ -165,8 +169,8 @@ function TopBar({ view }: { view: AppView }) {
       <span className="tag devchip">{device}</span>
       <ThemeToggle />
       <NameChip />
-      <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device · nothing uploaded</span>
-        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded. <SavedLine /></Hint></span>
+      <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device</span>
+        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded. After Test all, your name and score go on the public leaderboard, unless you chose to stay off it. <SavedLine /></Hint></span>
     </header>
   )
 }
@@ -367,6 +371,7 @@ export default function App() {
       </div>
       <Dock />
       <NameCard />
+      <BoardHost />
     </div>
   )
 }

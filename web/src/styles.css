@@ -525,6 +525,8 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 .namewall { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 82%, transparent); }
 .namecard { width: min(360px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: var(--s3); padding: var(--s5); border-radius: var(--r-lg); box-shadow: 0 20px 60px #0007; background: var(--panel); animation: rise var(--d3) var(--ease) both; }
 .namerow { display: flex; align-items: center; gap: var(--s4); }
+.namenote { color: var(--muted); font-size: 13px; }
+.boardopt { display: flex; align-items: center; gap: var(--s2); min-height: var(--hit); font-size: 13px; color: var(--fg); cursor: pointer; } .boardopt input { width: 18px; height: 18px; margin: 0; }
 .t5link, .namerow .t5link { background: none; border: 0; color: var(--pos-ink); text-decoration: underline; cursor: pointer; min-height: var(--hit); padding: 0 var(--s2); }
 .namechip { position: relative; } .namechip .btn2 { max-width: 110px; }
 .namepop { left: auto; right: 0; width: 240px; flex-direction: row; }

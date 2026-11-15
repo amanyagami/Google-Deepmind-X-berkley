@@ -1,10 +1,12 @@
-# Only web/ is needed to build the image.
+# Only web/ and server-web/ are needed to build the image.
 **/node_modules
 .git
 .gitignore
 .vscode
 web/dist
+web/tests
 server
+server-web/*.test.mjs
 examples
 TODO.md
 start.ps1

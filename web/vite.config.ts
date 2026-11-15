@@ -58,6 +58,8 @@ const stampSw = (): Plugin => ({
 
 export default defineConfig({
   base: './',
+  // the app version, sent with a leaderboard score
+  define: { __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')).version) },
   plugins: [react(), selfHostOrt(), stampSw()],
   server: {
     port: 5173,
