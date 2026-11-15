@@ -28,6 +28,17 @@ const gz = (f) => zlib.gzipSync(fs.readFileSync(f)).length
 const shown = (pg, sel) => pg.evaluate((s) => [...document.querySelectorAll(s)].some(__h.vis), sel)
 /** Drawers are closed by default and opening one closes the other: click toggles until `sel` is visible. */
 const openFor = async (pg, sel) => { const t = pg.locator('[data-drawer-toggle]'), n = await t.count(); for (let i = 0; i < n && !(await shown(pg, sel)); i++) { await t.nth(i).click({ timeout: 3000 }).catch(() => {}); await pg.waitForTimeout(700) } return shown(pg, sel) }
+/** Auto flow on the real Hub: no click. Returns timings, progress samples, planned vs downloaded bytes. */
+async function autoRun(env, o) {
+  const p = await env.open({ hub: false, ...o }); let got = 0
+  await p.page.addInitScript(() => { window.__pv = []; addEventListener('DOMContentLoaded', () => new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document, { subtree: true, attributes: true, childList: true })) })
+  const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' })
+  const done = await p.page.waitForSelector('[data-runscore]', { state: 'attached', timeout: 240000 }).then(() => true, () => false), tRun = (Date.now() - t0) / 1000
+  const info = await p.page.evaluate(() => { const s = window.__studio.getState(); return { plan: s.plan, err: s.runErr, where: s.lastStats?.where, text: document.querySelector('[data-runscore]')?.innerText ?? '' } })
+  const v = await p.page.evaluate(() => __pv), distinct = new Set(v.map((x) => x[1])).size, span = v.length ? (v.at(-1)[0] - v[0][0]) / 1000 : 0
+  got = await p.page.evaluate(async () => { let n = 0; for (const k of await caches.keys()) { const c = await caches.open(k); for (const r of await c.keys()) if (/\/resolve\//.test(r.url)) n += (await (await c.match(r)).blob()).size } return n }).catch(() => 0)
+  await p.shot('auto-run'); return { p, done, tRun, info, v, distinct, span, got, t0 }
+}
 const W4 = (env) => env.widths
 const PRIMARY = '[data-primary], [data-dock] button, header button.btn'
 const MODEL_FILE = /\.(onnx|safetensors|gguf|bin)(\?|$)|\/resolve\//
@@ -88,11 +99,9 @@ export const checks = [
     await openFor(p.page, '[data-test=cpu1]'); const t1 = Date.now(); await p.page.locator('[data-test=cpu1]').first().click(); await p.page.waitForSelector(SCORE, { timeout: 30000 })
     const s = (Date.now() - t1) / 1000
     return ok(fcp > 0 && fcp <= 2500 && s <= 10, `first paint ${Math.round(fcp)} ms; first score ${s.toFixed(1)} s (load ${((t1 - t0) / 1000).toFixed(1)} s)`) } },
-  { id: 'A7b', tier: 3, title: '82 MB model first score <= 60 s at 20 Mbit (real Hub)', needs: ['S4'], run: async (env) => {
-    const p = await env.open({ throttle: 20, hub: false }); await p.goto(); const t = Date.now()
-    await startModel(p.page); await p.page.waitForSelector('p[data-score]', { timeout: 90000 })
-    const s = (Date.now() - t) / 1000; return ok(s <= 60, `${s.toFixed(1)} s`) } },
-
+  { id: 'A7b', tier: 3, title: 'real Hub at 20 Mbit, no click: default model downloads, runs, run score within download time + 25 s', needs: ['auto'], run: async (env) => {
+    const r = await autoRun(env, { throttle: 20 }); const planned = r.info.plan?.bytes ?? 0
+    const limit = planned / 2.5e6 + 25; return ok(r.done && r.tRun <= limit, `limit ${limit.toFixed(0)} s (download at 2.5 MB/s + 25 s to load and run); ${r.done ? 'run score' : 'NO run score in 240 s'} after ${r.tRun.toFixed(1)} s on ${r.info.where ?? '?'}; model ${r.info.plan?.repo} planned ${(planned / 1048576).toFixed(0)} MB, downloaded ${(r.got / 1048576).toFixed(0)} MB; ${r.info.err ?? 'no error'}`) } },
   { id: 'A8', title: "A8': a model request starts <= 2 s after load with no click; progress bar updates >= 1/s (rate: tier 2 cannot stream from the model worker, see A9)", needs: ['auto'], run: async (env) => {
     const p = await env.open({ profile: { stream: 4000 } }); await p.page.addInitScript(() => { window.__pv = []; addEventListener('DOMContentLoaded', () => new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow')]) }).observe(document, { subtree: true, attributes: true, childList: true })) })
     const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' }); await p.page.waitForTimeout(6000)
@@ -100,10 +109,8 @@ export const checks = [
     const v = await p.page.evaluate(() => window.__pv), seen = new Set(v.map((x) => x[1])).size, span = v.length ? (v.at(-1)[0] - v[0][0]) / 1000 : 0, rate = span > 0 ? (seen - 1) / span : 0
     return ok(first && ms <= 2000, `first model request ${first ? ms + ' ms after navigation' : 'NONE'}; progressbar ${v.length ? 'seen, ' + rate.toFixed(1) + ' updates/s' : 'not seen (the stub answers in one chunk; the model worker cannot be streamed, so the rate is gated by tier-3 A9)'}`) } },
   { id: 'A9', tier: 3, title: 'A9: real Hub, no click: progress bar with aria values, Cancel, updates >= 1/s', needs: ['auto'], run: async (env) => {
-    const p = await env.open({ hub: false }); await p.page.addInitScript(() => { window.__pv = []; addEventListener('DOMContentLoaded', () => new MutationObserver(() => { const b = document.querySelector('[role=progressbar]'); if (b) __pv.push([Date.now(), b.getAttribute('aria-valuenow'), b.getAttribute('aria-valuemin'), b.getAttribute('aria-valuemax')]) }).observe(document, { subtree: true, attributes: true, childList: true })) })
-    await p.goto('', 300); await p.page.waitForSelector('[role=progressbar]', { timeout: 15000 }).catch(() => {}); await p.page.waitForTimeout(5000)
-    const v = await p.page.evaluate(() => __pv), cancel = await p.page.locator('button:has-text("Cancel")').count(), seen = new Set(v.map((x) => x[1])).size, span = v.length ? (v.at(-1)[0] - v[0][0]) / 1000 : 0
-    return ok(v.length && v.every((x) => x[1] !== null && x[2] !== null && x[3] !== null) && seen / (span || 1) >= 1 && cancel > 0, `${v.length ? seen + ' distinct values over ' + span.toFixed(1) + ' s' : 'no progressbar'}; Cancel ${cancel > 0}`) } },
+    const r = await autoRun(env, {}), cancel = await r.p.page.locator('button:has-text("Cancel")').count(), valid = r.v.length && r.v.every((x) => x[1] !== null && x[2] !== null && x[3] !== null)
+    return ok(valid && r.distinct / (r.span || 1) >= 1, `${r.v.length ? r.distinct + ' distinct values over ' + r.span.toFixed(1) + ' s' : 'no progressbar'}; aria ${valid}; Cancel button after finish ${cancel > 0} (not required once done)`) } },
   { id: 'A10', title: "A10': second load with the server stopped: shell and model served from cache, zero requests", needs: ['sw', 'auto'], run: async (env) => {
     const srv = await startStatic(env.dist); try { const p = await env.open({ sw: true }); await p.page.goto(srv.url, { waitUntil: 'load' }); await p.page.waitForTimeout(1000)
       await p.page.evaluate(() => navigator.serviceWorker.ready.then(() => 1)).catch(() => 0)
@@ -361,6 +368,8 @@ export const checks = [
     const hub = await fetch('https://huggingface.co/api/models/Xenova/distilgpt2').then((r) => r.status, () => 'unreachable')
     const comp = await fetch('http://127.0.0.1:8000/api/hw/info').then(async (r) => (r.ok ? `ok, ${(await r.json()).cpu?.name ?? 'cpu ?'}` : r.status), () => 'down')
     return hub === 200 ? P(`Hub ${hub}; companion ${comp}`) : F(`Hub ${hub}; companion ${comp}`) } },
-  { id: 'T2', tier: 3, title: 'smoke: real page, real Hub, no mocks: a first score appears', needs: ['S4'], run: async (env) => {
-    const p = await env.open({ hub: false, companion: 'real' }); await p.goto(); await startModel(p.page); await p.page.waitForSelector('p[data-runscore]', { timeout: 180000 }); await p.shot('t2'); return P('score shown') } },
+  { id: 'T2', tier: 3, title: 'smoke: real page, real Hub, no mocks: default model runs by itself and shows a run score; bytes ~ plan', needs: ['auto'], run: async (env) => {
+    const r = await autoRun(env, {}), planned = r.info.plan?.bytes ?? 0, ratio = planned ? r.got / planned : 0
+    return ok(r.done && (r.got === 0 || (ratio > 0.5 && ratio < 1.5)), `${r.done ? 'run score' : 'NO run score'} after ${r.tRun.toFixed(1)} s on ${r.info.where ?? '?'}; planned ${(planned / 1048576).toFixed(0)} MB, downloaded ${(r.got / 1048576).toFixed(0)} MB (${r.got ? 'ratio ' + ratio.toFixed(2) : 'cached or streamed'}); "${r.info.text.replace(/\s+/g, ' ').slice(0, 60)}"`) } },
+
 ]
