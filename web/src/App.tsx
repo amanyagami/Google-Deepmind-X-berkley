@@ -1,9 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
+import { BoardHost, BoardOptOut, openLeaderboard } from './board'
 // Each view loads its own code on first use, so the first page needs only what it shows.
-// the hint bubble lives in a lazy chunk so the first page does not pay for it
-const HintLazy = lazy(() => import('./ui/charts').then((m) => ({ default: m.Hint })))
-const Hint = (p: { label?: string; children: React.ReactNode }) => <Suspense fallback={null}><HintLazy {...p} /></Suspense>
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
 const SECTIONS: { id: AppView; label: string; tip: string }[] = [
@@ -18,14 +16,12 @@ const Ico = ({ d, fill }: { d: string; fill?: boolean }) => (
 )
 const SUN = 'M12 7a5 5 0 100 10 5 5 0 000-10zM12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'
 const MOON = 'M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z', SCREEN = 'M3 5h18v11H3zM8 20h8M12 16v4'
+const CUP = 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4'
 const PLAY = 'M7 4.5v15l12-7.5z', SHIELD = 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z', CHEV = 'M6 9l6 6 6-6'
-
-/** One prompt, one Run: the model runs it (Model section), then the Machine replays it on the hardware. */
-const runAll = () => useStore.getState().run()
 
 /** What this device offers, in one short phrase. Uses the capability probe when it exists, else a quick guess. */
 function useDevice() {
-  const [t, setT] = useState('This device')
+  const [t, setT] = useState('This device · checking…')
   useEffect(() => {
     let live = true
     const mem = (c: number | null) => (c ? ` · ~${c} GB` : '')
@@ -34,34 +30,6 @@ function useDevice() {
     return () => { live = false }
   }, [])
   return t
-}
-
-/** Model picker fallback: the old link box and example chips, until the picker fills the slot. */
-function PickerFallback() {
-  const s = useStore()
-  const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
-  useEffect(() => { if (s.repo) setText(s.repo) }, [s.repo])
-  return (
-    <div className="pickfb">
-      <button className="btn2 pickbtn" aria-expanded={open} onClick={() => setOpen((o) => !o)} title="Pick a model"><span className="pickname">{s.repo.split('/').pop() || 'Pick a model'}</span><Ico d={CHEV} /></button>
-      {open && (
-        <div className="pop" role="group" aria-label="Pick a model">
-          <form className="urlform" onSubmit={(e) => { e.preventDefault(); s.loadModel(text); setOpen(false) }}>
-            <label className="sr" htmlFor="repo">Hugging Face model URL</label>
-            <span className="host">huggingface.co/</span>
-            <input id="repo" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} placeholder="org/model" />
-            <button className="btn" type="submit" disabled={s.probing}>{s.probing ? 'Reading…' : 'Load'}</button>
-          </form>
-          <div className="chips" role="group" aria-label="Examples">
-            {s.examples.map((e) => (
-              <button key={e.id} className="chip" aria-pressed={s.repo.toLowerCase() === e.repo.toLowerCase()} onClick={() => { s.loadExample(e.id); setOpen(false) }}>{e.title}</button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
 }
 
 /** System / Light / Dark. Sets data-theme (System removes it), with a View Transition when the browser has one. */
@@ -76,9 +44,12 @@ function useThemeApply() {
 }
 function ThemeToggle() {
   const theme = useStore((s) => s.theme), set = useStore((s) => s.setTheme)
-  const next = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
-  const label = theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark'
-  return <button className="btn2 themebtn" data-theme-toggle onClick={() => set(next)} aria-label={`Theme: ${label}. Switch to ${next}.`} title={`Theme: ${label}`}><Ico d={theme === 'light' ? SUN : theme === 'dark' ? MOON : SCREEN} /><span className="themelbl">{label}</span></button>
+  const opts = [['dark', 'Dark', MOON], ['light', 'Light', SUN], ['system', 'System', SCREEN]] as const
+  return (
+    <div className="seg themeseg" role="radiogroup" aria-label="Theme">
+      {opts.map(([k, l, ic]) => <button key={k} role="radio" aria-checked={theme === k} className={theme === k ? 'on' : ''} data-theme-toggle={k === 'light' ? '' : undefined} onClick={() => set(k)}><Ico d={ic} />{l}</button>)}
+    </div>
+  )
 }
 
 /** Four small steps on the name card: what the page does, in plain words. Icons are inline SVG with the brand gradient. */
@@ -86,7 +57,7 @@ const HOW: { t: string; d: string; icon: string }[] = [
   { t: 'Get a model', d: 'It comes from Hugging Face and runs on your device.', icon: 'M4 5h16v10H4zM2 19h20M12 2v7M9 6l3 3 3-3' },
   { t: 'Watch it think', d: 'Your prompt flows through the 3D blocks.', icon: 'M3 8l5-3 5 3v6l-5 3-5-3zM11 10l5-3 5 3v6l-5 3-5-3z' },
   { t: 'See the power', d: 'Electricity moves through CPU, GPU and RAM.', icon: 'M13 2L4 14h7l-1 8 9-12h-7z' },
-  { t: 'Get your score', d: 'Test all gives you a score card.', icon: 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4' },
+  { t: 'Get your score', d: 'Test all scores your device.', icon: 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4' },
 ]
 function HowItWorks() {
   return (
@@ -102,7 +73,8 @@ function HowItWorks() {
   )
 }
 
-/** First visit: ask for a name (stays on this device). Enter continues; "Use Guest" skips. */
+/** First visit: ask for a name. It goes on the score card and, after Test all, on the public leaderboard (unless the
+ *  visitor ticks "Keep me off the leaderboard"). Enter continues; "Use Guest" skips. */
 function NameCard() {
   const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
   const [v, setV] = useState('')
@@ -113,8 +85,10 @@ function NameCard() {
     <div className="namewall" data-namecard>
       <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
         <div className="namefields">
-          <h3 id="nm-t">What is your name?<Hint label="About your name">It stays on this device. It goes on your score card.</Hint></h3>
-          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+          <h3 id="nm-t">What is your name?</h3>
+          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={24} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+          <p className="namenote" data-board-note>Your name and score go on a public leaderboard.</p>
+          <BoardOptOut />
           <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
         </div>
         <HowItWorks />
@@ -122,22 +96,6 @@ function NameCard() {
     </div>
   )
 }
-/** The name in the top bar, with a small menu to change it. */
-function NameChip() {
-  const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
-  const [open, setOpen] = useState(false)
-  const [v, setV] = useState('')
-  if (!name) return null
-  return (
-    <span className="namechip">
-      <button className="btn2" aria-expanded={open} onClick={() => { setV(name); setOpen((o) => !o) }} title="Change your name"><span className="pickname">{name}</span></button>
-      {open && <form className="pop namepop" onSubmit={(e) => { e.preventDefault(); if (v.trim()) { setName(v); setOpen(false) } }}>
-        <input className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} aria-label="Your name" autoFocus />
-        <button className="btn" type="submit">Save</button></form>}
-    </span>
-  )
-}
-
 /** "Saved on this device: 82 MB · Clear", shown when the privacy hint is open. */
 function SavedLine() {
   const [i, setI] = useState<{ bytes: number; persisted: boolean | null } | null>(null)
@@ -148,13 +106,60 @@ function SavedLine() {
   return <span className="savedline">{i.bytes ? <>Saved on this device: {mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB · <button type="button" className="t5link" onClick={() => void useStore.getState().clear().then(load)}>Clear</button></> : 'Nothing saved on this device yet.'}</span>
 }
 
-function TopBar({ view }: { view: AppView }) {
+/** The Kundali mark: a North-Indian birth chart (square, both diagonals, inner diamond = 12 houses), in the brand gradient. */
+export function KundaliLogo({ size = 20 }: { size?: number }) {
+  return (
+    <svg className="logo" width={size} height={size} viewBox="0 0 24 24" aria-hidden fill="none" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round">
+      <defs><linearGradient id="ns-logo-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#9a82ff" /><stop offset=".55" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" /></linearGradient></defs>
+      <path stroke="url(#ns-logo-g)" d="M2 2h20v20H2zM2 2l20 20M22 2L2 22M12 2l10 10-10 10L2 12z" />
+    </svg>
+  )
+}
+
+/** One profile menu: name, theme, this device, privacy, saved models. */
+function ProfileMenu() {
+  const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
   const device = useDevice()
+  const [open, setOpen] = useState(false)
+  const [v, setV] = useState('')
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false) }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', away); document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', esc) }
+  }, [open])
+  const who = name || 'Guest'
+  return (
+    <div className="profile" ref={box}>
+      <button className="btn2 profbtn" data-profile aria-haspopup="true" aria-expanded={open} onClick={() => { setV(name); setOpen((o) => !o) }} title="Your profile">
+        <span className="avatar" aria-hidden>{who.slice(0, 1).toUpperCase()}</span><span className="profname">{who}</span><Ico d={CHEV} />
+      </button>
+      {open && (
+        <div className="pop profpop" role="dialog" aria-label="Your profile">
+          <form className="profrow" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
+            <label className="lbl" htmlFor="prof-name">Name</label>
+            <input id="prof-name" className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} />
+            <button className="btn2" type="submit" disabled={!v.trim() || v.trim() === name}>Save</button>
+          </form>
+          <div className="profrow"><span className="lbl">Theme</span><ThemeToggle /></div>
+          <p className="profline mono">{device}</p>
+          <p className="profline"><Ico d={SHIELD} /> Models run on your device. Only your name and score go on the leaderboard. <SavedLine /></p>
+          <BoardOptOut />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TopBar({ view }: { view: AppView }) {
   return (
     <header className="topbar">
-      <div className="brand"><span className="logo" aria-hidden /><span className="brandname">Kundali</span></div>
-      <div id="model-picker-slot"><PickerFallback /></div>
-      <nav className="seg" aria-label="Sections">
+      <div className="brand"><KundaliLogo /><span className="brandname">Kundali</span></div>
+      {/* no picker button here: the "More…" tab opens the model box through the 'ns-open-picker' event; this slot only anchors its popup */}
+      <div id="model-picker-slot" />
+      <nav className="seg phonetabs" aria-label="Sections">
         {SECTIONS.map((x) => (
           <button key={x.id} className={view === x.id ? 'on' : ''} aria-current={view === x.id ? 'true' : undefined} onClick={() => jumpTo(x.id)} title={x.tip}>
             {x.label}{x.id === 'power' && <span className="livedot" aria-hidden />}
@@ -162,11 +167,8 @@ function TopBar({ view }: { view: AppView }) {
         ))}
       </nav>
       <span className="grow" />
-      <span className="tag devchip">{device}</span>
-      <ThemeToggle />
-      <NameChip />
-      <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device · nothing uploaded</span>
-        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded. <SavedLine /></Hint></span>
+      <button className="btn2 boardbtn" data-board aria-label="Leaderboard" onClick={openLeaderboard}><Ico d={CUP} /><span className="boardtxt">Leaderboard</span></button>
+      <ProfileMenu />
     </header>
   )
 }
@@ -185,7 +187,6 @@ function DetailsBar() {
 
 /** Default dock: the prompt and Run. S5 and S6 fill #dock-slot with Test all, progress and Cancel. */
 function Dock() {
-  const s = useStore()
   const ref = useRef<HTMLElement>(null)
   // measure the dock (it grows with strips; narrow, the 44 px Details bar sits right above it) and share the height with the layout
   useEffect(() => {
@@ -201,12 +202,6 @@ function Dock() {
   return (
     <footer className="dock" data-dock ref={ref}>
       <div id="dock-slot">
-        <form className="dockform" onSubmit={(e) => { e.preventDefault(); runAll() }}>
-          <label className="sr" htmlFor="sharedprompt">Prompt</label>
-          <input id="sharedprompt" className="dockprompt" value={s.prompt} onChange={(e) => s.setPrompt(e.target.value)} spellCheck={false} disabled={s.mode === 'replay'} title={s.mode === 'replay' ? 'Recorded run. Start the companion to type your own prompt.' : 'The same prompt drives the model and the machine'} />
-          <button className="btn primary" type="submit" disabled={!canRun(s)}>{s.running ? <><span className="spin" aria-hidden />Running</> : <><Ico d={PLAY} fill />Run</>}</button>
-        </form>
-        {s.runStatus && <span className="dockstat mono" role="status">{s.runStatus}</span>}
       </div>
     </footer>
   )
@@ -313,7 +308,7 @@ function useDrawers() {
   useEffect(() => {
     const close = () => { const s = useStore.getState(); (['model', 'machine'] as const).forEach((k) => s.railOpen[k] && s.setRail(k, false)) }
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
-    const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('.rail, .inspector, .drawer-tab, .hintpop, .pop')) close() }
+    const down = (e: PointerEvent) => { const t = e.target as HTMLElement; if (t.closest?.('.stage') && !t.closest('.rail, .inspector, .drawer-tab, .hintpop, .pop, [data-score-strip], .dock')) close() }
     addEventListener('keydown', key); document.addEventListener('pointerdown', down)
     return () => { removeEventListener('keydown', key); document.removeEventListener('pointerdown', down) }
   }, [])
@@ -367,6 +362,7 @@ export default function App() {
       </div>
       <Dock />
       <NameCard />
+      <BoardHost />
     </div>
   )
 }

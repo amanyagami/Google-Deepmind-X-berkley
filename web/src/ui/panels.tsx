@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
-import { animate, motion } from 'framer-motion'
+import { useState } from 'react'
+import { motion } from 'framer-motion'
 import { useStore, type Edit } from '../store'
-import { DimBars, Heat, Hint, Spark, TopBars, showTok } from './charts'
+import { DimBars, Gauge, Heat, Hint, Spark, TopBars, showTok } from './charts'
 import { RUNTIME_NAME, scoreRun } from '../hw/score'
 import { useHW } from '../hw/hwStore'
 import type { Fit, RunStats } from '../api'
@@ -346,11 +346,6 @@ export function EditPanel() {
 }
 
 /* -------------------------------------------------------------- Run score */
-function Count({ value }: { value: number }) {
-  const [v, setV] = useState(0)
-  useEffect(() => { const a = animate(0, value, { duration: 0.9, ease: 'easeOut', onUpdate: (x) => setV(Math.round(x)) }); return () => a.stop() }, [value])
-  return <>{v}</>
-}
 
 /** How well this computer ran this model: hero number on an arc gauge, tier, four part bars. Reuses .gauge / .gnum. */
 export function RunScoreCard({ stats, fit, params, info: infoIn }: { stats: RunStats | null | undefined; fit: Fit | null; params: number | null; info: any | null }) {
@@ -358,21 +353,10 @@ export function RunScoreCard({ stats, fit, params, info: infoIn }: { stats: RunS
   const info = infoIn ?? live
   if (!stats) return <div className="stack"><p className="hint">Run a model to score this computer.<Hint>The score compares speed, response time, energy and memory room with a reference run.</Hint></p></div>
   const r = scoreRun(stats, fit, { params, info })
-  const size = 150, rad = size / 2 - 12, c = size / 2
-  const a0 = Math.PI * 0.8, a1 = Math.PI * 2.2
-  const pt = (a: number) => `${c + rad * Math.cos(a)} ${c + rad * Math.sin(a)}`
-  const arc = `M ${pt(a0)} A ${rad} ${rad} 0 1 1 ${pt(a1)}`
   return (
     <div className="stack">
       <div className="row" style={{ alignItems: 'center', gap: 14 }}>
-        <div className="gauge" style={{ width: size, height: size * 0.9 }}>
-          <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} role="img" aria-label={`Run score ${r.overall}, ${r.tier}`}>
-            <path d={arc} fill="none" stroke="var(--line)" strokeWidth={9} strokeLinecap="round" />
-            <motion.path d={arc} fill="none" stroke="var(--pos)" strokeWidth={9} strokeLinecap="round" initial={{ pathLength: 0 }} animate={{ pathLength: Math.min(1, r.overall / 2000) }}
-              transition={{ type: 'spring', stiffness: 60, damping: 16 }} style={{ filter: 'drop-shadow(0 0 6px color-mix(in srgb, var(--pos) 60%, transparent))' }} />
-          </svg>
-          <div className="gnum"><b><Count value={r.overall} /></b><span>{r.tier}</span></div>
-        </div>
+        <Gauge score={r.overall} label={r.tier} aria={`Run score ${r.overall}, ${r.tier}`} />
         <div>
           <div className="mono ttl">{stats.repo.split('/').pop()}</div>
           <div className="badges"><span className="badge on">{RUNTIME_NAME[stats.where]}</span><span className="badge">{stats.task}</span></div>

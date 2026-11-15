@@ -134,7 +134,7 @@ export function vit(w: W, img: number[]) {
 }
 
 /** The toy VLM. With `ids` it scores that text (teacher forcing); without, it writes a caption greedily. */
-export function vlm(w: W, img: number[], vocab: string[], ids?: number[]) {
+export function vlm(w: W, img: number[], vocab: string[], ids?: number[], prefix: number[] = []) {
   const input = img.slice(0, 64), p = patches(input)
   const vpos = w['v_pos'].data, tpos = w['t_pos'].data
   const vtok = p.map((pp, i) => linear(w, 'v_embed', pp).map((v, k) => v + vpos[i * 16 + k]))
@@ -148,19 +148,33 @@ export function vlm(w: W, img: number[], vocab: string[], ids?: number[]) {
     return { tb, logits }
   }
   if (ids) { const r = run(ids); return { input, patches: p, v_attn: vb.attn, img: img_, t_attn: r.tb.attn, logits: r.logits, ids, steps: [] as any[] } }
-  // greedy generation: keep every step so the UI can replay how each word was chosen
+  // greedy generation: keep every step so the UI can replay how each word was chosen. The user's own words (`prefix`)
+  // go in first, as if the model had written them; then it carries on by itself. 16 image + 10 text positions in all.
+  const pre = prefix.slice(0, VLM_MAX_WORDS)
   const text = [vocab.indexOf('<bos>')]
   const steps: { probs: number[]; chosen: number; attn: number[][][] }[] = []
   let last: ReturnType<typeof run> | null = null
-  for (let s = 0; s < 12; s++) {
+  for (let s = 0; s < 9; s++) {
     last = run(text)
     const probs = softmax(last.logits[last.logits.length - 1])
-    const chosen = probs.indexOf(Math.max(...probs))
+    const chosen = s < pre.length ? pre[s] : probs.indexOf(Math.max(...probs))
     steps.push({ probs, chosen, attn: last.tb.attn })
     text.push(chosen)
-    if (vocab[chosen] === '<eos>') break
+    if (s >= pre.length && vocab[chosen] === '<eos>') break
   }
-  return { input, patches: p, v_attn: vb.attn, img: img_, t_attn: last!.tb.attn, logits: last!.logits, ids: text, steps }
+  return { input, patches: p, v_attn: vb.attn, img: img_, t_attn: last!.tb.attn, logits: last!.logits, ids: text, steps, given: pre.length }
+}
+
+/** The VLM's text input: at most this many of the user's words go in before the model writes. */
+export const VLM_MAX_WORDS = 5
+/** Split typed text into the toy VLM's words (it knows 20). Unknown words are skipped and reported. */
+export function vlmWords(text: string, vocab: string[]): { ids: number[]; unknown: string[] } {
+  const ids: number[] = [], unknown: string[] = []
+  for (const wd of text.toLowerCase().replace(/,/g, ' , ').split(/\s+/).filter(Boolean)) {
+    const k = vocab.indexOf(wd)
+    if (k > 1) { if (ids.length < VLM_MAX_WORDS) ids.push(k) } else unknown.push(wd)
+  }
+  return { ids, unknown }
 }
 
 export const FLOPS: Record<string, string> = {

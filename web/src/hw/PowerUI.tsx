@@ -4,8 +4,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { fixSplit, journeyPowerAt, powerNow, SMOOTH_S, splitOf, useHW, type PowerMode, type PowerSample, useHWThrottled } from './hwStore'
 import { LABEL, locate } from './timeline'
 import { useStore } from '../store'
-import { Hint } from '../ui/charts'
-import { Peek } from './peek'
+import { Hint, Peek } from '../ui/charts'
 
 const mmss = (t: number) => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 
@@ -51,15 +50,15 @@ export function PowerHUD() {
     // no sensor and nothing recorded: no badge, one plain line (C3)
     return (
       <div className="phud" aria-live="polite" data-mode="none">
-        <Peek label="Power" summary={<span className="psub">{browser ? 'No power sensor' : 'Waiting for sensors…'}</span>}>
+        <Peek label="Power" summary={<span className="psub">{browser ? 'No power sensor' : 'Waiting for sensors…'}</span>} details={<>
           <p className="t5-line">{browser ? 'No power sensor in the browser. Test all to estimate.' : 'Waiting for the power sensors.'}</p>
-        </Peek>
+        </>} />
       </div>
     )
   }
   return (
     <div className="phud" aria-live="polite" data-mode={mode} {...data}>
-      <Peek label="Where the watts go" summary={<><i className={`pdot ${mode}`} aria-label={`${label}, ${kind}`} /><b className="pbig mono">{s.pkg_w.toFixed(1)}<small> W</small></b><span className="psub">· CPU</span></>}>
+      <Peek label="Where the watts go" summary={<><i className={`pdot ${mode}`} aria-label={`${label}, ${kind}`} /><b className="pbig mono">{s.pkg_w.toFixed(1)}<small> W</small></b><span className="psub">· CPU</span></>} details={<>
         <div className="pbadge"><i className={mode} />{label}<span>{kind}</span></div>
         {s.stage && s.stage !== 'live' && mode !== 'journey' && <div className="psub"><b style={{ color: STAGE_COL[s.stage] }}>{STAGE_NAME[s.stage] ?? s.stage}</b></div>}
         <div className="prow mono">
@@ -83,7 +82,7 @@ export function PowerHUD() {
             Rest of chip = package minus cores (graphics, caches, memory controller).
           </Hint>
         </p>
-      </Peek>
+      </>} />
     </div>
   )
 }
@@ -186,7 +185,7 @@ export function MachineTimeline() {
         {m === 'replay' && <button className="ib big" aria-label={h.pPlaying ? 'Pause' : 'Play'} onClick={() => (h.pPlaying ? hw.pPause() : hw.pPlay())}>{h.pPlaying ? '❚❚' : '▶'}</button>}
         {m === 'live' && hasLive && <span className="livetag"><span className="livedot" />Live</span>}
         {(m === 'journey' || m === 'replay') && (
-          <Peek className="tlpeek" label="Timeline controls" summary={<span className="tlstage">{stageNow || (m === 'journey' ? 'Journey' : 'Power run')}</span>}>
+          <Peek className="tlpeek" label="Timeline controls" summary={<span className="tlstage">{stageNow || (m === 'journey' ? 'Journey' : 'Power run')}</span>} details={<>
             {m === 'journey' && <>
               <div className="t5-row">
                 <button className="ib" aria-label="Previous stage" onClick={() => hw.step(-1)}>⏮</button>
@@ -203,7 +202,7 @@ export function MachineTimeline() {
               <span className="mono tm">{h.pHead.toFixed(1)} s / {T0.toFixed(1)} s</span>
               <select aria-label="Replay speed" value={h.pSpeed} onChange={(e) => hw.setPSpeed(+e.target.value)}>{[0.25, 0.5, 1, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}</select>
             </div>}
-          </Peek>
+          </>} />
         )}
         <span className="tlgrow" />
         {m !== 'rec' && modes.length > 1 && (

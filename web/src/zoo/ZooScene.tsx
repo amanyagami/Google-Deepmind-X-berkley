@@ -8,6 +8,7 @@ import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@rea
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { create } from 'zustand'
+import { createGuide, type Guide } from '../ui/camera'
 import { reach, useZoo, type Inspect, type NetId } from './zooStore'
 import { useStore } from '../store'
 import { InspectTip, isInspectOn, useInspectOn } from '../ui/charts'
@@ -75,7 +76,7 @@ function FloorGrid({ light }: { light: boolean }) {
 
 /** Light theme flag for the drawing loops (set by the stage each render). In light mode values read as deeper amber/blue on a pale ground, no glow. */
 const TH = { light: false }
-const L_INK = new THREE.Color('#d5daf0'), L_AMBER = new THREE.Color('#f08a00'), L_BLUE = new THREE.Color('#2f7be6')
+const L_INK = new THREE.Color('#aeb7dc'), L_AMBER = new THREE.Color('#e07800'), L_BLUE = new THREE.Color('#1f66d1')
 function valueColor(v: number, max: number, out: THREE.Color, lit = 1) {
   const x = Math.max(-1, Math.min(1, v / (max || 1)))
   if (TH.light) return out.copy(L_INK).lerp(x >= 0 ? L_AMBER : L_BLUE, Math.min(1, Math.abs(x) * 1.15) * lit)
@@ -99,18 +100,18 @@ export function setText(el: HTMLElement | null, t: string) {
 const CSS = `
 .nsc{position:relative;pointer-events:auto;display:flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:0;padding:0;margin:0;font:inherit;color:var(--fg,#e8ecf8);cursor:pointer;touch-action:manipulation}
 .nsc.ns-static{pointer-events:none;min-height:0;min-width:0;cursor:default}
-.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,rgba(124,92,255,.55),rgba(34,211,238,.4) 55%,rgba(255,122,182,.5)) border-box;box-shadow:0 6px 18px rgba(2,4,20,.28),0 0 0 1px rgba(255,255,255,.02) inset;border-radius:10px;padding:3px 10px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.25 var(--body,system-ui,sans-serif);text-align:center}
+.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,rgba(124,92,255,.55),rgba(34,211,238,.4) 55%,rgba(255,122,182,.5)) border-box;box-shadow:0 6px 18px rgba(2,4,20,.28),0 0 0 1px rgba(255,255,255,.02) inset;border-radius:10px;padding:3px 10px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 12px/1.25 var(--body,system-ui,sans-serif);text-align:center}
 .nsc b{font-weight:600;font-size:12px;display:block}
 .nsc .g{margin-right:5px;color:var(--gl,inherit)}
 @keyframes ns-pop{from{opacity:0;transform:scale(.94) translateY(3px)}to{opacity:1;transform:none}}
 @keyframes ns-rise{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
 .nsstage{animation:ns-rise .6s var(--ease,cubic-bezier(.2,.8,.2,1)) both}
 @media (prefers-reduced-motion:reduce){.nsstage,.nsc .box{animation:none;transition:none}}
-.nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:11.5px}
+.nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:12px}
 .nsc:hover .sub,.nsc:focus-visible .sub,.nsc.on .sub{display:block}
-.nsc .lv{display:block;font:600 11.5px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
+.nsc .lv{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
 .nsc .lv .livedot{width:5px;height:5px;margin:0 5px 0 0;vertical-align:1px;box-shadow:none}
-.nsc .sc{display:block;font:600 11.5px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
+.nsc .sc{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
 .nsc:hover .box,.nsc.on .box,.nsc.hov .box{box-shadow:0 8px 22px rgba(2,4,20,.34),0 0 16px color-mix(in srgb,var(--pos,#ffa94d) 45%,transparent);transform:translateY(-1px)}
 .nsc.on .box{background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,#ffa94d,#ff7ab6) border-box}
 .nsc:focus-visible{outline:none}
@@ -118,7 +119,9 @@ const CSS = `
 .nsc .lead{position:absolute;left:50%;top:50%;height:0;border-top:1px dashed rgba(154,165,199,.7);transform-origin:0 0;pointer-events:none;display:none;z-index:-1}
 .nsc .lead::after{content:"";position:absolute;right:-2px;top:-3px;width:5px;height:5px;border-radius:50%;background:#9aa5c7}
 .nsw{font:500 11.5px var(--mono,ui-monospace,monospace);color:var(--fg,#e8ecf8);background:color-mix(in srgb,var(--bg,#060913) 94%,transparent);border-radius:6px;padding:0 5px;white-space:nowrap;pointer-events:none}
-.nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 11.5px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
+.nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 12px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
+.nsreset{position:absolute;right:12px;top:60px;animation:ns-pop .2s ease both;z-index:6;width:40px;height:40px;display:grid;place-items:center;border-radius:12px;border:1px solid var(--line,#27314f);background:color-mix(in srgb,var(--panel,#0f1526) 88%,transparent);color:var(--fg,#e8ecf8);font:600 18px/1 var(--body,system-ui);cursor:pointer;box-shadow:var(--sh-1,none);backdrop-filter:blur(6px)}
+.nsreset:hover{border-color:color-mix(in srgb,var(--brand-1,#7c5cff) 55%,var(--line,#27314f))}
 .nssr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 `
 if (typeof document !== 'undefined' && !document.getElementById('ns-stage-css')) {
@@ -126,7 +129,7 @@ if (typeof document !== 'undefined' && !document.getElementById('ns-stage-css'))
 }
 
 /** Test hooks (S10): the DPR cap in force and whether a camera move is in flight. */
-export const SCENE: { dprCap: number; camera: { tweening: boolean } } = { dprCap: 2, camera: { tweening: false } }
+export const SCENE: { dprCap: number; camera: { tweening: boolean }; cams: Record<string, Guide | undefined> } = { dprCap: 2, camera: { tweening: false }, cams: {} }
 if (typeof window !== 'undefined') (window as any).__scene = SCENE
 let tweenT = 0
 export function markTween(ms: number) { SCENE.camera.tweening = true; window.clearTimeout(tweenT); tweenT = window.setTimeout(() => { SCENE.camera.tweening = false }, ms) }
@@ -197,17 +200,51 @@ export function SlowWatch({ onStep }: { onStep: (d: 1 | -1) => void }) {
 }
 
 /** Esc (or any callback) only while the pointer or focus is inside the stage, so it never fights the page's own Esc. */
-export function useStageKeys(wrap: React.RefObject<HTMLElement | null>, onEsc: () => boolean) {
+export function useStageKeys(wrap: React.RefObject<HTMLElement | null>, onEsc: () => boolean, onHome?: () => void) {
   const cb = useRef(onEsc); cb.current = onEsc
+  const hb = useRef(onHome); hb.current = onHome
   useEffect(() => {
     const el = wrap.current; if (!el) return
     let inside = false
     const enter = () => { inside = true }, leave = () => { inside = el.contains(document.activeElement) }
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && inside && cb.current()) e.preventDefault() }
+    const key = (e: KeyboardEvent) => {
+      if (!inside && !el.matches(':hover') && !el.contains(document.activeElement)) return
+      const t = e.target as HTMLElement | null
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
+      if (e.key === 'Escape' && cb.current()) e.preventDefault()
+      else if (e.key === 'Home' && hb.current) { e.preventDefault(); hb.current() }
+    }
     el.addEventListener('pointerenter', enter); el.addEventListener('pointerleave', leave); el.addEventListener('focusin', enter); el.addEventListener('focusout', leave)
     document.addEventListener('keydown', key)
     return () => { el.removeEventListener('pointerenter', enter); el.removeEventListener('pointerleave', leave); el.removeEventListener('focusin', enter); el.removeEventListener('focusout', leave); document.removeEventListener('keydown', key) }
   }, [wrap])
+}
+
+/** Reset view: the same icon button in the same place in both scenes (bottom right, above the timeline or the bottom
+ *  card), shown only when the camera is not at home. Home key and a double click on empty space do the same. */
+export function ResetView({ scene, onReset }: { scene: 'model' | 'machine'; onReset: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null)
+  const [show, setShow] = useState(false)
+  useEffect(() => {
+    const tick = () => {
+      const g = SCENE.cams[scene], b = ref.current, w = b?.parentElement
+      setShow(!!g && !g.atHome())
+      if (!b || !w) return
+      // sit above whatever covers the bottom-right corner of the stage (timeline, cards, bulbs): walk up from the bottom
+      // until both ends of the button's column are free (only the scene itself, or this button, under them)
+      // (and left of an open drawer): first free spot scanning right-to-left, bottom-to-top
+      const W = w.getBoundingClientRect()
+      const free = (x: number, y: number) => { const e = document.elementFromPoint(x, y); return !!e && (e === b || b.contains(e) || w.contains(e)) && !e.closest('.nsc') }
+      let spot: [number, number] | null = null
+      for (let x = W.right - 32; x > W.left + 32 && !spot; x -= 48)
+        for (let y = W.bottom - 12; y > W.top + 96; y -= 8) if (free(x, y) && free(x, y - 40) && free(x - 18, y - 20) && free(x + 18, y - 20)) { spot = [x, y - 40]; break }
+      const [sx, sy] = spot ?? [W.right - 32, W.top + 56]
+      b.style.top = `${Math.round(sy - W.top)}px`; b.style.left = `${Math.round(sx - 20 - W.left)}px`; b.style.right = 'auto'
+    }
+    tick(); const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [scene])
+  return <button ref={ref} type="button" className="nsreset" aria-label="Reset view (Home)" title="Reset view (Home)" data-reset-view={scene} style={{ display: show ? undefined : 'none' }} onClick={onReset}><span aria-hidden>⟲</span></button>
 }
 
 /* -------------------------------------------------------------------------------------- camera fit */
@@ -324,6 +361,10 @@ function layout(reg: Reg, cv: HTMLElement, top: number): boolean {
       if (ld) { if (far) { ld.style.display = 'block'; ld.style.width = `${Math.hypot(dx, dy)}px`; ld.style.transform = `rotate(${(Math.atan2(-dy, -dx) * 180 / Math.PI).toFixed(1)}deg)` } else ld.style.display = 'none' }
     }
   }
+  // roving tabindex: one Tab stop per stage (the focused or last-used chip, else the leftmost), arrows move inside
+  const btns = chips.filter((b) => b.it.el.tagName === 'BUTTON' && b.it.show).sort((a, b) => a.x - b.x || a.y - b.y)
+  const cur = btns.find((b) => b.it.el === document.activeElement) ?? btns.find((b) => b.it.el.dataset.rove === '1') ?? btns[0]
+  for (const b of chips) if (b.it.el.tagName === 'BUTTON') { const ti = b === cur ? '0' : '-1'; if (b.it.el.getAttribute('tabindex') !== ti) b.it.el.setAttribute('tabindex', ti) }
   for (const b of words) { const v = b.it.show ? '' : 'hidden'; if (b.it.el.style.visibility !== v) { b.it.el.style.visibility = v; moved = true } }
   return moved
 }
@@ -348,6 +389,17 @@ export function KitProvider({ children, top = 48 }: { children: ReactNode; top?:
     return () => window.clearInterval(id)
   }, [reg, gl, top])
   return <KitCtx.Provider value={reg}>{children}</KitCtx.Provider>
+}
+
+/** Arrow keys between the label chips of one stage, in left-to-right (then top-to-bottom) order. */
+function rove(reg: Reg | null, from: HTMLElement, dir: 1 | -1) {
+  if (!reg) return
+  const list = [...reg.values()].map((i) => i.el).filter((e) => e.tagName === 'BUTTON' && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden')
+    .map((e) => ({ e, r: e.getBoundingClientRect() })).sort((a, b) => a.r.left - b.r.left || a.r.top - b.r.top).map((x) => x.e)
+  const i = list.indexOf(from); if (i < 0 || !list.length) return
+  const next = list[(i + dir + list.length) % list.length]
+  for (const e of list) { e.dataset.rove = e === next ? '1' : ''; e.setAttribute('tabindex', e === next ? '0' : '-1') }
+  next.focus()
 }
 
 export interface ChipProps {
@@ -382,7 +434,7 @@ export function Chip(p: ChipProps) {
     <Html position={p.pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
       {p.onClick
         ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label data-block={p.name} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
-            onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={p.onKey} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
+            onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={(e) => { p.onKey?.(e); if (e.defaultPrevented) return; if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); rove(reg, e.currentTarget, 1) } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); rove(reg, e.currentTarget, -1) } }} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
         : <div ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label>{inner}</div>}
     </Html>
   )
@@ -501,8 +553,8 @@ function Plate({ g, def }: { g: Group; def?: SceneDef }) {
   } : {}
   return (
     <group position={[cx, 0, cz]}>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={0.14} depthWrite={false} toneMapped={false} /></mesh>
-      <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></lineSegments>
+      <mesh rotation-x={-Math.PI / 2} position-y={0.006} renderOrder={-1} {...pk}><planeGeometry args={[w, d]} /><meshBasicMaterial color={t.tint} transparent opacity={TH.light ? 0.24 : 0.14} depthWrite={false} toneMapped={false} /></mesh>
+      <lineSegments geometry={edges} rotation-x={-Math.PI / 2} position-y={0.008}><lineBasicMaterial color={t.tint} transparent opacity={TH.light ? 1 : 0.7} toneMapped={false} /></lineSegments>
       {extra && <lineSegments geometry={extra} position-y={0.01}><lineBasicMaterial color={t.tint} transparent opacity={g.type === 'conv' ? 0.3 : 0.55} toneMapped={false} /></lineSegments>}
       {g.type === 'recurrent' && <mesh rotation-x={-Math.PI / 2} position-y={0.05} scale={[w / 2 - 0.2, d / 2 - 0.1, 1]}><torusGeometry args={[1, 0.018, 6, 64]} /><meshBasicMaterial color={t.tint} transparent opacity={0.7} toneMapped={false} /></mesh>}
     </group>
@@ -779,11 +831,12 @@ function CnnScene() {
       <Tiles get={() => Z().out?.conv1} count={512} place={c1} size={0.14} stage="conv1" maxAbs={maxOf(() => Z().out?.conv1)} layer="conv1" kind="cell" lift={0.5} scanReveal />
       <Tag pos={[-3.6, 0.2, 6.6]} name="Convolution 1" grp="conv1" sub="8 filters of 3×3 · ReLU" />
       <Tiles get={() => Z().out?.pool1} count={128} place={p1} size={0.18} stage="pool1" maxAbs={maxOf(() => Z().out?.pool1)} layer="pool1" kind="cell" lift={0.2} />
-      <Tag pos={[-1.2, 0.2, -6.6]} name="Max pool" grp="pool1" sub="keep the largest of each 2×2" />
+      <Tag pos={[-1.2, 0.2, -6.6]} name="Max pool 1" grp="pool1" sub="largest of each 2×2 · 8 maps, 8×8 → 4×4" />
       <Kernel stage="conv2" n={4} size={0.2} at={(x, y) => [-1.2 + (x - 1.5) * 0.2, 0.3, mapZ(0, 8) + (y - 1.5) * 0.2]} />
       <Tiles get={() => Z().out?.conv2} count={256} place={c2} size={0.16} stage="conv2" maxAbs={maxOf(() => Z().out?.conv2)} layer="conv2" kind="cell" lift={0.5} scanReveal />
       <Tag pos={[1.5, 0.2, 6.6]} name="Convolution 2" grp="conv2" sub="16 filters, each sees all 8 maps" />
       <Tiles get={() => Z().out?.pool2} count={64} place={p2} size={0.18} stage="pool2" maxAbs={maxOf(() => Z().out?.pool2)} layer="pool2" kind="cell" lift={0.2} />
+      <Tag pos={[3.8, 0.2, -6.6]} name="Max pool 2" grp="pool2" sub="largest of each 2×2 · 16 maps, 4×4 → 2×2" />
       <Bars origin={[6.4, 0, 0]} stage="out" />
       <Tag pos={[6.4, 0.2, 3.6]} name="Scores" grp="scores" sub="one dense layer on 64 numbers" />
     </group>
@@ -853,6 +906,7 @@ function VitScene() {
 function VlmScene() {
   const vocab = useZoo((s) => s.packs.vlm?.vocab ?? [])
   const nWords = useZoo((s) => s.out?.ids?.length ?? 0)
+  const given = useZoo((s) => (s.net === 'vlm' ? s.out?.given ?? 0 : 0))
   const imgTok = (i: number): [number, number, number] => [-4.3 + ((i % 4) - 1.5) * 0.85, 0, ((Math.floor(i / 4)) - 1.5) * 0.85]
   const imgCell = (i: number): [number, number, number] => { const t = Math.floor(i / 24), k = i % 24; const p = imgTok(t); return [p[0] + ((k % 6) - 2.5) * 0.1, 0, p[2] + (Math.floor(k / 6) - 1.5) * 0.1] }
   const wordX = (k: number) => -1.0 + k * 1.08
@@ -868,7 +922,9 @@ function VlmScene() {
     for (let k = 0; k < 12; k++) {
       const on = k < shown && k < ids.length
       d.position.set(wordX(k), 0.08, 3.2); if (on) d.scale.set(0.78, 0.1, 0.34); else d.scale.setScalar(0.0001); d.updateMatrix(); pills.current.setMatrixAt(k, d.matrix)
-      if (k === shown - 1) c.copy(AMBER).multiplyScalar(2.2); else c.copy(INK).lerp(BLUE, 0.45); pills.current.setColorAt(k, c)
+      // the user's own words (after <bos>) glow blue; the word being written glows amber
+      const mine = k >= 1 && k <= (s.out?.given ?? 0)
+      if (k === shown - 1) c.copy(AMBER).multiplyScalar(2.2); else if (mine) c.copy(TH.light ? L_BLUE : BLUE).multiplyScalar(TH.light ? 1 : 1.8); else c.copy(INK).lerp(BLUE, 0.45); pills.current.setColorAt(k, c)
       const el = wordsRef.current[k]; if (el) { el.style.display = on ? '' : 'none'; setText(el, on ? vocab[ids[k]] ?? '' : '') }
     }
     pills.current.instanceMatrix.needsUpdate = true; if (pills.current.instanceColor) pills.current.instanceColor.needsUpdate = true
@@ -900,7 +956,7 @@ function VlmScene() {
         }
         return res
       }} />
-      <Tag pos={[3.8, 0.2, 4.3]} grp="words" name="Language model" sub={`writes one word at a time · ${nWords ? nWords - 1 : 0} words`} />
+      <Tag pos={[3.8, 0.2, 4.3]} grp="words" name="Language model" sub={given ? `your ${given} word${given > 1 ? 's' : ''} in blue, then it writes the rest` : `writes one word at a time · ${nWords ? nWords - 1 : 0} words`} />
     </group>
   )
 }
@@ -915,8 +971,9 @@ function LlmScene() {
   const T = useZoo((s) => (s.net === 'llm' ? s.out?.T ?? 0 : 0))
   const L = useZoo((s) => (s.net === 'llm' ? s.out?.L ?? 0 : 0))
   const nh = useZoo((s) => (s.net === 'llm' ? s.out?.nh ?? 0 : 0))
-  const last = useRef<{ T: number; L: number; nh: number } | null>(null)
-  if (T && L) last.current = { T, L, nh }
+  const draft = useZoo((s) => (s.net === 'llm' && s.out?.draft ? 'draft' : ''))
+  const last = useRef<{ T: number; L: number; nh: number; draft: string } | null>(null)
+  if (T && L) last.current = { T, L, nh, draft }
   return last.current ? <LlmLayout {...last.current} /> : <group />
 }
 
@@ -961,7 +1018,7 @@ function llmDef(T: number, L: number, nh: number): SceneDef {
   }
 }
 
-function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
+function LlmLayout({ T, L, nh, draft }: { T: number; L: number; nh: number; draft: string }) {
   const active = useActive()
   const def = useMemo(() => llmDef(T, L, nh), [T, L, nh])
   DEFS.llm = def
@@ -981,7 +1038,7 @@ function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
     ;(marker.current.material as THREE.MeshBasicMaterial).opacity = reduceMotion ? 0.55 : 0.4 + 0.25 * Math.sin(clock.elapsedTime * 6)
     marker.current.visible = r > 0 && r < 1
     marker.current.position.x = colX(k)
-    setText(blockTag.current, r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
+    setText(blockTag.current, s.out?.draft ? 'press Run to send it in' : s.out?.noInside ? 'no inside view in the browser' : r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
     const toks: string[] = s.out?.tokens ?? []
     for (let t = 0; t < MAXT; t++) { const el = words.current[t]; if (el) { el.style.display = t < T ? '' : 'none'; if (t < T) { setText(el, (toks[t] ?? '').replace(/\n/g, '⏎') || '·'); const on = reach('llm', s.t, 'input') > (t + 0.5) / T; el.dataset.prio = on ? '1' : '0.5'; el.style.color = on ? '' : 'var(--muted,#aab4d2)' } } }
   })
@@ -1031,10 +1088,9 @@ function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
       {Array.from({ length: MAXT }, (_, t) => (
         <Word key={t} pos={[-9.0, 0.25, z(Math.min(t, T - 1))]} hidden={!active} elRef={(el) => { words.current[t] = el }} />
       ))}
-      <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={`${T} tokens`} grp="tok" />
+      <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={draft ? `${T} words · not run yet` : `${T} tokens`} grp="tok" />
       <Tag pos={[0, 0.2, zHead - nh * 0.2 - 0.5]} name="Attention heads" sub={`${nh} per block`} grp="heads" />
       <Tag pos={[colX(mid), 0.2, z(T - 1) + 1.3]} name={`${L} blocks`} sub="one sphere per token, per block · arrows pick a block" grp="blocks" onKey={blocksKey} />
-      <Chip pos={[0, 1.6, zHead - nh * 0.2 - 1.3]} name="Now playing" hidden={!active} liveRef={(el) => { blockTag.current = el }} />
       <Bars origin={[7.6, 0, 0]} stage="out" />
       <Tag pos={[7.6, 0.2, 3.9]} name="Next word" sub="top 10 guesses" grp="scores" />
     </DefCtx.Provider>
@@ -1076,6 +1132,13 @@ function Rig() {
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera
   const scene = useThree((s) => s.scene)
   const last = useRef({ w: 0, h: 0, net: '', key: '', ins: null as Inspect, tid: 0 })
+  const guide = useRef<Guide | null>(null)
+  useEffect(() => {
+    const c = ctl.current; if (!c) return
+    const g = createGuide(c, 'model', () => DEFS[Z().net]?.bounds ?? FALLBACK)
+    guide.current = g; SCENE.cams.model = g
+    return () => { g.dispose(); if (SCENE.cams.model === g) SCENE.cams.model = undefined }
+  }, [])
   // dimming rule + outline box follow the selection
   useEffect(() => {
     const def = DEFS[net]
@@ -1087,7 +1150,8 @@ function Rig() {
     if (!c) return
     const same = L.net === net && L.key === key, insChanged = L.ins !== inspect
     if (same && !insChanged && Math.abs(size.width - L.w) < 1 && Math.abs(size.height - L.h) < 1) return
-    const kind: 'resize' | 'select' | 'net' = !same ? 'net' : insChanged ? 'select' : 'resize'
+    // a new network re-aims from its own angle; a run (or typed prompt) of a new size keeps the user's angle
+    const kind: 'resize' | 'select' | 'net' | 'shape' = L.net !== net ? 'net' : !same ? 'shape' : insChanged ? 'select' : 'resize'
     L.w = size.width; L.h = size.height; L.net = net; L.key = key; L.ins = inspect
     const id = requestAnimationFrame(() => {
       const def = DEFS[net]
@@ -1096,13 +1160,12 @@ function Rig() {
       const box = sb ?? whole
       const dir = new THREE.Vector3()
       if (kind === 'net' || !Number.isFinite(c.distance) || c.distance < 1e-3) { const [p0, t0] = CAM[net]; dir.set(p0[0] - t0[0], p0[1] - t0[1], p0[2] - t0[2]) }
-      else { c.getPosition(_v1); c.getTarget(_v2); dir.copy(_v1).sub(_v2); if (dir.lengthSq() < 1e-6) dir.set(0, 0.6, 0.8) }
+      else { const P = guide.current?.pose; if (P) { _v1.fromArray(P.pos); _v2.fromArray(P.target) } else { c.getPosition(_v1); c.getTarget(_v2) } dir.copy(_v1).sub(_v2); if (dir.lengthSq() < 1e-6) dir.set(0, 0.6, 0.8) }
       const f = fitBox(box, dir, camera.fov, size.width, size.height, TOP_SAFE)
       const animate = !reduceMotion && kind !== 'resize'
-      window.clearTimeout(L.tid)
-      if (kind === 'select') { c.smoothTime = 0.12; L.tid = window.setTimeout(() => { if (ctl.current) ctl.current.smoothTime = 0.7 }, 700) } else c.smoothTime = 0.7
       if (animate) markTween(kind === 'select' ? 450 : 900)
-      c.setLookAt(f.pos.x, f.pos.y, f.pos.z, f.target.x, f.target.y, f.target.z, animate)
+      if (guide.current) guide.current.set(f.pos, f.target, animate, !!sb, kind === 'select' ? 0.12 : 0.6)
+      else c.setLookAt(f.pos.x, f.pos.y, f.pos.z, f.target.x, f.target.y, f.target.z, animate)
     })
     return () => cancelAnimationFrame(id)
   }, [net, key, inspect, size.width, size.height, camera])
@@ -1111,7 +1174,7 @@ function Rig() {
     ctl.current.getTarget(_v2); const d = camera.position.distanceTo(_v2)
     f.near = d * 0.97 + 8; f.far = d * 2.0 + 24
   })
-  return <CameraControls ref={ctl} makeDefault smoothTime={0.7} minDistance={2} maxDistance={126} maxPolarAngle={Math.PI * 0.48} />
+  return <CameraControls ref={ctl} makeDefault smoothTime={0.7} />
 }
 
 /** Outline of the hovered thing (white) and of the selected thing (amber): a wire box. */
@@ -1152,12 +1215,13 @@ export function ZooScene() {
     const sel = s.inspect ? ` Selected: ${(s.inspect.kind === 'block' ? `block ${(s.inspect.layer ?? 0) + 1} ${s.inspect.part ?? ''}` : s.inspect.kind === 'token' ? `token ${(s.inspect.index ?? 0) + 1}` : s.inspect.name ?? s.inspect.kind)}.` : ''
     return `${def?.summary() ?? ''}${top}${sel}`
   })
-  useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true })
+  const reset = () => { if (Z().inspect) Z().setInspect(null); else SCENE.cams.model?.home() }
+  useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true }, reset)
   useEffect(() => { Z().setInspect(null); useUI.setState({ hover: null }); setCursor(false) }, [net])
   return (
     <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
       <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false }}
-        onPointerMissed={(e) => { if (e.type === 'dblclick') Z().select(null); else if (e.type === 'click') Z().setInspect(null) }}>
+        onPointerMissed={(e) => { if (e.type === 'dblclick') { Z().select(null); reset() } else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
             <Backdrop light={light} />
@@ -1186,6 +1250,7 @@ export function ZooScene() {
         </LiteCtx.Provider>
       </Canvas>
       <Tip />
+      <ResetView scene="model" onReset={reset} />
       <div className="nssr" role="img" aria-label={summary} />
     </div>
   )

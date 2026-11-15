@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal, flushSync } from 'react-dom'
+import { drawKundali } from '../aspect'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
 import { scaleLinear, scaleLog } from 'd3'
 import { useStore } from '../store'
-import { Explainer, Hint } from '../ui/charts'
+import { BoardStatus, closeLeaderboard, LeaderboardButton, submitScore, useBoard } from '../board'
+import { Counter, Explainer, Hint, Peek, Spark } from '../ui/charts'
 import { fixSplit, inputLimits, peaksOf, splitOf, useHWThrottled, type Snapshot, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type InputSchema, type TestResult } from './hwStore'
 import { probe } from './browserBench'
 import { activityAt, captionFor, layerOps } from './timeline'
 import { exportResults, finalNow, componentScore, finalScore, isUnavailable, tierOf, useScores, type PillarRow } from './score'
 import { currentSample, PowerScene } from './PowerScene'
 import { EnergyTab, MachineTimeline, PowerHUD, STAGE_NAME } from './PowerUI'
-import { Peek, PEEK_CSS } from './peek'
 import { followModelRuns } from './modelRun'
 
 const fmtB = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(0)} MB` : `${(b / 1e3).toFixed(0)} KB`)
@@ -68,7 +69,14 @@ const busyNow = () => !!useHW.getState().running || !!useUI.getState().batch || 
  * with the score as shown. The leaderboard submit goes here, as a single call.
  */
 export function onFinalScore(f: Final): void {
-  void f
+  const res = useHW.getState().results
+  if (!TEST_IDS.every((i) => res[i] && !res[i].flags.includes('cancelled')) || f.score == null) return
+  try {
+    const fs = finalScore(res)
+    if (!(fs.score > 0)) return
+    const where = res.gpu?.env?.where ?? Object.values(res)[0]?.env?.where ?? ''
+    void submitScore({ score: fs.score, pillars: Object.fromEntries(fs.pillars.map((p) => [p.id, p.score])), tested: fs.coverage.ran / fs.coverage.of, backend: where }, useStore.getState().name)
+  } catch { /* results of two scales: no single score to send */ }
 }
 
 /** Test all: the one batch. Records power while it runs (useHW.runAll), then hands the final score to onFinalScore. */
@@ -254,6 +262,7 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   g.fillStyle = '#0a0e19'; g.fillRect(0, 0, 1200, 630)
   g.fillStyle = '#ffa94d'; g.fillRect(0, 0, 400, 8)
   g.textBaseline = 'alphabetic'
+  drawKundali(g, 1084, 40, 52)
   g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText(who ? `${who} · device score` : 'Kundali · device score', 64, 90)
   g.fillStyle = '#ffa94d'; g.font = `700 150px ${sans}`; g.fillText(f.score != null ? `▲ ${f.score.toLocaleString('en-US')}` : 'Not tested', 56, 270)
   g.fillStyle = '#e8ecf8'; g.font = `600 44px ${sans}`; g.fillText(f.tier, 64, 336)
@@ -351,8 +360,10 @@ function ScoreHero() {
       {complete && weak && <p className="t5-line">Weakest: <button type="button" className="t5-link" onClick={() => select(PILLAR_CARD[weak] ?? 'cpu1')}>{PILLAR_LABEL[weak]}</button></p>}
       <div className="t5-row">
         <button type="button" className="t5-btn" data-share disabled={!complete} onClick={shareNow}>Share</button>
+        <LeaderboardButton />
         <button type="button" className="t5-link" aria-expanded={open} disabled={!complete} onClick={() => setOpen(!open)}>{open ? 'Fewer options' : 'More options'}</button>
       </div>
+      <BoardStatus />
       {open && complete && <SharePanel f={f} name={name} onClose={() => setOpen(false)} />}
     </div>
   )
@@ -446,12 +457,12 @@ function ScoreStrip() {
         : <>
           <Peek label="Device score details" summary={complete
             ? <><b className="t5-ssc" data-score={f.score!}>▲{f.score!.toLocaleString('en-US')}</b><span className="t5-stier">{f.tier}</span></>
-            : <span className="t5-sinfo"><b className="mono">{f.tested} / {f.total}</b> tested</span>}>
+            : <span className="t5-sinfo"><b className="mono">{f.tested} / {f.total}</b> tested</span>} details={<>
             <p className="t5-line">{f.tested} of {f.total} tested{complete && r != null ? ` · ±${r} %` : ''}{complete && f.provisional ? '. Provisional.' : ''}</p>
             {complete && weak && <p className="t5-line">Weakest: <button type="button" className="t5-link" onClick={() => select(PILLAR_CARD[weak] ?? 'cpu1')}>{PILLAR_LABEL[weak]}</button></p>}
             {!complete && <p className="t5-line">Test all runs six short tests, about 30 s.</p>}
             {browser && <span className="t5-badge e">≈ estimated in your browser</span>}
-          </Peek>
+          </>} />
           <button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={testAll}>{complete ? 'Test again' : 'Test all'}</button></>}
     </div>
   )
@@ -505,8 +516,8 @@ const T5_CSS = `
 .t5-more{border-top:1px solid var(--line)}.t5-moreb{display:flex;gap:6px;align-items:center;text-decoration:none;color:var(--fg)}
 .t5-strip.card{border:0;border-radius:0;background:transparent}
 .t5-strip{display:flex;align-items:center;flex-wrap:nowrap;gap:4px 12px;padding:0 12px;height:52px;white-space:nowrap;contain:layout;min-width:0}
-.t5-strip>.peek{flex:1 1 auto;min-width:0}
-.t5-strip .peek-sum{overflow:hidden}
+.t5-strip>.nspeek{flex:1 1 auto;min-width:0}
+.t5-strip .nspeek-txt{overflow:hidden}
 .t5-ssc{font:700 var(--t2,20px) var(--display);background:var(--brand,linear-gradient(135deg,var(--pos),var(--neg)));-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
 .t5-scount{font:700 15px var(--mono);font-variant-numeric:tabular-nums;color:var(--fg)}
 .t5-stier{font:600 13px var(--display)}.t5-sinfo{font-size:13px;color:var(--muted)}.t5-sinfo b{color:var(--fg);font-size:15px}
@@ -515,6 +526,7 @@ const T5_CSS = `
 .t5-srun .t5-bar{min-width:48px}
 .t5-strip>.t5-btn:last-child{margin-left:auto;flex:none}
 @media (max-width:600px){.t5-slab{display:none}.t5-score{font-size:var(--t3,28px)}}
+.t5-board{display:inline-flex;align-items:center;justify-content:center;gap:6px}.t5-board svg{flex:none}
 .t5-btn{min-height:var(--hit,40px);min-width:var(--hit,40px);padding:0 14px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;font:600 13px var(--body);white-space:nowrap}
 .t5-btn:hover:not(:disabled){border-color:var(--muted)}
 .t5-btn.pri{background:var(--pos);color:#0a0e19;border-color:transparent}
@@ -547,11 +559,11 @@ const T5_CSS = `
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 /* calm machine HUD (D16): one line at rest; details overlay on hover, focus or tap */
 .main.machine .phud{width:auto;max-width:min(320px,calc(100% - 28px));padding:4px 12px;gap:0;border-radius:14px}
-.main.machine .phud .peek-sum{gap:8px}
+.main.machine .phud .nspeek-txt{gap:8px}
 .main.machine .phud .pbig{font-size:28px}
 .main.machine .phud .pbig small{font-size:14px}
 .main.machine .phud .psub{font-size:13px;color:var(--fg)}
-.main.machine .phud .peek-det{min-width:260px}
+.main.machine .phud .nspeek-det{min-width:260px}
 .main.machine .phud .pbadge{font:600 12px var(--body);text-transform:none;letter-spacing:0}
 .main.machine .phud .pbadge span{font:600 12px var(--body)}
 .main.machine .phud .prow span{font-size:12px}
@@ -566,35 +578,29 @@ const T5_CSS = `
 .main.machine .mtl .tlgrow{flex:1}
 .main.machine .mtl .tlstage{font:600 13px var(--body);color:var(--fg);overflow:hidden;text-overflow:ellipsis;max-width:220px}
 .main.machine .mtl .pchart.empty{min-height:84px;display:grid;place-items:center;font-size:13px;color:var(--muted);text-align:center;padding:0 12px}
-.main.machine .caption .peek-sum h3{margin:0;font-size:1rem}
+.main.machine .caption .nspeek-txt h3{margin:0;font-size:1rem}
 .main.machine .caption{padding:6px 12px;gap:4px}
-.main.machine .caption .peek-det{min-width:min(320px,calc(100vw - 48px));top:auto;bottom:calc(100% + 4px)}
+.main.machine .caption .nspeek-det{min-width:min(320px,calc(100vw - 48px));top:auto;bottom:calc(100% + 4px)}
 .main.machine .iostrip{padding:4px 12px}
-.main.machine .iostrip .peek-det{top:calc(100% + 4px)}
+.main.machine .iostrip .nspeek-det{top:calc(100% + 4px)}
+/* shared Peek: summaries as one flex line; detail panels sized for each card */
+.main.machine .phud .nspeek-txt,.main.machine .caption .nspeek-txt,.main.machine .mtl .nspeek-txt{display:flex;align-items:center;gap:8px}
+.main.machine .phud .nspeek-det{right:auto;min-width:268px}
+.main.machine .mtl .tlpeek .nspeek-det{right:auto;min-width:260px;top:auto;bottom:calc(100% - 1px);border-top:1px solid var(--line);border-bottom:0;border-radius:var(--peek-r,16px) var(--peek-r,16px) 0 0}
+.main.machine .mtl .tlpeek{min-width:0}
+.main.machine .caption .nspeek-det{top:auto;bottom:calc(100% - 1px);border-top:1px solid var(--line);border-bottom:0;border-radius:var(--peek-r,16px) var(--peek-r,16px) 0 0}
+.t5-strip .nspeek-txt{display:flex;align-items:center;gap:10px}
 .benchov.slim{padding:6px 14px;gap:8px;font-size:13px;width:min(320px,calc(100% - 28px));height:auto;white-space:nowrap;overflow:hidden;justify-content:flex-start;font-variant-numeric:tabular-nums}
 .main.machine .mcol{align-items:flex-start}
-.main.machine .mcol .phud .peek-sum .psub{display:inline}
-.main.machine .iostrip>.peek{display:block}
+.main.machine .mcol .phud .nspeek-txt .psub{display:inline}
+.main.machine .iostrip>.nspeek{display:block}
 .main.machine .ioline{display:grid;grid-template-columns:42px minmax(0,1fr);gap:8px;align-items:baseline;min-width:0}
-.main.machine .iostrip .peek-sum{min-height:32px}
+.main.machine .iostrip .nspeek-txt{min-height:32px}
 .main.machine .caption.dive{overflow:visible;max-height:none}
-.main.machine .caption.dive .peek-det{max-height:46vh;overflow:auto}
+.main.machine .caption.dive .nspeek-det{max-height:46vh;overflow:auto}
 .main.machine .lbl{text-transform:none;letter-spacing:0;font:500 13px var(--body)}
 @media (max-width:600px){.main.machine .mtl .modes{display:none}}
-${PEEK_CSS}
 `
-
-function Counter({ value, digits = 0 }: { value: number | null; digits?: number }) {
-  const [v, setV] = useState(value ?? 0)
-  const from = useRef(value ?? 0)
-  useEffect(() => {
-    if (value === null) return
-    if (reduced()) { from.current = value; setV(value); return }
-    const c = animate(from.current, value, { duration: 0.5, ease: 'easeOut', onUpdate: (x) => { from.current = x; setV(x) } })
-    return () => c.stop()
-  }, [value])
-  return <>{value === null ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })}</>
-}
 
 const STAGE_LABEL: Record<string, string> = { ...STAGE_NAME, disk: 'Storage', gpu: 'GPU' }
 
@@ -637,12 +643,12 @@ function Caption() {
   const c = captionFor(journey, act, peaks, info)
   return (
     <div className="caption">
-      <Peek label="This stage" summary={<span className="ctitle"><span className="stg">{act.stage}</span><h3>{c.title}</h3></span>}>
+      <Peek label="This stage" summary={<span className="ctitle"><span className="stg">{act.stage}</span><h3>{c.title}</h3></span>} details={<>
         <p className="t5-line">{c.text}</p>
         <div className="cnums">{c.nums.map((n) => <div key={n.k}><span>{n.k}</span><b className="mono">{n.v}</b></div>)}</div>
         {recorded && <span className="t5-dim">Recorded on the test PC.</span>}
         {c.dive && <button className="btn2 sm" onClick={() => dive(c.dive!.path)}>{c.dive.label} ›</button>}
-      </Peek>
+      </>} />
     </div>
   )
 }
@@ -656,9 +662,9 @@ function IoStrip() {
   const answer: string = j.decode.tokens.slice(0, Math.max(0, act.shown)).map((t: any) => t.text).join('')
   return (
     <div className="iostrip" aria-label="Prompt and answer">
-      <Peek label="The prompt" summary={<span className="ioline"><span>model</span><b className="mono">{answer || '…'}{(act.stage === 'decode' || act.stage === 'output') && <i className="caret" />}</b></span>}>
+      <Peek label="The prompt" summary={<span className="ioline"><span>model</span><b className="mono">{answer || '…'}{(act.stage === 'decode' || act.stage === 'output') && <i className="caret" />}</b></span>} details={<>
         <div className="ioline"><span>you</span><b className="mono">{typed}{act.stage === 'input' && <i className="caret" />}</b></div>
-      </Peek>
+      </>} />
     </div>
   )
 }
@@ -817,11 +823,11 @@ function DiveCard() {
   const extra = comp === 'cpu' || isCore ? sc.by.cpu : comp === 'ram' ? sc.by.ram : comp === 'ssd' ? sc.by.ssd : comp === 'nic' ? sc.by.nic : null
   return (
     <div className="caption dive">
-      <Peek label={title} summary={<span className="ctitle"><h3>{title}</h3>{head ? <b className="mono chipscore">{head}</b> : null}</span>}>
+      <Peek label={title} summary={<span className="ctitle"><h3>{title}</h3>{head ? <b className="mono chipscore">{head}</b> : null}</span>} details={<>
         {recorded ? <span className="t5-dim">Recorded on the test PC.</span> : extra ? <span className="t5-dim">Score {extra}</span> : null}
         {body}
         {comp === 'cpu' && gp && <p className="hint small mono">GPU (WebGPU): {gp.gflops} GFLOP/s · {gp.adapter}<Hint>PyTorch here uses the CPU.</Hint></p>}
-      </Peek>
+      </>} />
     </div>
   )
 }
@@ -900,12 +906,6 @@ function SpecsTab() {
     ['Software', `${info.os} · PyTorch ${info.torch} · ${c.threads_used} worker threads`],
   ]
   return <dl className="specs2">{rows.map(([k, v], i) => <div key={i}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
-}
-
-function Spark({ data, color = 'var(--pos)', max = 100 }: { data: number[]; color?: string; max?: number }) {
-  const x = scaleLinear().domain([0, Math.max(1, data.length - 1)]).range([0, 200]), y = scaleLinear().domain([0, max]).range([34, 2])
-  const d = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ')
-  return <svg viewBox="0 0 200 36" className="spark2" preserveAspectRatio="none"><path d={`${d} L200 36 L0 36 Z`} fill={color} opacity="0.15" /><path d={d} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" /></svg>
 }
 
 function LiveTab() {
@@ -1008,6 +1008,8 @@ function useSelectToCard() {
 /** The one machine section: the electricity scene, live always, with the prompt's journey played on it. */
 export function MachineView() {
   useMachineBoot()
+  // the empty leaderboard offers Test all
+  useEffect(() => { useBoard.setState({ testAll: () => { closeLeaderboard(); void testAll() } }); return () => useBoard.setState({ testAll: null }) }, [])
   useSelectToCard()
   // B7: a finished model run fills the Model pillar; "Your score" in the Model drawer opens the score here
   useEffect(() => {
