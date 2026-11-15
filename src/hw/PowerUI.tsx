@@ -131,8 +131,12 @@ export function MachineTimeline() {
   const [w, setW] = useState(800)
   useEffect(() => {
     if (!box) return
+    let raf = 0
     const upd = () => { if (box.clientWidth > 0) setW(box.clientWidth) }
-    upd(); const ro = new ResizeObserver(upd); ro.observe(box); return () => ro.disconnect()
+    upd()
+    const ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(upd) })
+    ro.observe(box)
+    return () => { cancelAnimationFrame(raf); ro.disconnect() }
   }, [box])
   // keys: space plays or pauses the journey, arrows step between its stages, Escape goes back out of a dive
   useEffect(() => {

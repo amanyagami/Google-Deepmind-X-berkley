@@ -944,9 +944,15 @@ export function ZooView() {
   useEffect(() => {
     const st = stageRef.current, tb = tabsRef.current
     if (!st || !tb) return
-    const f = () => st.style.setProperty('--zoo-tabs-b', `${Math.ceil(tb.getBoundingClientRect().bottom - st.getBoundingClientRect().top)}px`)
-    f(); const ro = new ResizeObserver(f); ro.observe(tb); ro.observe(st)
-    return () => ro.disconnect()
+    let raf = 0, last = ''
+    const f = () => {
+      const v = `${Math.ceil(tb.getBoundingClientRect().bottom - st.getBoundingClientRect().top)}px`
+      if (v !== last) { last = v; st.style.setProperty('--zoo-tabs-b', v) }
+    }
+    f()
+    const ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(f) })
+    ro.observe(tb); ro.observe(st)
+    return () => { cancelAnimationFrame(raf); ro.disconnect() }
   }, [])
   return (
     <main className="main machine zoo">
