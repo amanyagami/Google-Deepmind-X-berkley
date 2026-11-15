@@ -1237,10 +1237,13 @@ function useBulbCorner(wrap: { current: HTMLDivElement | null }, want: Corner): 
     const kick = () => { if (!raf) raf = requestAnimationFrame(compute) }
     kick()
     const ro = new ResizeObserver(kick); ro.observe(parent)
-    const mo = new MutationObserver(kick); mo.observe(parent, { childList: true, subtree: true })
+    // controls elsewhere (dock, picker strip) can appear later: watch the whole page, re-check at most every 150 ms
+    let last = 0, tm = 0
+    const slow = () => { const n = performance.now(); if (n - last > 150) { last = n; kick() } else if (!tm) tm = window.setTimeout(() => { tm = 0; last = performance.now(); kick() }, 150) }
+    const mo = new MutationObserver(slow); mo.observe(document.body, { childList: true, subtree: true })
     const iv = window.setInterval(kick, 1000)
     window.addEventListener('resize', kick)
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); clearInterval(iv); window.removeEventListener('resize', kick) }
+    return () => { cancelAnimationFrame(raf); clearTimeout(tm); ro.disconnect(); mo.disconnect(); clearInterval(iv); window.removeEventListener('resize', kick) }
   }, [wrap, want])
   return c
 }
