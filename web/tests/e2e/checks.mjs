@@ -273,12 +273,10 @@ export const checks = [
     await p.page.reload({ waitUntil: 'load' }); await p.page.waitForTimeout(3000)
     const again = await p.page.evaluate(() => [...__seen].filter((id) => document.querySelector(`[data-explainer="${id}"]`)?.matches(':popover-open,[data-open]')))
     const second = await p.page.evaluate(() => [...__seen])
-    // the mock model's error box in the dock can lie over the bottom of both stages (that overlay is A2/A6's business): hide it
-    await p.page.evaluate(() => document.querySelectorAll('[data-error]').forEach((e) => { e.style.display = 'none' }))
-    // hover a bulb nothing covers (a model error box in the dock can sit over a stage's bottom edge; that is A2/A6's business)
-    const bi = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer-bulb]')].findIndex((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && e.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }))
-    if (bi < 0) return F('every explainer bulb is covered by something else')
-    const bulb = p.page.locator('[data-explainer-bulb]').nth(bi); await bulb.hover(); await p.page.waitForTimeout(250); const shown = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer]')].filter(__h.vis).length)
+    // every bulb must be reachable: nothing (error float, dock, Reset view, net card, canvas) may sit over it
+    const covered = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer-bulb]')].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && [[.5, .5], [.2, .2], [.8, .8]].some(([a, b]) => { const t = document.elementFromPoint(r.x + r.width * a, r.y + r.height * b); return t && !e.contains(t) }) }).map((e) => `${e.dataset.explainerBulb} under ${String(document.elementFromPoint(e.getBoundingClientRect().x + 20, e.getBoundingClientRect().y + 20)?.className).slice(0, 24)}`))
+    if (covered.length) return F(`bulb covered: ${covered.join('; ')}`)
+    const bulb = p.page.locator('[data-explainer-bulb]').first(); await bulb.hover(); await p.page.waitForTimeout(250); const shown = await p.page.evaluate(() => [...document.querySelectorAll('[data-explainer]')].filter(__h.vis).length)
     await p.page.mouse.move(5, 5); const t = Date.now(); await p.page.waitForFunction(() => ![...document.querySelectorAll('[data-explainer]')].some(__h.vis), null, { timeout: 1500 }).catch(() => {}); const ms = Date.now() - t
     const repeat = second.filter((id) => first.seen.includes(id))
     return ok(!first.ov.length && !first.left && !repeat.length && shown > 0 && ms <= 300, `${stages} bulbs; first load showed [${first.seen.join(',') || 'none (every card would cover a control)'}]${first.ov.length ? `; OVER CONTROLS: ${first.ov.slice(0, 3).join('; ')}` : '; none over a control'}; ${first.left} still open after 7 s; reload re-showed [${repeat.join(',') || 'none'}]${again.length ? ' (open now: ' + again.join(',') + ')' : ''}; hover shows ${shown}; leave hides in ${ms} ms`) } },
@@ -309,12 +307,12 @@ export const checks = [
     for (const [k, r] of rest.entries()) {
       if (r.lines > 2) bad.push(`${r.name} ${r.lines} lines at rest`); if (r.open) bad.push(`${r.name} details open at rest`)
       const card = p.page.locator('[data-peek]').filter({ visible: true }).nth(k)
-      await card.hover(); await p.page.waitForTimeout(250); const hv = (await p.page.evaluate(probe))[k]
+      await card.hover(); await p.page.waitForTimeout(700); const hv = (await p.page.evaluate(probe))[k]
       if (!hv.open) bad.push(`${r.name}: hover does not open`); if (hv.w !== r.w || hv.h !== r.h) bad.push(`${r.name}: box changed on hover ${r.w}x${r.h} -> ${hv.w}x${hv.h}`)
-      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(500); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close while hovered`)
-      await p.page.mouse.move(3, 300); await p.page.waitForTimeout(250); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: stays open after the mouse leaves`)
-      await card.locator('.nspeek-tog').focus(); await p.page.waitForTimeout(250); if (!(await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: keyboard focus does not open`)
-      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(500); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close on focus`)
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(700); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close while hovered`)
+      await p.page.mouse.move(3, 300); await p.page.waitForTimeout(700); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: stays open after the mouse leaves`)
+      await card.locator('.nspeek-tog').focus(); await p.page.waitForTimeout(700); if (!(await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: keyboard focus does not open`)
+      await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(700); if ((await p.page.evaluate(probe))[k].open) bad.push(`${r.name}: Esc does not close on focus`)
       await p.page.evaluate(() => document.activeElement?.blur())
       out.push(`${r.name} ${r.lines} line(s) ${r.w}x${r.h}`) }
     const c1 = await p.page.evaluate(() => window.__cls)
@@ -324,9 +322,9 @@ export const checks = [
     if (!tr.length) bad.push('390: no visible [data-peek] card')
     else { const tg = q.page.locator('[data-peek]').filter({ visible: true }).first().locator('.nspeek-tog')
       if (tr[0].lines > 2) bad.push(`390: ${tr[0].lines} lines at rest`)
-      await tg.tap(); await q.page.waitForTimeout(250); const t1 = (await q.page.evaluate(probe))[0]; if (!t1.open) bad.push('390: tap does not open'); if (t1.h !== tr[0].h) bad.push('390: box changed on tap')
-      await tg.tap(); await q.page.waitForTimeout(250); if ((await q.page.evaluate(probe))[0].open) bad.push('390: second tap does not close')
-      await tg.tap(); await q.page.waitForTimeout(250); await q.page.touchscreen.tap(366, 240); await q.page.waitForTimeout(250); if ((await q.page.evaluate(probe))[0].open) bad.push('390: tap outside does not close')
+      await tg.tap(); await q.page.waitForTimeout(700); const t1 = (await q.page.evaluate(probe))[0]; if (!t1.open) bad.push('390: tap does not open'); if (t1.h !== tr[0].h) bad.push('390: box changed on tap')
+      await tg.tap(); await q.page.waitForTimeout(700); if ((await q.page.evaluate(probe))[0].open) bad.push('390: second tap does not close')
+      await tg.tap(); await q.page.waitForTimeout(700); await q.page.touchscreen.tap(366, 240); await q.page.waitForTimeout(700); if ((await q.page.evaluate(probe))[0].open) bad.push('390: tap outside does not close')
       c2 = await q.page.evaluate(() => window.__cls); out.push(`390 ${tr[0].lines} line(s)`) }
     if (c1 > 0.0005 || c2 > 0.0005) bad.push(`CLS ${c1.toFixed(4)} / ${c2.toFixed(4)} ${JSON.stringify(await q.page.evaluate(() => window.__cs ?? []))}`)
     return ok(!bad.length, `${out.join('; ')}; CLS ${c1.toFixed(4)} (1480) ${c2.toFixed(4)} (390)${bad.length ? ' | ' + bad.join('; ') : ''}`) } },

@@ -106,7 +106,6 @@ function DrawPad() {
   return (
     <div className="s6padwrap" data-pad-wrap>
       <div className="s6pad">
-        <Explainer id="pad" placement="top-right"><Say id="pad" /></Explainer>
         <canvas ref={cv} data-pad width={PAD} height={PAD} aria-label="Draw a number here" role="img" style={{ touchAction: 'none' }}
           onPointerDown={(e) => {
             if (e.pointerType === 'mouse' && e.button !== 0) return
@@ -368,6 +367,8 @@ const CSS = `
 .s6dock.compact .s6go{align-self:flex-start;white-space:nowrap}
 .s6dock.compact>div:first-child{width:100%}
 .s6float{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+/* wide: the bulbs sit at the bottom-left corner of each stage; the floating notes keep clear of them (left of the machine stage's bulb, right of the model stage's) */
+@media (min-width:1000px){.s6float{left:56px;right:auto;width:min(calc(100% - 56px),calc(50vw - 100px))}}
 .s6float:empty{display:none}.s6small{font-size:12px;padding:5px 10px}
 .s6dock .s6go{min-height:44px}
 .s6dock textarea,.s6dock input[type=text],.s6dock input[type=url]{width:100%;box-sizing:border-box;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font:13px var(--mono)}
