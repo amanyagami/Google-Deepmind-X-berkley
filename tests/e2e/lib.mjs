@@ -120,6 +120,7 @@ export function makeEnv(browser, base, widths, query) {
       if (o.companion !== 'real') await ctx.route((u) => (u.port === '8000' && /^(127\.0\.0\.1|localhost)$/.test(u.hostname)) || (u.origin === new URL(base).origin && /^\/(api|ws)\//.test(u.pathname)), (r) => (o.companion === 'stub' ? r.fulfill({ json: { ok: true } }) : r.abort('connectionrefused')))
       P.page = await ctx.newPage()
       P.page.on('pageerror', (e) => P.errors.push(e.message))
+      P.page.on('crash', () => P.errors.push('the page crashed (renderer out of memory or GPU process lost)'))
       if (o.throttle) { const s = await ctx.newCDPSession(P.page); await s.send('Network.enable'); await s.send('Network.emulateNetworkConditions', { offline: false, latency: 40, downloadThroughput: o.throttle * 125000, uploadThroughput: o.throttle * 125000 }) }
       P.errCount = async () => Math.max(P.errors.length, await P.page.evaluate(() => window.__errs.length).catch(() => 0))
       P.goto = async (hash = '', settle = 1500) => { await P.page.goto(base + (o.query ?? query) + hash, { waitUntil: 'load' }); await P.page.waitForTimeout(settle); return P }

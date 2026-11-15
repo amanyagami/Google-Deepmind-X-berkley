@@ -501,6 +501,7 @@ export const checks = [
     const out = []; let good = true
     for (const w of [1480, 390]) {
       const p = await env.open({ w }); await p.goto('', 2500); const pg = p.page
+      await pg.waitForFunction(() => !!window.__zoo, null, { timeout: 15000 }).catch(() => {})
       if (!(await pg.evaluate(() => !!window.__zoo))) return S('no window.__zoo')
       const vis = (sel) => pg.evaluate((s) => [...document.querySelectorAll(s)].some((e) => { const r = e.getBoundingClientRect(), c = getComputedStyle(e); return r.width > 0 && r.height > 0 && c.visibility !== 'hidden' && c.display !== 'none' }), sel)
       await pg.evaluate(() => window.__zoo.getState().setNet('llm')); await pg.waitForTimeout(400)
@@ -524,6 +525,8 @@ export const checks = [
     const p = await env.open({ hub: false }); const pg = p.page
     if (!(await fetch('https://huggingface.co/api/models/HuggingFaceTB/SmolLM2-135M-Instruct').then((r) => r.ok, () => false))) return S('real Hub unreachable')
     await p.goto('', 500)
+    // the store hooks are set by lazy chunks (__zoo, __hw): wait for both, so a slow chunk is not read as a missing store
+    await pg.waitForFunction(() => window.__studio && window.__zoo && window.__hw, null, { timeout: 20000 })
     const st = (f) => pg.evaluate(f)
     const idle = () => pg.waitForFunction(() => { const s = window.__studio.getState(); return !s.running && !s.download && s.lastStats && s.provenance === 'live' }, null, { timeout: 280000 }).then(() => true, () => false)
     if (!(await idle())) return F('the default model never produced a live result: ' + JSON.stringify(await st(() => { const s = window.__studio.getState(); return { prov: s.provenance, err: s.runErr, run: s.running, dl: !!s.download } })))
