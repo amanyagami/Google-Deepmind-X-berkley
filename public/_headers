@@ -1,7 +1,7 @@
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: credentialless
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://huggingface.co https://*.hf.co; media-src 'self' data: blob:; font-src 'self'; connect-src 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.hf.co http://127.0.0.1:8000 ws://127.0.0.1:8000; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://huggingface.co https://*.hf.co; media-src 'self' data: blob:; font-src 'self'; connect-src 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.hf.co http://127.0.0.1:8000 ws://127.0.0.1:8000; object-src 'none'; base-uri 'self'; form-action 'self'
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
 

@@ -3,19 +3,19 @@
 # Stage 1: build the web app (repo root) with Node.
 FROM node:22-alpine AS build
 WORKDIR /app/web
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 COPY . ./
 # dist/_headers stays: the server reads its security headers from it (and never serves it)
 RUN npx vite build \
- && find dist -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.wasm' -o -name '*.svg' \) \
+ && find dist -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.css' -o -name '*.json' -o -name '*.wasm' -o -name '*.svg' \) \
       -size +1k -exec gzip -9 -k {} \;
 
 # Stage 2: the server's production dependencies only (@google-cloud/firestore).
 FROM node:22-alpine AS deps
 WORKDIR /app/server
-COPY server-web/package.json server-web/package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund
+COPY server-web/package.json server-web/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev --no-audit --no-fund; else npm install --omit=dev --no-audit --no-fund; fi
 
 # Stage 3: runtime. Non-root, listens on $PORT (Cloud Run sets it; default 8080).
 FROM node:22-alpine

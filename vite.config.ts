@@ -17,7 +17,7 @@ const CSP = [
   "media-src 'self' data: blob:",
   "font-src 'self'",
   "connect-src 'self' data: blob: https://huggingface.co https://*.huggingface.co https://*.hf.co http://127.0.0.1:8000 ws://127.0.0.1:8000",
-  "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+  "object-src 'none'", "base-uri 'self'", "form-action 'self'",
 ].join('; ')
 const ISOLATION = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'credentialless' }
 
@@ -101,7 +101,7 @@ export default defineConfig({
   },
   preview: { headers: { ...ISOLATION, 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' } },
   build: {
-    outDir: 'dist', chunkSizeWarningLimit: 1500,
+    outDir: 'dist', chunkSizeWarningLimit: 1500, reportCompressedSize: false,
     rollupOptions: { output: { manualChunks(id) {
       // shared vendor chunks: three.js once, its React wrapper once, React once (not duplicated into each view)
       if (!id.includes('node_modules')) return

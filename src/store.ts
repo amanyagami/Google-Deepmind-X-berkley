@@ -387,7 +387,7 @@ export const useStore = create<S>((set, get) => {
       try { await api.health(); set({ backend: 'online' }) } catch { set({ backend: 'offline' }) }
       try {
         const r = await fetch(`${import.meta.env.BASE_URL}examples/index.json`)
-        if (r.ok) set({ examples: await r.json() })
+        if (r.ok && /json/i.test(r.headers.get('content-type') ?? '')) set({ examples: await r.json() })
       } catch { /* no recorded examples */ }
       const saved = lsGet('ns.model')
       const first = get().examples[0]
