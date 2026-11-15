@@ -287,6 +287,9 @@ export const useStore = create<S>((set, get) => {
       if (!loaded) return
     }
     await execute({ live: true, keep, loaded })
+    // the recording only stood in while the model loaded: now that it runs here, the prompt box and Run use the real model
+    const after = get()
+    if (keep && after.repo === s.repo && after.mode === 'replay' && after.lastStats && !after.runErrCode) set({ mode: 'live' })
   }
 
   /** Run now with what is in the store. `live`: use the browser even when a recording exists; `keep`: keep the recorded frames, take only the final result. */
