@@ -166,7 +166,7 @@ function Dock() {
 
 /** One sentence and one button. Used when a part fails to load. */
 export function ErrorBox({ message, action = 'Try again', onAction }: { message: string; action?: string; onAction: () => void }) {
-  return <div className="errbox" role="alert"><p>{message}</p><button className="btn" onClick={onAction}>{action}</button></div>
+  return <div className="errbox" role="alert" data-error><p>{message}</p><button className="btn" onClick={onAction}>{action}</button></div>
 }
 class Guard extends Component<{ children: React.ReactNode }, { err: boolean }> {
   state = { err: false }
@@ -185,7 +185,7 @@ function UpdateStrip() {
 function OfflineStrip() {
   const [on, setOn] = useState(typeof navigator === 'undefined' || navigator.onLine)
   useEffect(() => { const f = () => setOn(navigator.onLine); addEventListener('online', f); addEventListener('offline', f); return () => { removeEventListener('online', f); removeEventListener('offline', f) } }, [])
-  return on ? null : <div className="offline-strip" role="status">You are offline. Models you already loaded still run.</div>
+  return on ? null : <div className="offline-strip" role="status" data-error>You are offline. Saved models still run. <button className="t5link" onClick={() => { void useStore.getState().autoStart() }}>Try again</button></div>
 }
 
 /** Bottom sheet: below 960 px the rail is a sheet. Drag its handle, or tap it, to snap between peek, half and full. */
@@ -268,6 +268,12 @@ function useDrawers() {
     const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('.rail, .inspector, .drawer-tab, .hintpop, .pop')) close() }
     addEventListener('keydown', key); document.addEventListener('pointerdown', down)
     return () => { removeEventListener('keydown', key); document.removeEventListener('pointerdown', down) }
+  }, [])
+  // the inspector opens the Model drawer by itself when something is selected, and closes it when cleared
+  useEffect(() => {
+    let off = () => {}
+    import('./zoo/zooStore').then((m) => { off = m.useZoo.subscribe((z, p) => { if (!!z.inspect !== !!p.inspect) useStore.getState().setRail('model', !!z.inspect) }) })
+    return () => off()
   }, [])
   // the Machine view has its own details switch: keep it and the drawer in step
   const open = useStore((s) => s.railOpen.machine), details = useStore((s) => s.details)

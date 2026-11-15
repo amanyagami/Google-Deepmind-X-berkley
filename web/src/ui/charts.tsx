@@ -1170,10 +1170,10 @@ if (typeof window !== 'undefined') {
 
 const EXPL_CSS = `
 .nsx-expl{position:absolute;z-index:5;pointer-events:none;width:0;height:0}
-.nsx-expl[data-p="top-left"]{top:8px;left:8px}
-.nsx-expl[data-p="top-right"]{top:8px;right:8px}
-.nsx-expl[data-p="bottom-left"]{bottom:8px;left:8px}
-.nsx-expl[data-p="bottom-right"]{bottom:8px;right:8px}
+.nsx-expl[data-p="top-left"]{top:8px;left:calc(8px + var(--off,0px))}
+.nsx-expl[data-p="top-right"]{top:8px;right:calc(8px + var(--off,0px))}
+.nsx-expl[data-p="bottom-left"]{bottom:8px;left:calc(8px + var(--off,0px))}
+.nsx-expl[data-p="bottom-right"]{bottom:8px;right:calc(8px + var(--off,0px))}
 .nsx-ebulb{all:unset;box-sizing:border-box;pointer-events:auto;position:absolute;width:var(--hit,40px);height:var(--hit,40px);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;border-radius:50%;color:var(--muted,#9aa5c7);-webkit-tap-highlight-color:transparent}
 .nsx-expl[data-p$="left"] .nsx-ebulb{left:0}.nsx-expl[data-p$="right"] .nsx-ebulb{right:0}
 .nsx-expl[data-p^="top"] .nsx-ebulb{top:0}.nsx-expl[data-p^="bottom"] .nsx-ebulb{bottom:0}
@@ -1184,9 +1184,8 @@ const EXPL_CSS = `
 .nsx-ecard::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--nsx-grad,linear-gradient(135deg,#5b3df5,#0a7d9c 55%,#c2255c))}
 .nsx-ecard p{margin:0}.nsx-ecard p+p{margin-top:4px}.nsx-ecard{white-space:normal}
 @media (prefers-reduced-motion:no-preference){
-.nsx-ecard{opacity:0;transform:translateY(4px);transition:opacity var(--d3,360ms) var(--ease,ease),transform var(--d3,360ms) var(--ease,ease),display var(--d3,360ms) allow-discrete,overlay var(--d3,360ms) allow-discrete}
-.nsx-ecard:popover-open,.nsx-ecard[data-open]{opacity:1;transform:none}
-@starting-style{.nsx-ecard:popover-open{opacity:0;transform:translateY(4px)}}}
+.nsx-ecard{opacity:0;transform:translateY(4px);transition:opacity 90ms linear,transform 90ms linear,display 90ms allow-discrete,overlay 90ms allow-discrete}
+.nsx-ecard:popover-open,.nsx-ecard[data-open]{opacity:1;transform:none;transition:transform 200ms var(--ease,ease)}}
 @supports (anchor-name:--a){
 .nsx-ecard[data-anchored]{position-anchor:var(--nsx-anc);position-try-fallbacks:flip-block,flip-inline}
 .nsx-ecard[data-anchored][data-p^="top"]{top:calc(anchor(bottom) + 6px)}
@@ -1195,26 +1194,66 @@ const EXPL_CSS = `
 .nsx-ecard[data-anchored][data-p$="right"]{right:anchor(right)}}
 `
 const supportsAnchor = () => typeof CSS !== 'undefined' && !!CSS.supports?.('anchor-name', '--a') && !!CSS.supports?.('position-anchor', '--a')
-const idDelay = (id: string) => (strSeed(id) % 5) * 150
+const idDelay = (id: string) => (strSeed(id) % 5) * 30
 
 /** True for ~`ms` after mount (after a small per-id delay so several explainers do not pop together). Restarts on refresh. */
-export function useExplainerIntro(id: string, ms = 6000): boolean {
+export function useExplainerIntro(id: string, ms = 5000): boolean {
   const [on, setOn] = useState(false)
   useEffect(() => {
-    const a = window.setTimeout(() => setOn(true), 200 + idDelay(id))
-    const b = window.setTimeout(() => setOn(false), 200 + idDelay(id) + ms)
+    const a = window.setTimeout(() => setOn(true), idDelay(id))
+    const b = window.setTimeout(() => setOn(false), idDelay(id) + ms)
     return () => { clearTimeout(a); clearTimeout(b) }
   }, [id, ms])
   return on
 }
 
+type Corner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+const INTERACTIVE = 'button,a[href],input,select,textarea,[role=button],[tabindex]:not([tabindex="-1"])'
+/** The corner for the bulb: the wanted one unless a control sits there (needs an 8 px gap); then the first free corner. */
+function useBulbCorner(wrap: { current: HTMLDivElement | null }, want: Corner): { corner: Corner; off: number } {
+  const [c, setC] = useState<{ corner: Corner; off: number }>({ corner: want, off: 0 })
+  useEffect(() => {
+    const w = wrap.current, parent = w?.parentElement
+    if (!w || !parent) return
+    let raf = 0
+    const compute = () => {
+      raf = 0
+      const pr = parent.getBoundingClientRect()
+      if (!pr.width) return
+      const size = 40, gap = 8
+      const ctl = [...document.querySelectorAll<HTMLElement>(INTERACTIVE)].filter((e) => !w.contains(e) && !e.closest('[data-explainer-bulb]')).map((e) => e.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0 && r.right > pr.left - 60 && r.left < pr.right + 60 && r.bottom > pr.top - 60 && r.top < pr.bottom + 60)
+      const spot = (k: Corner, off: number) => ({ x: k.endsWith('left') ? pr.left + 8 + off : pr.right - 8 - size - off, y: k.startsWith('top') ? pr.top + 8 : pr.bottom - 8 - size })
+      const free = (k: Corner, off: number) => { const o = spot(k, off); return !ctl.some((r) => o.x < r.right + gap && o.x + size > r.left - gap && o.y < r.bottom + gap && o.y + size > r.top - gap) }
+      const order: Corner[] = [want, 'top-right', 'top-left', 'bottom-right', 'bottom-left']
+      let pick = { corner: want, off: 0 }, found = false
+      for (const off of [0, 48, 96, 144, 192, 240, 288]) {
+        if (off + 56 > pr.width) break
+        const k = order.find((k2) => free(k2, off))
+        if (k) { pick = { corner: k, off }; found = true; break }
+      }
+      if (!found) pick = { corner: want, off: 0 }
+      setC((cur) => (cur.corner === pick.corner && cur.off === pick.off ? cur : pick))
+    }
+    const kick = () => { if (!raf) raf = requestAnimationFrame(compute) }
+    kick()
+    const ro = new ResizeObserver(kick); ro.observe(parent)
+    const mo = new MutationObserver(kick); mo.observe(parent, { childList: true, subtree: true })
+    const iv = window.setInterval(kick, 1000)
+    window.addEventListener('resize', kick)
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); clearInterval(iv); window.removeEventListener('resize', kick) }
+  }, [wrap, want])
+  return c
+}
+
 /** A floating card with 2-3 short lines. Mount it inside the positioned stage wrapper. It shows itself for ~6 s on load,
  *  then a bulb stays: hover or click shows it again and it goes as soon as the pointer leaves the bulb (150 ms grace).
  *  Touch: tap opens, tap elsewhere closes. Esc closes. It never takes pointer events (only the bulb does). */
-export function Explainer({ id, children, placement = 'top-right' }: { id: string; children: React.ReactNode; placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' }): React.ReactElement | null {
+export function Explainer({ id, children, placement: want = 'top-right' }: { id: string; children: React.ReactNode; placement?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' }): React.ReactElement | null {
   useInjectedStyle('ns-expl', EXPL_CSS)
   useInjectedStyle('ns-inspector', INSPECTOR_CSS)
   const intro = useExplainerIntro(id)
+  const wrap = useRef<HTMLDivElement>(null)
+  const { corner: placement, off } = useBulbCorner(wrap, want)
   const [hover, setHover] = useState(false)
   const [tapped, setTapped] = useState(false)
   const open = intro || hover || tapped
@@ -1222,7 +1261,6 @@ export function Explainer({ id, children, placement = 'top-right' }: { id: strin
   const anc = '--nsx-a' + uid.replace(/[^a-zA-Z0-9]/g, '')
   const btn = useRef<HTMLButtonElement>(null)
   const card = useRef<HTMLDivElement>(null)
-  const wrap = useRef<HTMLDivElement>(null)
   const timer = useRef(0)
   const anchored = supportsAnchor()
   const place = useCallback(() => {
@@ -1268,12 +1306,12 @@ export function Explainer({ id, children, placement = 'top-right' }: { id: strin
   const arr = Children.toArray(children)
   const lines = arr.length > 1 && arr.every((c) => typeof c === 'string') ? arr.map((c, k) => <p key={k}>{c}</p>) : [children]
   return (
-    <div ref={wrap} className="nsx-expl" data-p={placement} data-explainer={id}>
-      <button ref={btn} type="button" className="nsx-ebulb" aria-label="What am I looking at?" aria-expanded={open} aria-controls={uid}
+    <div ref={wrap} className="nsx-expl" data-p={placement} style={{ ["--off" as any]: `${off}px` }}>
+      <button ref={btn} type="button" className="nsx-ebulb" data-explainer-bulb={id} aria-label="What am I looking at?" aria-expanded={open} aria-controls={uid}
         style={anchored ? ({ anchorName: anc } as React.CSSProperties) : undefined}
         onPointerEnter={enter} onPointerLeave={leave} onFocus={() => setHover(true)} onBlur={() => setHover(false)}
         onClick={(e) => { if ((e.nativeEvent as PointerEvent).pointerType === 'touch') setTapped((t) => !t); else setTapped(true) }}><Bulb on={open} /></button>
-      <div ref={card} id={uid} className="nsx-ecard" role="note" {...({ popover: 'manual' } as any)} data-p={placement} data-anchored={anchored ? '' : undefined}
+      <div ref={card} id={uid} className="nsx-ecard" data-explainer={id} role="note" {...({ popover: 'manual' } as any)} data-p={placement} data-anchored={anchored ? '' : undefined}
         style={anchored ? ({ ['--nsx-anc' as any]: anc } as React.CSSProperties) : undefined}>
         {lines}
       </div>
