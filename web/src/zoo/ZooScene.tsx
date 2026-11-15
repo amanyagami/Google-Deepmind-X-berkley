@@ -23,6 +23,56 @@ const NetCtx = createContext<NetId>('mlp')
 const useActive = () => { const me = useContext(NetCtx); return useZoo((s) => s.net === me) }
 const useMe = () => useContext(NetCtx)
 
+/** Soft gradient backdrops drawn once on a 2D canvas (no image files): a vertical sky with two glows. */
+function makeBackdrop(light: boolean) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512
+  const g = c.getContext('2d')!
+  const sky = g.createLinearGradient(0, 0, 0, 512)
+  if (light) { sky.addColorStop(0, '#ffffff'); sky.addColorStop(1, '#e6e9fa') } else { sky.addColorStop(0, '#0c1233'); sky.addColorStop(0.55, '#070b1f'); sky.addColorStop(1, '#04060f') }
+  g.fillStyle = sky; g.fillRect(0, 0, 512, 512)
+  const glow = (x: number, y: number, r: number, col: string) => { const q = g.createRadialGradient(x, y, 0, x, y, r); q.addColorStop(0, col); q.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = q; g.fillRect(0, 0, 512, 512) }
+  if (light) { glow(120, 90, 260, 'rgba(124,92,255,.13)'); glow(420, 140, 240, 'rgba(34,211,238,.12)'); glow(260, 470, 260, 'rgba(255,122,182,.08)') }
+  else { glow(110, 100, 280, 'rgba(124,92,255,.30)'); glow(430, 150, 250, 'rgba(34,211,238,.16)'); glow(256, 500, 300, 'rgba(255,122,182,.10)') }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t
+}
+function makeHalo() {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 256
+  const g = c.getContext('2d')!, q = g.createRadialGradient(128, 128, 0, 128, 128, 128)
+  q.addColorStop(0, 'rgba(255,255,255,1)'); q.addColorStop(0.45, 'rgba(255,255,255,.35)'); q.addColorStop(1, 'rgba(255,255,255,0)')
+  g.fillStyle = q; g.fillRect(0, 0, 256, 256)
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t
+}
+/** The backdrop and a soft coloured pool of light under the model (violet and cyan), themed. Plain meshes and a texture. */
+export function Backdrop({ light, size = [30, 20] }: { light: boolean; size?: [number, number] }) {
+  const bg = useMemo(() => makeBackdrop(light), [light])
+  const halo = useMemo(() => makeHalo(), [])
+  useEffect(() => () => { bg.dispose() }, [bg])
+  return (
+    <>
+      <primitive attach="background" object={bg} />
+      <mesh rotation-x={-Math.PI / 2} position={[-2, -0.42, 0.5]} renderOrder={-3}><planeGeometry args={[size[0], size[1]]} /><meshBasicMaterial map={halo} color={light ? '#8b6cff' : '#6d4dff'} transparent opacity={light ? 0.16 : 0.42} blending={light ? THREE.NormalBlending : THREE.AdditiveBlending} depthWrite={false} toneMapped={false} fog={false} /></mesh>
+      <mesh rotation-x={-Math.PI / 2} position={[5, -0.43, -2]} renderOrder={-3}><planeGeometry args={[size[0] * 0.55, size[1] * 0.55]} /><meshBasicMaterial map={halo} color={light ? '#22d3ee' : '#1fb6d8'} transparent opacity={light ? 0.12 : 0.28} blending={light ? THREE.NormalBlending : THREE.AdditiveBlending} depthWrite={false} toneMapped={false} fog={false} /></mesh>
+    </>
+  )
+}
+
+/** A faint grid and a glowing rim on the zoo floor. */
+function FloorGrid({ light }: { light: boolean }) {
+  const geo = useMemo(() => {
+    const p: number[] = []
+    for (let x = -11; x <= 11; x += 1) p.push(x, 0, -7.2, x, 0, 7.8)
+    for (let z = -7.2; z <= 7.8; z += 1) p.push(-11, 0, z, 11, 0, z)
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); return g
+  }, [])
+  const rim = useMemo(() => new THREE.EdgesGeometry(new THREE.PlaneGeometry(22, 15)), [])
+  return (
+    <group position-y={-0.235}>
+      <lineSegments geometry={geo}><lineBasicMaterial color={light ? '#c7cdea' : '#2a3570'} transparent opacity={light ? 0.5 : 0.28} toneMapped={false} /></lineSegments>
+      <lineSegments geometry={rim} rotation-x={-Math.PI / 2} position={[0, 0.002, 0.3]}><lineBasicMaterial color={light ? '#9aa4d8' : '#7c5cff'} transparent opacity={light ? 0.8 : 0.9} toneMapped={false} /></lineSegments>
+    </group>
+  )
+}
+
 /** Light theme flag for the drawing loops (set by the stage each render). In light mode values read as deeper amber/blue on a pale ground, no glow. */
 const TH = { light: false }
 const L_INK = new THREE.Color('#d5daf0'), L_AMBER = new THREE.Color('#f08a00'), L_BLUE = new THREE.Color('#2f7be6')
@@ -43,15 +93,20 @@ export function setText(el: HTMLElement | null, t: string) { if (el && (el as an
 const CSS = `
 .nsc{position:relative;pointer-events:auto;display:flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:0;padding:0;margin:0;font:inherit;color:var(--fg,#e8ecf8);cursor:pointer;touch-action:manipulation}
 .nsc.ns-static{pointer-events:none;min-height:0;min-width:0;cursor:default}
-.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;background:color-mix(in srgb,var(--bg,#060913) 82%,transparent);border:1px solid var(--line,#27314f);border-radius:9px;padding:3px 9px;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.25 var(--body,system-ui,sans-serif);text-align:center}
+.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,rgba(124,92,255,.55),rgba(34,211,238,.4) 55%,rgba(255,122,182,.5)) border-box;box-shadow:0 6px 18px rgba(2,4,20,.28),0 0 0 1px rgba(255,255,255,.02) inset;border-radius:10px;padding:3px 10px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.25 var(--body,system-ui,sans-serif);text-align:center}
 .nsc b{font-weight:600;font-size:12px;display:block}
-.nsc .g{opacity:.85;margin-right:4px}
+.nsc .g{margin-right:5px;color:var(--gl,inherit)}
+@keyframes ns-pop{from{opacity:0;transform:scale(.94) translateY(3px)}to{opacity:1;transform:none}}
+@keyframes ns-rise{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
+.nsstage{animation:ns-rise .6s var(--ease,cubic-bezier(.2,.8,.2,1)) both}
+@media (prefers-reduced-motion:reduce){.nsstage,.nsc .box{animation:none;transition:none}}
 .nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:11.5px}
 .nsc:hover .sub,.nsc:focus-visible .sub,.nsc.on .sub{display:block}
 .nsc .lv{display:block;font:600 11.5px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
 .nsc .lv .livedot{width:5px;height:5px;margin:0 5px 0 0;vertical-align:1px;box-shadow:none}
 .nsc .sc{display:block;font:600 11.5px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
-.nsc:hover .box,.nsc.on .box,.nsc.hov .box{border-color:var(--pos,#ffa94d)}
+.nsc:hover .box,.nsc.on .box,.nsc.hov .box{box-shadow:0 8px 22px rgba(2,4,20,.34),0 0 16px color-mix(in srgb,var(--pos,#ffa94d) 45%,transparent);transform:translateY(-1px)}
+.nsc.on .box{background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,#ffa94d,#ff7ab6) border-box}
 .nsc:focus-visible{outline:none}
 .nsc:focus-visible .box{outline:2px solid var(--fg,#e8ecf8);outline-offset:1px}
 .nsc .lead{position:absolute;left:50%;top:50%;height:0;border-top:1px dashed rgba(154,165,199,.7);transform-origin:0 0;pointer-events:none;display:none;z-index:-1}
@@ -276,7 +331,7 @@ export function KitProvider({ children, top = 48 }: { children: ReactNode; top?:
 export interface ChipProps {
   pos: [number, number, number]; name: string; glyph?: string; sub?: string
   live?: ReactNode; liveRef?: (el: HTMLElement | null) => void; score?: string
-  hidden?: boolean; selected?: boolean; hovered?: boolean; prio?: number; label?: string
+  hidden?: boolean; selected?: boolean; hovered?: boolean; prio?: number; label?: string; tint?: string
   onClick?: () => void; onHover?: (on: boolean) => void; onKey?: (e: React.KeyboardEvent) => void
 }
 /** A label: name + live value/score; the sub-line only on hover, focus or selection. Always mounted; `hidden` hides it. */
@@ -293,7 +348,7 @@ export function Chip(p: ChipProps) {
     <>
       <i className="lead" aria-hidden />
       <span className="box">
-        <b>{p.glyph && <span className="g" aria-hidden>{p.glyph}</span>}{p.name}</b>
+        <b>{p.glyph && <span className="g" aria-hidden style={p.tint ? ({ '--gl': p.tint } as any) : undefined}>{p.glyph}</span>}{p.name}</b>
         {(p.live || p.liveRef) && <i className="lv" ref={p.liveRef as any}>{p.live}</i>}
         {p.score && <i className="sc">{p.score}</i>}
         {p.sub && <span className="sub">{p.sub}</span>}
@@ -394,8 +449,9 @@ function Tag({ pos, name, sub, grp, prio = 1, onKey }: { pos: [number, number, n
   const on = useActive(), def = useContext(DefCtx)
   const target = grp ? def?.chip(grp) : null
   const sel = useZoo((s) => (target ? sameInspect(s.inspect, target.inspect) : false))
-  const glyph = grp ? LT[def?.groups.find((g) => g.id === grp)?.type ?? 'mlp']?.glyph : undefined
-  return <Chip pos={pos} name={name} sub={sub} glyph={glyph} hidden={!on} selected={sel} prio={prio}
+  const lt = grp ? LT[def?.groups.find((g) => g.id === grp)?.type ?? 'mlp'] : undefined
+  const glyph = lt?.glyph
+  return <Chip pos={pos} name={name} sub={sub} glyph={glyph} tint={lt?.tint} hidden={!on} selected={sel} prio={prio}
     onClick={target ? () => Z().setInspect(sel ? null : target.inspect) : undefined} onHover={target ? (h) => hoverPick(h ? target : null) : undefined} onKey={onKey} />
 }
 
@@ -1077,14 +1133,14 @@ export function ZooScene() {
   useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true })
   useEffect(() => { Z().setInspect(null); useUI.setState({ hover: null }); setCursor(false) }, [net])
   return (
-    <div ref={st.wrap} data-stage style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
+    <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
       <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false }}
         onPointerMissed={(e) => { if (e.type === 'dblclick') Z().select(null); else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
-            <color attach="background" args={[light ? '#f1f3fb' : '#060913']} />
+            <Backdrop light={light} />
             <WheelScrollsPage />
-            <fog attach="fog" args={[light ? '#f1f3fb' : '#060913', 30, 56]} />
+            <fog attach="fog" args={[light ? '#eef0fb' : '#060a1a', 30, 56]} />
             <SlowWatch onStep={st.step} />
             <FirstFrame name="model" />
             <ambientLight intensity={0.4} />
@@ -1093,13 +1149,14 @@ export function ZooScene() {
             </Environment>
             {light && <RoundedBox args={[22.5, 0.2, 15.5]} radius={0.2} smoothness={3} position={[0, -0.4, 0.3]}><meshBasicMaterial color="#c3c9e4" /></RoundedBox>}
             <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}>{light ? <meshBasicMaterial color="#e9ecf8" /> : <meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} />}</RoundedBox>
+            <FloorGrid light={light} />
             <Stage />
             <Chip pos={[-9.2, 0.2, 6.6]} name="▲ positive  ○ negative" sub="amber is above zero, blue is below zero" prio={0.3} />
             <Outlines />
             <Rig />
             {st.bloom && !light && (
               <EffectComposer multisampling={st.dpr > 1 ? 4 : 0}>
-                <Bloom mipmapBlur luminanceThreshold={0.85} luminanceSmoothing={0.2} intensity={0.9} radius={0.7} />
+                <Bloom mipmapBlur luminanceThreshold={0.8} luminanceSmoothing={0.2} intensity={1.05} radius={0.75} />
                 <Vignette eskil={false} offset={0.25} darkness={0.7} />
               </EffectComposer>
             )}
