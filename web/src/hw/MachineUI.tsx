@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
 import { scaleLinear, scaleLog } from 'd3'
 import { useStore } from '../store'
-import { Hint } from '../ui/charts'
-import { inputLimits, peaksOf, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
+import { Explainer, Hint } from '../ui/charts'
+import { inputLimits, peaksOf, useHWThrottled, type Snapshot, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type Flag, type InputSchema, type TestResult } from './hwStore'
 import { probe } from './browserBench'
 import { activityAt, captionFor, layerOps } from './timeline'
-import { computeScores, exportResults, finalScore, componentScore, isUnavailable, tierOf, useScores } from './score'
+import { computeScores, exportResults, finalNow, componentScore, finalScore, isUnavailable, tierOf, useScores, type PillarRow } from './score'
 import { currentSample, PowerScene } from './PowerScene'
 import { EnergyTab, MachineTimeline, PowerHUD, STAGE_NAME } from './PowerUI'
 
@@ -67,9 +67,10 @@ interface UIs {
   batch: { ids: ComponentId[]; t0: number } | null; cancelled: boolean
   merrors: Record<string, string>; sel: { id: ComponentId; n: number } | null; tab: string
   mock: Record<string, TestResult>
+  open: string | null; more: boolean
 }
 const useUI = create<UIs>(() => ({
-  mrunning: null, mprog: null, batch: null, cancelled: false, merrors: {}, sel: null, tab: 'tests',
+  mrunning: null, mprog: null, batch: null, cancelled: false, merrors: {}, sel: null, tab: 'tests', open: 'compute', more: false,
   mock: MOCK ? Object.fromEntries((QS.get('pre') ?? '').split(',').filter((i) => MOCK_BASE[i]).map((i) => [i, mockResult(i as ComponentId)])) : {},
 }))
 let ctrl: AbortController | null = null
@@ -119,24 +120,40 @@ function cancelAll() {
   useUI.setState({ cancelled: true }); ctrl?.abort()
   try { S3().cancel() } catch { /* ignore */ }
 }
-const select = (id: ComponentId) => useUI.setState((u) => ({ sel: { id, n: (u.sel?.n ?? 0) + 1 }, tab: 'tests' }))
+const PILLARS: { id: string; label: string; glyph: string; hue: string; ids: ComponentId[] }[] = [
+  { id: 'compute', label: 'Compute', glyph: '◆', hue: 'var(--pillar-compute, #7c5cff)', ids: ['cpu1', 'cpun'] },
+  { id: 'memory', label: 'Memory', glyph: '●', hue: 'var(--pillar-memory, #22d3ee)', ids: ['ram', 'cache'] },
+  { id: 'gpu', label: 'GPU', glyph: '▲', hue: 'var(--pillar-gpu, #ff7ab6)', ids: ['gpu'] },
+  { id: 'storage', label: 'Storage', glyph: '■', hue: 'var(--pillar-storage, #a3e635)', ids: ['storage'] },
+  { id: 'model', label: 'Model', glyph: '★', hue: 'var(--pillar-model, #ffa94d)', ids: [] },
+]
+const pillarOf = (id: string) => PILLARS.find((p) => p.ids.includes(id as ComponentId))?.id ?? (id === 'net' || id === 'energy' ? 'more' : null)
+const select = (id: ComponentId) => {
+  useStore.getState().setRail('machine', true)
+  const pl = pillarOf(id)
+  useUI.setState((u) => ({ sel: { id, n: (u.sel?.n ?? 0) + 1 }, tab: 'tests', open: pl && pl !== 'more' ? pl : u.open, more: pl === 'more' ? true : u.more }))
+}
 
 /* ---- final score: S3's finalScore ---- */
 const PILLAR_LABEL: Record<string, string> = { compute: 'Compute', memory: 'Memory', gpu: 'GPU', storage: 'File storage', model: 'Model' }
 const PILLAR_CARD: Record<string, ComponentId> = { compute: 'cpu1', memory: 'ram', gpu: 'gpu', storage: 'storage' }
-interface Final { score: number | null; lo: number | null; hi: number | null; tested: number; total: number; provisional: boolean; limiting: string | null; tier: string; rows: { id: ComponentId; label: string; score: number }[] }
-function computeFinal(res: Record<string, TestResult>): Final {
+interface Final { score: number | null; lo: number | null; hi: number | null; tested: number; total: number; provisional: boolean; limiting: string | null; tier: string; pillars: PillarRow[] | null; delta: number | null; rows: { id: ComponentId; label: string; score: number }[] }
+function overallDelta(res: Record<string, TestResult>, history: Snapshot[], now: number): number | null {
+  const last = history[history.length - 1], prev = last && last.results === res ? history[history.length - 2] : last
+  try { return prev ? Math.round(now) - Math.round(finalScore(prev.results).score) || null : null } catch { return null }
+}
+function computeFinal(res: Record<string, TestResult>, history: Snapshot[] = []): Final {
   const have = TEST_IDS.filter((i) => res[i] && !res[i].flags.includes('cancelled'))
   const rows = have.map((i) => ({ id: i, label: infoOf(i).label, score: componentScore(res[i]) })).filter((r): r is { id: ComponentId; label: string; score: number } => r.score != null && r.score > 0)
     .map((r) => ({ ...r, score: Math.round(r.score) }))
-  const base: Final = { score: null, lo: null, hi: null, tested: have.length, total: TEST_IDS.length, provisional: true, limiting: null, tier: tierOf(null), rows }
+  const base: Final = { score: null, lo: null, hi: null, tested: have.length, total: TEST_IDS.length, provisional: true, limiting: null, tier: tierOf(null), pillars: null, delta: null, rows }
   if (!have.length) return base
   try {
-    const f = finalScore(res)
-    return { ...base, score: Math.round(f.score), lo: Math.round(f.ci95[0]), hi: Math.round(f.ci95[1]), provisional: f.provisional, limiting: f.limiting, tier: f.tier }
+    const f = finalNow(res, history)
+    return { ...base, score: Math.round(f.score), lo: Math.round(f.ci95[0]), hi: Math.round(f.ci95[1]), provisional: f.provisional, limiting: f.limiting, tier: f.tier, pillars: f.pillars, delta: overallDelta(res, history, f.score) }
   } catch { return base }   // results of two scales cannot be combined
 }
-const useFinal = () => { const r = useResults(); return useMemo(() => computeFinal(r), [r]) }
+const useFinal = () => { const r = useResults(), h = useHW((s) => s.history); return useMemo(() => computeFinal(r, MOCK ? [] : h), [r, h]) }
 const labelOf = (id: string | null) => (id ? (PILLAR_LABEL[id] ?? infoOf(id as ComponentId).label) : '')
 const relPct = (f: Final) => (f.score && f.lo != null && f.hi != null ? Math.max(1, Math.round(((f.hi - f.lo) / 2 / f.score) * 100)) : null)
 
@@ -257,14 +274,14 @@ function deviceClass(res: Record<string, TestResult>): string {
   const w = Object.values(res).map((r) => r.env.where)
   return `${b} · ${w.includes('companion') ? 'Companion' : w.includes('webgpu') ? 'WebGPU' : 'WebAssembly'}`
 }
-function drawShare(f: Final, dev: string, name: string | null): HTMLCanvasElement {
+function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCanvasElement {
   const c = document.createElement('canvas'); c.width = 1200; c.height = 630
   const g = c.getContext('2d')!
   const sans = '"Segoe UI", Inter, system-ui, sans-serif'
   g.fillStyle = '#0a0e19'; g.fillRect(0, 0, 1200, 630)
   g.fillStyle = '#ffa94d'; g.fillRect(0, 0, 400, 8)
   g.textBaseline = 'alphabetic'
-  g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText('NEURAL STUDIO · DEVICE SCORE', 64, 90)
+  g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText(who ? `${who.toUpperCase()} · DEVICE SCORE` : 'NEURAL STUDIO · DEVICE SCORE', 64, 90)
   g.fillStyle = '#ffa94d'; g.font = `700 150px ${sans}`; g.fillText(f.score != null ? `▲ ${f.score.toLocaleString('en-US')}` : '○ not tested', 56, 270)
   g.fillStyle = '#e8ecf8'; g.font = `600 44px ${sans}`; g.fillText(f.tier, 64, 336)
   g.fillStyle = '#c3cbe6'; g.font = `400 30px ${sans}`
@@ -287,17 +304,17 @@ function drawShare(f: Final, dev: string, name: string | null): HTMLCanvasElemen
 }
 function download(href: string, name: string) { const a = document.createElement('a'); a.href = href; a.download = name; document.body.appendChild(a); a.click(); a.remove() }
 
-function SharePanel({ f, onClose }: { f: Final; onClose: () => void }) {
+function SharePanel({ f, name: who, onClose }: { f: Final; name: string; onClose: () => void }) {
   const res = useResults()
   const info = useHW((s) => s.info)
   const [withName, setWithName] = useState(false)
   const [msg, setMsg] = useState('')
   const name = withName ? (info?.cpu?.name ?? info?.cpu?.model ?? null) : null
-  const url = useMemo(() => drawShare(f, deviceClass(res), name).toDataURL('image/png'), [f, res, name])
+  const url = useMemo(() => drawShare(f, deviceClass(res), name, who).toDataURL('image/png'), [f, res, name, who])
   const link = () => `${location.origin}${location.pathname}#score=${f.score}&tested=${f.tested}of${f.total}`
   const say = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 2500) }
   const json = () => {
-    const txt = exportResults({ includeDevice: withName }, res, info)
+    const txt = exportResults({ includeDevice: withName, includeName: true }, res, info, who)
     const u = URL.createObjectURL(new Blob([txt], { type: 'application/json' })); download(u, 'neural-studio-results.json'); setTimeout(() => URL.revokeObjectURL(u), 1000)
   }
   const copy = async () => { try { history.replaceState(null, '', link()); await navigator.clipboard.writeText(link()); say('Link copied.') } catch { say('Could not copy. Use the address bar.') } }
@@ -331,16 +348,17 @@ function useRecordedScore(): number | null {
   return useMemo(() => { try { return pack ? computeScores(pack.bench ?? {}, null, pack.info).overall : null } catch { return null } }, [pack])
 }
 
+function useDeviceName() { return useStore((s) => s.name) }
 function ScoreHero() {
   const f = useFinal()
-  const history = useHW((s) => s.history)
+  const name = useDeviceName()
   const runningNow = useRunning(), inBatch = useUI((s) => !!s.batch)
   const busy = !!runningNow || inBatch
   const res = useResults()
   const [open, setOpen] = useState(false)
   // one tap: a phone opens its share sheet, a desktop saves the PNG
   const shareNow = async () => {
-    const url = drawShare(f, deviceClass(res), null).toDataURL('image/png')
+    const url = drawShare(f, deviceClass(res), null, name).toDataURL('image/png')
     if (typeof navigator !== 'undefined' && 'share' in navigator && matchMedia('(pointer: coarse)').matches) {
       try { const file = new File([await (await fetch(url)).blob()], 'neural-studio-score.png', { type: 'image/png' }); const d: any = { title: 'My device score', text: `▲ ${f.score ?? '—'} · ${f.tested} of ${f.total} tested` }; if ((navigator as any).canShare?.({ files: [file] })) d.files = [file]; await navigator.share(d); return } catch (e: any) { if (e?.name === 'AbortError') return }
     }
@@ -348,45 +366,94 @@ function ScoreHero() {
   }
   const browser = useHW((s) => s.source !== 'companion')
   const rest = TEST_IDS.filter((i) => !(res[i] && res[i].input.kind === 'default'))
-  const prev = useMemo(() => { for (let i = history.length - 1; i >= 0; i--) { try { const x = Math.round(finalScore(history[i].results).score); if (f.score != null && x > 0 && x !== f.score) return x } catch { /* mixed scales */ } } return null }, [history, f.score])
-  const delta = f.score != null && prev != null ? f.score - prev : null
+  const delta = f.score != null ? f.delta : null
   const r = relPct(f)
   const rec = useRecordedScore()
   const shown = f.score ?? rec
   return (
-    <div className="hero-card t5-hero" aria-label="Device score">
+    <div className="card t5-hero" data-hero aria-label="Device score">
+      <div className="t5-kick">YOUR DEVICE{name ? ` · ${name}` : ''}</div>
       <div className="t5-big" aria-live="polite">
-        <b className="t5-score" {...(shown != null ? { 'data-score': shown } : {})}>▲ {shown != null ? shown.toLocaleString('en-US') : '—'}</b>
-        <span> · {f.score == null && rec != null ? 'recorded on the test PC' : `${f.tested} of ${f.total} tested${r != null ? ` · ±${r} %` : ''}`}</span>
+        <b className="t5-score">▲ {shown != null ? <Counter value={shown} /> : '—'}</b>
+        {f.score != null && <span className="t5-tier">{f.tier}</span>}
+        <span> {f.score == null && rec != null ? 'recorded on the test PC' : `${f.tested} of ${f.total} tested${r != null ? ` · ±${r} %` : ''}`}</span>
       </div>
       <div className="t5-row">
-        {f.score != null && <span className="t5-chip solid">{f.tier}</span>}
         {browser && <span className="t5-badge e">≈ estimated in your browser</span>}
         {f.score != null && f.provisional && <span className="t5-dim">Provisional.</span>}
         {delta != null && <span className="t5-dim mono">{delta > 0 ? '▲ +' : '▼ −'}{Math.abs(delta)} vs last run</span>}
       </div>
-      {f.limiting && <p className="t5-line">Weakest part: <button type="button" className="t5-link" onClick={() => select((PILLAR_CARD[f.limiting as string] ?? f.limiting) as ComponentId)}>{labelOf(f.limiting)}</button></p>}
+      {f.limiting && <p className="t5-line">Weakest: <button type="button" className="t5-link" onClick={() => select((PILLAR_CARD[f.limiting as string] ?? f.limiting) as ComponentId)}>{labelOf(f.limiting)}</button></p>}
       <div className="t5-row">
         <button type="button" className="t5-btn pri" disabled={busy || !rest.length} data-test="rest" onClick={() => runBatch(rest)}>{f.tested ? 'Test the rest' : 'Test all'}</button>
         <button type="button" className="t5-btn" data-share onClick={shareNow}>Share</button>
         <button type="button" className="t5-link" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? 'Fewer options' : 'More options'}</button>
       </div>
-      {open && <SharePanel f={f} onClose={() => setOpen(false)} />}
+      {open && <SharePanel f={f} name={name} onClose={() => setOpen(false)} />}
+    </div>
+  )
+}
+
+const reduced = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches
+/** Log scale: 100 is empty, 2000 is full. */
+const logPct = (s: number | null) => (s && s > 0 ? Math.max(2, Math.min(100, (Math.log(s / 100) / Math.log(20)) * 100)) : 0)
+const PILLAR_HINT: Record<string, string> = {
+  compute: 'How fast the processor does maths. One core, then all cores.',
+  memory: 'How fast data moves in RAM and cache. Models stream their weights from here.',
+  gpu: 'The graphics chip multiplies big grids of numbers.',
+  storage: 'How fast the browser writes and reads a file.',
+  model: 'How well this device runs a real AI model.',
+}
+
+function PillarRowView({ p, f }: { p: (typeof PILLARS)[number]; f: Final }) {
+  const open = useUI((u) => u.open === p.id)
+  const runningNow = useRunning(), inBatch = useUI((s) => !!s.batch)
+  const busy = !!runningNow || inBatch
+  const st = f.pillars?.find((x) => x.id === p.id)
+  const score = st && st.status === 'measured' && st.score != null ? Math.round(st.score) : null
+  const delta = score != null && st?.delta ? Math.round(st.delta) : null
+  const set = () => flushSync(() => useUI.setState({ open: open ? null : p.id }))
+  return (
+    <div data-open={open ? '1' : '0'} className={`t5-prow ${open ? 'open' : ''}`} style={{ ['--hue' as any]: p.hue }} data-pillar={p.id}>
+      <div className="t5-phead">
+        <button type="button" className="t5-pmain" aria-expanded={open} aria-controls={`t5-p-${p.id}`} onClick={set}>
+          <span className="t5-plab"><i aria-hidden="true">{p.glyph}</i>{p.label}</span>
+          <span className="t5-pbar" aria-hidden="true"><motion.i initial={{ width: 0 }} animate={{ width: `${logPct(score)}%` }} transition={reduced() ? { duration: 0 } : { type: 'spring', duration: 0.5, bounce: 0.15 }} /></span>
+          <b className="t5-pnum mono">{score != null ? <Counter value={score} /> : st?.status === 'unavailable' ? 'n/a' : '—'}</b>
+          <span className="t5-pdelta mono">{delta != null ? `${delta > 0 ? '+' : '−'}${Math.abs(delta)}` : ''}</span>
+        </button>
+        {p.ids.length > 0
+          ? <button type="button" className="t5-ptest" aria-label={`Test ${p.label}`} disabled={busy} data-test={p.id} onClick={() => runBatch(p.ids)}>▶</button>
+          : <span className="t5-ptest-sp" />}
+        <Hint label={`About ${p.label}`}>{PILLAR_HINT[p.id]}</Hint>
+      </div>
+      {open && (
+        <div id={`t5-p-${p.id}`} className="t5-pbody">
+          {p.ids.length ? p.ids.map((id) => <TestCard key={id} id={id} />) : <p className="t5-line" data-detail>Run a model on the left. Its speed counts here.</p>}
+        </div>
+      )}
     </div>
   )
 }
 
 function TestsTab() {
+  const f = useFinal()
+  const more = useUI((u) => u.more)
   return (
     <div className="t5-list">
       <ScoreHero />
-      {CARD_IDS.map((id) => <TestCard key={id} id={id} />)}
+      <div className="t5-rows">{PILLARS.map((p) => <PillarRowView key={p.id} p={p} f={f} />)}</div>
+      <div className="t5-more">
+        <button type="button" className="t5-link t5-moreb" aria-expanded={more} onClick={() => useUI.setState({ more: !more })}>More {more ? '▴' : '▾'} <span className="t5-dim">Connection · Energy</span></button>
+        {more && <div className="t5-pbody">{(['net', 'energy'] as ComponentId[]).map((id) => <TestCard key={id} id={id} />)}</div>}
+      </div>
     </div>
   )
 }
 
-/* ---- dock: Test all, progress, Cancel ---- */
-function DockControls() {
+/* ---- score strip: one slim line, always visible ---- */
+function ScoreStrip() {
+  const f = useFinal()
   const running = useRunning(), batch = useUI((s) => s.batch)
   const prog = useProg(running ?? undefined)
   const [now, setNow] = useState(Date.now())
@@ -394,28 +461,29 @@ function DockControls() {
   const idx = batch && running ? Math.max(0, batch.ids.indexOf(running)) : 0
   const frac = batch ? (idx + (prog?.fraction ?? 0)) / batch.ids.length : prog?.fraction ?? 0
   const secs = batch ? Math.round((now - batch.t0) / 1000) : 0
+  const r = relPct(f), rec = useRecordedScore(), shown = f.score ?? rec
   return (
-    <div className="t5-dock" role="group" aria-label="Test this machine">
-      {!running
-        ? <button type="button" className="t5-btn pri big" data-testall disabled={!!batch} onClick={() => runBatch(TEST_IDS)}>Test all</button>
-        : <>
-          <div className="t5-dockp">
-            <span className="mono">{labelOf(running).replace(/^CPU, /, 'CPU ')}{batch ? ` ${idx + 1}/${batch.ids.length} · ${secs} s` : ''}</span>
-            <div className="t5-bar" role="progressbar" aria-label="Test progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)}><i style={{ width: `${Math.round(frac * 100)}%` }} /></div>
-          </div>
-          <button type="button" className="t5-btn big" onClick={cancelAll}>Cancel</button>
-        </>}
+    <div className="t5-strip" data-score-strip role="group" aria-label="Device score">
+      <b className="t5-ssc" {...(shown != null ? { 'data-score': shown } : {})}>▲ {shown != null ? shown.toLocaleString('en-US') : '—'}</b>
+      {f.score != null && <span className="t5-stier">{f.tier}</span>}
+      <span className="t5-sinfo">{f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span>
+      {f.limiting && !running && <span className="t5-sweak">Weakest: <button type="button" className="t5-link" onClick={() => select((PILLAR_CARD[f.limiting as string] ?? f.limiting) as ComponentId)}>{labelOf(f.limiting)}</button></span>}
+      {running
+        ? <><span className="t5-srun mono">{labelOf(running).replace(/^CPU, /, 'CPU ')}{batch ? ` ${idx + 1}/${batch.ids.length} · ${secs} s` : ''}
+          <span className="t5-bar" role="progressbar" aria-label="Test progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(frac * 100)}><i style={{ width: `${Math.round(frac * 100)}%` }} /></span></span>
+          <button type="button" className="t5-btn" onClick={cancelAll}>Cancel</button></>
+        : <button type="button" className="t5-btn pri" data-testall data-test="all" disabled={!!batch} onClick={() => runBatch(TEST_IDS)}>Test all</button>}
     </div>
   )
 }
-function Dock() {
-  const [slot, setSlot] = useState<HTMLElement | null>(() => document.getElementById('dock-slot'))
+function StripHost() {
+  const [slot, setSlot] = useState<HTMLElement | null>(() => document.getElementById('score-strip-slot'))
   useEffect(() => {
     if (slot) return
-    let n = 0; const t = setInterval(() => { const e = document.getElementById('dock-slot'); if (e) { setSlot(e); clearInterval(t) } else if (++n > 20) clearInterval(t) }, 500)
+    let n = 0; const t = setInterval(() => { const e = document.getElementById('score-strip-slot'); if (e) { setSlot(e); clearInterval(t) } else if (++n > 20) clearInterval(t) }, 500)
     return () => clearInterval(t)
   }, [slot])
-  return slot ? createPortal(<DockControls />, slot) : <div className="t5-inline"><DockControls /></div>
+  return slot ? createPortal(<ScoreStrip />, slot) : <div className="t5-inline"><ScoreStrip /></div>
 }
 
 const T5_CSS = `
@@ -437,8 +505,32 @@ const T5_CSS = `
 .t5-err{display:grid;gap:6px;justify-items:start}
 .t5-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .t5-head h4{margin:0;flex:1;font-size:14px;display:flex;align-items:center;gap:4px}
-.t5-big{font-size:14px;color:var(--muted);line-height:1.3}
-.t5-score{font:700 28px var(--display);color:var(--pos);letter-spacing:-.01em}
+.t5-big{font-size:14px;color:var(--muted);line-height:1.3;display:flex;align-items:baseline;flex-wrap:wrap;gap:0 4px}
+.t5-score{font:700 var(--t4,44px)/1.05 var(--display);letter-spacing:-.02em;background:var(--brand,linear-gradient(135deg,var(--pos),var(--neg)));-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
+.t5-kick{font:600 11.5px var(--mono);letter-spacing:.08em;color:var(--muted);text-transform:uppercase;overflow-wrap:anywhere}
+.t5-tier{font:600 var(--t1,16px) var(--display);color:var(--fg);margin:0 6px}
+.t5-list{padding:8px}
+.t5-rows{display:grid}
+.t5-prow{border-top:1px solid var(--line)}
+.t5-phead{display:flex;align-items:center;gap:4px}
+.t5-pmain{flex:1;min-width:0;display:grid;grid-template-columns:minmax(86px,104px) minmax(36px,1fr) 52px 34px;align-items:center;gap:8px;min-height:var(--hit,40px);background:none;border:0;color:var(--fg);cursor:pointer;text-align:left;padding:0 4px;font:600 13px var(--body)}
+.t5-plab i{color:var(--hue);font-style:normal;margin-right:6px}
+.t5-pbar{height:6px;border-radius:3px;background:var(--line);overflow:hidden;display:block}
+.t5-pbar i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--hue),color-mix(in srgb,var(--hue) 55%,var(--fg)))}
+.t5-pnum{text-align:right;font-variant-numeric:tabular-nums}
+.t5-pdelta{font-size:11.5px;color:var(--muted)}
+.t5-ptest{min-width:var(--hit,40px);min-height:var(--hit,40px);border:0;border-radius:var(--r-sm,8px);background:none;color:var(--hue);cursor:pointer;font-size:14px}
+.t5-ptest:hover:not(:disabled){background:color-mix(in srgb,var(--hue) 16%,transparent)}
+.t5-ptest:disabled{opacity:.4;cursor:default}
+.t5-ptest-sp{width:var(--hit,40px);flex:none}
+.t5-pbody{display:grid;gap:8px;padding:4px 0 12px}
+.t5-more{border-top:1px solid var(--line)}.t5-moreb{display:flex;gap:6px;align-items:center;text-decoration:none;color:var(--fg)}
+.t5-strip{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;padding:6px 12px;min-width:0}
+.t5-ssc{font:700 var(--t2,20px) var(--display);background:var(--brand,linear-gradient(135deg,var(--pos),var(--neg)));-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
+.t5-stier{font:600 13px var(--display)}.t5-sinfo,.t5-sweak{font-size:13px;color:var(--muted)}
+.t5-srun{display:flex;align-items:center;gap:10px;font-size:12.5px;flex:1;min-width:140px}
+.t5-strip>.t5-btn:last-child{margin-left:auto}
+@media (max-width:600px){.t5-stier,.t5-sweak{display:none}.t5-score{font-size:var(--t3,28px)}}
 .t5-btn{min-height:var(--hit,40px);min-width:var(--hit,40px);padding:0 14px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;font:600 13px var(--body);white-space:nowrap}
 .t5-btn:hover:not(:disabled){border-color:var(--muted)}
 .t5-btn.pri{background:var(--pos);color:#0a0e19;border-color:transparent}
@@ -468,8 +560,8 @@ const T5_CSS = `
 .t5-share{display:grid;gap:8px}.t5-prev{width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}
 .t5-dock{display:flex;align-items:center;gap:10px;min-width:0}
 .t5-dockp{display:grid;gap:4px;min-width:150px;flex:1;font-size:12.5px;color:var(--fg)}
-.t5-inline{position:fixed;left:50%;transform:translateX(-50%);bottom:10px;width:min(560px,calc(100vw - 24px));z-index:40;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;box-shadow:0 8px 24px #0008}
-@media (pointer:coarse),(max-width:600px){.t5-btn,.t5-link{min-height:44px}.t5-in,.t5-chk{min-height:44px}.t5-score{font-size:22px}.t5-big{font-size:13px;white-space:nowrap}}
+.t5-inline{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--dock,64px) + 8px);width:min(640px,calc(100vw - 16px));z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;box-shadow:0 8px 24px #0008}
+@media (pointer:coarse),(max-width:600px){.t5-btn,.t5-link{min-height:44px}.t5-in,.t5-chk{min-height:44px}}
 @media (prefers-reduced-motion:reduce){.t5-bar i{transition:none}}
 `
 
@@ -478,7 +570,8 @@ function Counter({ value, digits = 0 }: { value: number | null; digits?: number 
   const from = useRef(value ?? 0)
   useEffect(() => {
     if (value === null) return
-    const c = animate(from.current, value, { duration: 0.6, ease: 'easeOut', onUpdate: (x) => { from.current = x; setV(x) } })
+    if (reduced()) { from.current = value; setV(value); return }
+    const c = animate(from.current, value, { duration: 0.5, ease: 'easeOut', onUpdate: (x) => { from.current = x; setV(x) } })
     return () => c.stop()
   }, [value])
   return <>{value === null ? '—' : v.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits })}</>
@@ -626,7 +719,7 @@ function DiveCard() {
   const back = useHW((s) => s.back)
   const { journey: j, act, peaks, info, bench } = usePlay()
   const recorded = useHW((s) => s.recorded)
-  const latest = useHW((s) => s.latest)
+  const latest = useHWThrottled((s) => s.latest, 250)
   const sc = useScores()
   const power = currentSample().s
   const comp = path[0]
@@ -802,7 +895,7 @@ function Spark({ data, color = 'var(--pos)', max = 100 }: { data: number[]; colo
 }
 
 function LiveTab() {
-  const { latest: l, telemetry: t, info } = useHW(useShallow((s) => ({ latest: s.latest, telemetry: s.telemetry, info: s.info })))
+  const l = useHWThrottled((s) => s.latest, 250), t = useHWThrottled((s) => s.telemetry, 250), info = useHW((s) => s.info)
   if (info?.source === 'browser') return <p className="hint">needs the companion<Hint>Live operating-system counters need the companion (start.ps1 on this PC). The page connects to it automatically when it is running.</Hint></p>
   if (!l) return <p className="hint"><span className="pulse" /> waiting for the first sample…</p>
   const cores = info?.cpu?.cores ?? 8
@@ -861,11 +954,11 @@ function SpeedTab() {
 
 type Tab = 'tests' | 'energy' | 'flow' | 'live' | 'speed' | 'specs'
 const TABS: [Tab, string][] = [['tests', 'Score'], ['energy', 'Energy'], ['flow', 'Flow'], ['live', 'Live'], ['speed', 'Speed'], ['specs', 'Specs']]
-function Sidebar() {
+function Sidebar({ open }: { open: boolean }) {
   const tab = useUI((u) => u.tab) as Tab
   const setTab = (t: Tab) => useUI.setState({ tab: t })
   return (
-    <aside className="inspector" aria-label="Machine details">
+    <aside className="inspector" aria-label="Machine details" hidden={!open} style={open ? undefined : { display: 'none' }}>
       <div className="tabs" role="tablist">{TABS.map(([id, l]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{l}</button>)}</div>
       <div className="pane" role="tabpanel">
         {tab === 'tests' && <TestsTab />}{tab === 'energy' && <EnergyTab />}{tab === 'flow' && <FlowTab />}{tab === 'live' && <LiveTab />}{tab === 'speed' && <SpeedTab />}{tab === 'specs' && <SpecsTab />}
@@ -880,8 +973,6 @@ function useMachineBoot() {
   useEffect(() => { if (!booted) { booted = true; useHW.getState().loadInfo().then(() => useHW.getState().startTelemetry()) } }, [])
   // what this device can do: S2's probe, once, if nobody has set it yet
   useEffect(() => { if (!useHW.getState().caps) probe().then((c) => { if (!useHW.getState().caps) useHW.getState().setCaps(c) }).catch(() => { /* stub or blocked: caps stay null */ }) }, [])
-  // the tests live in the rail: open it the first time
-  useEffect(() => { try { if (localStorage.getItem('ns.machine.details') === null) useStore.getState().setDetails(true) } catch { /* private mode */ } }, [])
 }
 
 /** A part clicked in the 3D scene opens its test card. */
@@ -892,20 +983,21 @@ function useSelectToCard() {
   useEffect(() => {
     const id = part ? (part === 'cpu' && sub?.startsWith('core') ? 'cpu1' : PART_TO_TEST[part]) : undefined
     if (!id) return
-    if (!useStore.getState().details) useStore.getState().setDetails(true)
     select(id)
   }, [part, sub])
 }
 
 function DetailsButton() {
-  const details = useStore((s) => s.details)
-  return <div className="topright"><button className="detbtn" aria-expanded={details} onClick={() => useStore.getState().setDetails(!details)}>{details ? 'Hide details' : 'Details'}</button></div>
+  const details = useStore((s) => s.railOpen.machine)
+  return <div className="topright"><button className="detbtn" data-drawer-toggle aria-expanded={details} onClick={() => useStore.getState().setRail('machine', !details)}>{details ? 'Hide details' : 'Details'}</button></div>
 }
 
 /** The one machine section: the electricity scene, live always, with the prompt's journey played on it. */
 export function MachineView() {
   useMachineBoot()
   useSelectToCard()
+  // a link straight to the machine opens its drawer once
+  useEffect(() => { if (/^#(machine|power|journey)/.test(location.hash)) useStore.getState().setRail('machine', true) }, [])
   // the same prompt the model just ran is replayed on the hardware (needs the companion: PyTorch on this PC)
   const runSeq = useStore((s) => s.runSeq)
   const first = useRef(runSeq)
@@ -914,7 +1006,7 @@ export function MachineView() {
     const h = useHW.getState(), st = useStore.getState()
     if (h.source === 'companion' && !h.journeyBusy && !h.benchRunning && st.repo) h.runJourney(st.repo, st.prompt)
   }, [runSeq])
-  const details = useStore((s) => s.details)
+  const details = useStore((s) => s.railOpen.machine)
   const shown = useStore((s) => !!s.visible.power)
   const measuring = useHW((s) => s.benchRunning || (!!s.journeyBusy && s.source === 'companion'))
   const path = useHW((s) => s.path)
@@ -923,6 +1015,11 @@ export function MachineView() {
       <section className="stage powerview" aria-label="3D machine: live electricity, and a prompt's journey through it">
         <div className="scenewrap"><PowerScene active={shown} /></div>
         <div className="mcol">{path.length > 0 && <Crumbs />}<PowerHUD /><IoStrip /></div>
+        <Explainer id="machine" placement="bottom-right">
+          <span>Amber is work. Blue is data.</span>
+          <span>Bright lines show where the numbers move.</span>
+          <span>Press Test all to score this device.</span>
+        </Explainer>
         <DetailsButton />
         <BenchOverlay />
         <div className="stagebottom">
@@ -931,9 +1028,9 @@ export function MachineView() {
         </div>
         {path[0] === 'cpu' && path[1]?.startsWith('core') && <MicroLoader />}
       </section>
-      {details && <Sidebar />}
+      <Sidebar open={details} />
       <style>{T5_CSS}</style>
-      <Dock />
+      <StripHost />
     </main>
   )
 }
