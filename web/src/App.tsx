@@ -114,6 +114,16 @@ function NameChip() {
   )
 }
 
+/** "Saved on this device: 82 MB · Clear", shown when the privacy hint is open. */
+function SavedLine() {
+  const [i, setI] = useState<{ bytes: number; persisted: boolean | null } | null>(null)
+  const load = () => useStore.getState().savedInfo().then(setI).catch(() => setI({ bytes: 0, persisted: null }))
+  useEffect(() => { void load() }, [])
+  if (!i) return null
+  const mb = i.bytes / 1048576
+  return <span className="savedline">{i.bytes ? <>Saved on this device: {mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB · <button type="button" className="t5link" onClick={() => void useStore.getState().clear().then(load)}>Clear</button></> : 'Nothing saved on this device yet.'}</span>
+}
+
 function TopBar({ view }: { view: AppView }) {
   const device = useDevice()
   return (
@@ -132,7 +142,7 @@ function TopBar({ view }: { view: AppView }) {
       <ThemeToggle />
       <NameChip />
       <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device · nothing uploaded</span>
-        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded.</Hint></span>
+        <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded. <SavedLine /></Hint></span>
     </header>
   )
 }
@@ -283,10 +293,8 @@ export default function App() {
     mo.observe(flow.current!, { childList: true, subtree: true })
     return () => mo.disconnect()
   }, [])
-  // every model opens already run on the shared prompt, so the animations have something real to show
-  const autoRan = useRef('')
-  useEffect(() => { const s = useStore.getState(); if (canRun(s) && !layers && !s.running && autoRan.current !== s.repo) { autoRan.current = s.repo; s.run({ auto: true }) } }, [probeRes, layers])
-  useEffect(() => { init() }, [init])
+  // the default model downloads by itself and runs when ready (no click); the recorded run plays meanwhile
+  useEffect(() => { init(); void useStore.getState().autoStart() }, [init])
   // a link such as /#power opens at that section (the old #journey link opens the merged Machine section)
   useEffect(() => { const first = useStore.getState().appView; if (first !== 'model') requestAnimationFrame(() => jumpTo(first === 'journey' ? 'power' : first, false)) }, [])
   useEffect(() => { try { history.replaceState(null, '', view === 'model' ? location.pathname + location.search : `${location.search}#${view}`) } catch { /* ignore */ } }, [view])
