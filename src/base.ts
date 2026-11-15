@@ -36,7 +36,10 @@ export function detectBackend(): Promise<Backend> {
   detecting = (async () => {
     if (new URLSearchParams(loc.search).has('browser')) return (kind = 'none')
     if (await ping('/api/health')) { base = ''; return (kind = 'same') }
-    if (loc.origin !== COMPANION && (await ping(`${COMPANION}/api/health`))) { base = COMPANION; return (kind = 'companion') }
+    // a hosted copy only looks for a companion on this PC when asked (?companion): browsers may show a permission prompt for
+    // requests from a public page to the local network, and nobody needs that prompt just to open the site
+    const askedFor = new URLSearchParams(loc.search).has('companion'), local = /^(localhost|127\.0\.0\.1|\[::1\])(:|$)/.test(loc.host)
+    if (loc.origin !== COMPANION && (askedFor || local) && (await ping(`${COMPANION}/api/health`))) { base = COMPANION; return (kind = 'companion') }
     return (kind = 'none')
   })()
   return detecting

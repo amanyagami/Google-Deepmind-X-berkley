@@ -9,7 +9,7 @@ five kinds of neural network (MLP, CNN, RNN, ViT, VLM) computing in the page.
 | Mode | How | What you get |
 | --- | --- | --- |
 | **Companion** (full) | `.\start.ps1`, open http://127.0.0.1:8000 | live runs of real Hub models, OS telemetry, native benchmarks, **measured** CPU power (RAPL, per core) |
-| **Web app + companion** | host `dist` anywhere, run `start.ps1` on the PC | same as above: the page finds the companion on 127.0.0.1:8000 by itself |
+| **Web app + companion** | host `dist` anywhere, run `start.ps1` on the PC | same as above: open the page with `?companion` and it finds the companion on 127.0.0.1:8000 (opened from localhost, it looks by itself) |
 | **Web app only** | host `dist` anywhere (any static server, any sub-path) | benchmarks from inside the browser (WebAssembly SIMD, Web Workers, browser storage, WebGPU), a real language model running in the page on the GPU, the network zoo, recorded runs. Power is an **estimate** (browsers cannot read power sensors) |
 
 Add `?browser` to the URL to force web-app-only mode. If the companion is started with `NEURAL_STUDIO_TOKEN`, open
