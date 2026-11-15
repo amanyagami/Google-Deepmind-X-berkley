@@ -324,3 +324,36 @@ export function consensus(reads: { digit: number | null; conf: number; probs?: n
   const m = agg.map((v) => v / n), order = [...m.keys()].sort((a, b) => m[b] - m[a])
   return { top: order[0], pct: m[order[0]], second: order[1], pct2: m[order[1]] }
 }
+
+/* ================================================================================ languages (R2-1) */
+export type LangId = 'en' | 'es' | 'fr' | 'de' | 'hi' | 'zh' | 'ar' | 'pt'
+export const LANGS: { id: LangId; name: string; dir: 'ltr' | 'rtl'; prompt: string; review: string }[] = [
+  { id: 'en', name: 'English', dir: 'ltr', prompt: 'The capital of France is', review: 'I really enjoyed this film, it was wonderful.' },
+  { id: 'es', name: 'Español', dir: 'ltr', prompt: 'La capital de Francia es', review: 'Disfruté mucho esta película, fue maravillosa.' },
+  { id: 'fr', name: 'Français', dir: 'ltr', prompt: 'La capitale de la France est', review: "J'ai vraiment aimé ce film, il était magnifique." },
+  { id: 'de', name: 'Deutsch', dir: 'ltr', prompt: 'Die Hauptstadt von Frankreich ist', review: 'Ich habe diesen Film sehr genossen, er war wunderbar.' },
+  { id: 'hi', name: 'हिन्दी', dir: 'ltr', prompt: 'फ्रांस की राजधानी है', review: 'मुझे यह फिल्म बहुत पसंद आई, यह शानदार थी।' },
+  { id: 'zh', name: '中文', dir: 'ltr', prompt: '法国的首都是', review: '我真的很喜欢这部电影，太精彩了。' },
+  { id: 'ar', name: 'العربية', dir: 'rtl', prompt: 'عاصمة فرنسا هي', review: 'لقد استمتعت حقًا بهذا الفيلم، كان رائعًا.' },
+  { id: 'pt', name: 'Português', dir: 'ltr', prompt: 'A capital da França é', review: 'Gostei muito deste filme, foi maravilhoso.' },
+]
+export const langPrompt = (id: LangId, task: string | null) => { const l = LANGS.find((x) => x.id === id) ?? LANGS[0]; return task === 'text-classification' ? l.review : l.prompt }
+/** Does this model know more than English? A name and architecture check, until the catalog says it outright. */
+export function isMultilingual(m: { repo?: string; arch?: string } | null | undefined): boolean {
+  if (!m) return false
+  const r = `${m.repo ?? ''} ${m.arch ?? ''}`.toLowerCase()
+  if (/\.en\b|-en\b|english/.test(r)) return false
+  return /multiling|xlm|mbert|bloom|qwen|gemma|llama-3|llama3|mt5|mbart|smollm3|aya|whisper|mistral|labse|e5/.test(r)
+}
+/** The language of a text, by script and a few common words: enough to say which picker entry it matches. */
+export function guessLang(text: string): LangId {
+  if (/[ऀ-ॿ]/.test(text)) return 'hi'
+  if (/[一-鿿]/.test(text)) return 'zh'
+  if (/[؀-ۿ]/.test(text)) return 'ar'
+  const t = ` ${text.toLowerCase()} `
+  if (/ (la|el|es|de|los|las|una|capital)\b/.test(t) && /(ñ|ó|í| es | del )/.test(t)) return 'es'
+  if (/ (la|le|les|est|de|des|une)\b/.test(t) && /(é|è|ç|capitale| est )/.test(t)) return 'fr'
+  if (/ (die|der|das|ist|von|und)\b/.test(t)) return 'de'
+  if (/ (da|do|os|as|uma|é)\b/.test(t) && /(ã|ç|õ| é )/.test(t)) return 'pt'
+  return 'en'
+}

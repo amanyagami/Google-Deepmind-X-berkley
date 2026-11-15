@@ -2,13 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
-import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel, consensus, inkTo8x8 } from './nets'
+import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel, consensus, inkTo8x8, LANGS, langPrompt, isMultilingual, type LangId } from './nets'
 import { locateZ, NETS, STAGES, totalZ, useZoo, type CatRow, type DigitNet, type NetId } from './zooStore'
 import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
-import { Hint, Inspector, TopBars, inspectCrumb, inspectParent } from '../ui/charts'
+import { Hint, Inspector, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
@@ -288,6 +288,9 @@ export function CompareCard() {
 
 /* ================================================================================ S6 model UI */
 const CSS = `
+.s6lang{min-height:44px;max-width:130px;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:4px 8px;font-size:13px}
+.s6note2{justify-content:space-between}
+.s6tok{display:inline-block;padding:2px 7px;margin:2px;border:1px solid var(--line);border-radius:7px;font:13px var(--mono),'Noto Sans','Noto Sans Devanagari','Noto Sans SC','Noto Sans Arabic','Segoe UI',system-ui,sans-serif;white-space:pre}
 .s6padwrap{display:flex;flex-direction:column;gap:10px}
 .s6pad{position:relative;width:100%;max-width:420px;aspect-ratio:1;min-width:280px;margin:0 auto;border-radius:16px;background:var(--surface);border:1px solid var(--line);overflow:hidden}
 .s6pad canvas{position:absolute;inset:0;width:100%;height:100%;color:var(--fg);cursor:crosshair;touch-action:none}
@@ -524,10 +527,22 @@ function Picker() {
   return slot ? createPortal(node, slot) : node
 }
 
+function LangSelect({ value, onChange, label = 'Language', disabled = false }: { value: LangId; onChange: (l: LangId) => void; label?: string; disabled?: boolean }) {
+  return (
+    <>
+      <label className="sr" htmlFor="s6lang">{label}</label>
+      <select id="s6lang" data-lang-picker className="s6lang" disabled={disabled} value={value} onChange={(e) => onChange(e.target.value as LangId)} title={label}>
+        {LANGS.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+      </select>
+    </>
+  )
+}
+
 /* ---------------------------------------------------------------------------- task input */
 function InputBox({ compact = false }: { compact?: boolean }) {
   const { spec, input, setInput, mode } = useStore(useShallow((s) => ({ spec: s.spec, input: s.input, setInput: s.setInput, mode: s.mode })))
-  const { custom, remember, caps } = useZoo(useShallow((s) => ({ custom: s.custom, remember: s.remember, caps: s.caps })))
+  const { custom, remember, caps, lang, setLang } = useZoo(useShallow((s) => ({ custom: s.custom, remember: s.remember, caps: s.caps, lang: s.lang, setLang: s.setLang })))
+  const examplesAll = useStore((s) => s.examples)
   const task: Task = spec?.task ?? 'text-generation'
   const kind = kindOf(task)
   const [msg, setMsg] = useState<string | null>(null)
@@ -581,16 +596,33 @@ function InputBox({ compact = false }: { compact?: boolean }) {
   }
   const drop = (e: React.DragEvent) => { e.preventDefault(); setOver(false); pickFile(e.dataTransfer.files?.[0]) }
   const insertMask = () => { const t = cur.kind === 'text' ? cur.text : ''; set({ kind: 'text', text: /\[MASK\]/.test(t) ? t : `${t.trimEnd()} [MASK]`.trim() }) }
+  const langOk = task === 'text-generation' || task === 'text-classification'
+  const multi = isMultilingual(spec)
+  const spoken = kind === 'audio' && multi
+  const swap = async () => {
+    const st = useStore.getState()
+    let r: any = null
+    try { r = await (engine as any).multilingualFor?.(task) } catch { /* not ready: use the catalog */ }
+    let repo: string | undefined = typeof r === 'string' ? r : r?.repo ?? r?.id
+    let ex = repo ? st.examples.find((e) => e.id === repo || e.repo.toLowerCase() === String(repo).toLowerCase()) : undefined
+    if (!ex && !repo) ex = st.examples.find((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
+    if (ex) await st.loadExample(ex.id); else if (repo) await st.loadModel(repo, langPrompt(lang, task))
+  }
+  const canSwap = typeof (engine as any).multilingualFor === 'function' || examplesAll.some((e) => (e.task ?? 'text-generation') === task && isMultilingual(e))
+  const needsMulti = langOk && lang !== 'en' && !multi
   return (
     <div className="stack" style={{ gap: 8 }}>
+      {needsMulti && <div className={`s6row s6note2 ${compact ? 's6float' : ''}`} data-note><span className="s6line">This model knows English best.</span>{canSwap && <button className="btn2 sm" onClick={swap}>Use a multilingual model</button>}</div>}
+      {spoken && <div className="s6row"><LangSelect value={lang} onChange={setLang} label="Spoken language" /></div>}
       <input ref={file} type="file" accept={kind === 'image' ? 'image/*' : 'audio/*'} hidden onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = '' }} />
       {kind === 'text' && cur.kind === 'text' && (
         <>
           <label className={compact ? 'sr' : 'lbl'} htmlFor="s6text">{task === 'fill-mask' ? 'Sentence with a gap' : task === 'text-classification' ? 'Text to judge' : 'Start of a sentence'}</label>
           <div className="s6row s6inrow">
+            {langOk && <LangSelect disabled={replay} value={lang} onChange={(id) => { setLang(id); set({ kind: 'text', text: langPrompt(id, task) }) }} />}
             {compact
-              ? <input id="s6text" className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
-              : <textarea id="s6text" rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
+              ? <input id="s6text" data-prompt className="s6in" type="text" style={{ flex: 1, minWidth: 0 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') void runNow() }} placeholder={task === 'fill-mask' ? 'Use [MASK] for the gap' : 'Type here'} />
+              : <textarea id="s6text" data-prompt rows={2} style={{ flex: 1 }} value={cur.text} disabled={replay} aria-invalid={!!problem} onChange={(e) => set({ kind: 'text', text: e.target.value })} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void runNow() }} />}
             {task === 'fill-mask' && <button className="btn2 sm" disabled={replay} onClick={insertMask}>[MASK]</button>}
             <button className="btn2 sm" disabled={replay} onClick={() => set(dflt)} title="Put the example text back">Example</button>
           </div>
@@ -661,12 +693,17 @@ function RunDock() {
 
 /* ---------------------------------------------------------------------------- result card */
 function Result() {
+  const lang = useZoo((s) => s.lang)
+  const tokens = useStore((s) => s.tokens)
   const { lastStats, fit, spec, final, runErr, running, examples, loadExample } = useStore(useShallow((s) => ({ lastStats: s.lastStats, fit: s.fit, spec: s.spec, final: s.final, runErr: s.runErr, running: s.running, examples: s.examples, loadExample: s.loadExample })))
   const alt = runErr && /smaller|too big/i.test(runErr) ? examples.find((e) => e.repo.toLowerCase() !== spec?.repo.toLowerCase() && (e.task ?? 'text-generation') === spec?.task) : null
   const items = final?.topk ?? final?.labels?.map((l: any) => ({ token: l.label, p: l.score }))
   const text: string | undefined = final?.text
   return (
     <div className="stack">
+      {tokens.length > 0 && (
+        <div className="ccard"><h4>Tokens <small>the pieces the model reads</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{tokens.slice(0, 60).map((t, i) => <span key={i} className="s6tok" data-token>{showTok(t)}</span>)}</div></div>
+      )}
       {final && !running && (
         <div className="ccard">
           <h4>Response <small>from the model</small></h4>

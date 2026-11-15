@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { useStore } from '../store'
 import * as api from '../api'
 import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
-import type { InputCaps } from './nets'
+import type { InputCaps, LangId } from './nets'
 import { useHW } from '../hw/hwStore'
 import { cnn, mlp, rnn, timeNet, vit, vlm, type Pack, type Speed } from './nets'
 
@@ -50,6 +50,9 @@ export type Sel = { kind: string; layer?: string; index: number; extra?: number 
 export interface CatRow { id: string; title: string; repo: string; task: Task | null; recorded: boolean; bytes: number | null; plan: DownloadPlan | null; fit: Fit | null; spec: ModelSpec | null; verdict?: Fit['verdict'] }
 
 interface Z {
+  /** language of the prompt (R2-1) and, for speech models, the spoken language */
+  lang: LangId
+  setLang: (l: LangId) => void
   custom: Partial<Record<Task, TaskInput>>
   remember: (t: Task, i: TaskInput) => void
   cardOff: boolean
@@ -94,6 +97,7 @@ const base = () => `${import.meta.env.BASE_URL}zoo/`
 
 
 export const useZoo = create<Z>((set, get) => ({
+  lang: 'en', setLang: (lang) => set({ lang }),
   custom: {}, remember: (t, i) => set((s) => ({ custom: { ...s.custom, [t]: i } })),
   cardOff: false, setCardOff: (cardOff) => set({ cardOff }),
   caps: null, catalog: {},

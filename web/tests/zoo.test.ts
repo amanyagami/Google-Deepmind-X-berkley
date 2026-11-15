@@ -112,6 +112,19 @@ test('S6 draw pad: an off-centre, rescaled drawing is read as well as the clean 
   assert.deepEqual(inkTo8x8(new Float32Array(N * N), N), new Array(64).fill(0))
 })
 
+import { LANGS, guessLang, isMultilingual, langPrompt } from '../src/zoo/nets'
+test('S6 languages: eight prompts, each in its own script, and the model check', () => {
+  assert.equal(LANGS.length, 8)
+  assert.equal(new Set(LANGS.map((l) => l.prompt)).size, 8)
+  for (const l of LANGS) assert.equal(guessLang(l.prompt), l.id, l.name)
+  assert.equal(langPrompt('es', 'text-generation'), 'La capital de Francia es')
+  assert.notEqual(langPrompt('fr', 'text-classification'), langPrompt('fr', 'text-generation'))
+  assert.equal(isMultilingual({ repo: 'Xenova/distilgpt2', arch: 'gpt2' }), false)
+  assert.equal(isMultilingual({ repo: 'Qwen/Qwen2.5-0.5B', arch: 'qwen2' }), true)
+  assert.equal(isMultilingual({ repo: 'Xenova/whisper-tiny.en', arch: 'whisper' }), false)
+  assert.equal(isMultilingual({ repo: 'Xenova/whisper-tiny', arch: 'whisper' }), true)
+})
+
 /* ===================================================================================== S4 models engine (fenced block) */
 import { describe as s4describe, it as s4it, expect as s4expect, vi as s4vi, beforeEach as s4beforeEach, afterEach as s4afterEach } from 'vitest'
 import * as S4 from '../src/api'
