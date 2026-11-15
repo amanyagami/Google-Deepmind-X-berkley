@@ -174,7 +174,7 @@ export const FLOPS: Record<string, string> = {
 const NUM = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
 
 /** Which digit a network reads, and how sure it is. The VLM writes a caption: its digit is the number word in it. */
-export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number | null; conf: number; caption?: string } {
+export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number | null; conf: number; caption?: string; probs?: number[] } {
   if (net === 'vlm') {
     const o = vlm(p.weights, img, p.vocab!)
     const words = o.ids.slice(1).map((i: number) => p.vocab![i])
@@ -187,7 +187,7 @@ export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number |
   const fn = { mlp, cnn, rnn, vit }[net]
   const probs: number[] = fn(p.weights, img).probs
   const d = probs.indexOf(Math.max(...probs))
-  return { digit: d, conf: probs[d] }
+  return { digit: d, conf: probs[d], probs }
 }
 
 export interface Speed { us: number; n: number }
@@ -282,4 +282,45 @@ export function readCheck(r: any): string | null {
   if (typeof r === 'string') return r
   if (r.ok === true || r.valid === true) return null
   return String(r.message ?? r.error ?? r.reason ?? 'That input does not work.')
+}
+
+/* ================================================================================ draw pad (R2-12) */
+/**
+ * What the networks see of a drawing. `ink` is an n by n grid of ink amounts (0 to 1). Like MNIST, the digit is cropped
+ * to its ink box, scaled so its longer side is 7 pixels, centred in the 8 by 8 frame, and averaged down (antialiased).
+ * The strongest pixel is 1, as in the training digits. A blank pad gives all zeros.
+ */
+export function inkTo8x8(ink: ArrayLike<number>, n: number): number[] {
+  let x0 = n, y0 = n, x1 = -1, y1 = -1
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (ink[y * n + x] > 0.08) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y }
+  const out = new Array(64).fill(0)
+  if (x1 < 0) return out
+  const w = x1 - x0 + 1, h = y1 - y0 + 1, side = Math.max(w, h), k = side / 7   // source pixels per output pixel
+  const cx = (x0 + x1 + 1) / 2, cy = (y0 + y1 + 1) / 2
+  const S = 4                                                                    // samples per output pixel, each way
+  let mx = 0
+  for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) {
+    let a = 0
+    for (let sy = 0; sy < S; sy++) for (let sx = 0; sx < S; sx++) {
+      const x = Math.floor(cx + (i + (sx + 0.5) / S - 4) * k), y = Math.floor(cy + (j + (sy + 0.5) / S - 4) * k)
+      if (x >= 0 && y >= 0 && x < n && y < n) a += ink[y * n + x]
+    }
+    out[j * 8 + i] = a / (S * S)
+    if (out[j * 8 + i] > mx) mx = out[j * 8 + i]
+  }
+  return mx > 0 ? out.map((v) => Math.min(1, v / mx)) : out
+}
+
+/** Several networks, one answer: the average of their class probabilities (the VLM counts as its digit). */
+export function consensus(reads: { digit: number | null; conf: number; probs?: number[] }[]): { top: number; pct: number; second: number | null; pct2: number } {
+  const agg = new Array(10).fill(0)
+  let n = 0
+  for (const r of reads) {
+    if (r.digit === null) continue
+    n++
+    for (let d = 0; d < 10; d++) agg[d] += r.probs ? r.probs[d] : d === r.digit ? r.conf : (1 - r.conf) / 9
+  }
+  if (!n) return { top: 0, pct: 0, second: null, pct2: 0 }
+  const m = agg.map((v) => v / n), order = [...m.keys()].sort((a, b) => m[b] - m[a])
+  return { top: order[0], pct: m[order[0]], second: order[1], pct2: m[order[1]] }
 }

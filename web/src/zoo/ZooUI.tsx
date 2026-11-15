@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
-import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel } from './nets'
+import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel, consensus, inkTo8x8 } from './nets'
 import { locateZ, NETS, STAGES, totalZ, useZoo, type CatRow, type DigitNet, type NetId } from './zooStore'
 import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
@@ -13,51 +13,99 @@ import { Hint, Inspector, TopBars, inspectCrumb, inspectParent } from '../ui/cha
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
 /* ------------------------------------------------------------------------------- drawing pad */
-const paintPx = (c: CanvasRenderingContext2D, img: number[], s: number) => {
-  for (let i = 0; i < 64; i++) { const v = img[i]; c.fillStyle = `rgb(${Math.round(20 + 235 * v)},${Math.round(26 + 143 * v)},${Math.round(50 + 27 * v)})`; c.fillRect((i % 8) * s, Math.floor(i / 8) * s, s - 1, s - 1) }
-}
+const GLYPH: Record<DigitNet, string> = { mlp: '●', cnn: '■', rnn: '▲', vit: '◆', vlm: '★' }
+const PAD = 280, BRUSH = 8
+type Pt = { x: number; y: number }
 
+/** One big square pad: thick smooth strokes (mouse, touch, pen), live guesses from all five networks, Clear, Undo, 0 to 9. */
 function DrawPad() {
-  const base = useZoo((s) => s.base)
-  const img = useZoo((s) => s.img)
-  const ref = useRef<HTMLCanvasElement>(null)
-  const seen = useRef<HTMLCanvasElement>(null)
-  const drawing = useRef(false)
-  useEffect(() => { paintPx(ref.current!.getContext('2d')!, base, 24) }, [base])
-  useEffect(() => { if (seen.current) paintPx(seen.current.getContext('2d')!, img, 12) }, [img])
-  const paint = (e: React.PointerEvent) => {
-    const r = ref.current!.getBoundingClientRect()
-    const x = ((e.clientX - r.left) / r.width) * 8, y = ((e.clientY - r.top) / r.height) * 8
-    const next = [...useZoo.getState().base]
-    for (let i = 0; i < 64; i++) {
-      const dx = (i % 8) + 0.5 - x, dy = Math.floor(i / 8) + 0.5 - y, d2 = dx * dx + dy * dy
-      if (d2 < 1.6) next[i] = Math.min(1, next[i] + (d2 < 0.35 ? 0.55 : 0.18))
-    }
-    useZoo.getState().setImg(next, null)
+  const { packs, digits, img } = useZoo(useShallow((s) => ({ packs: s.packs, digits: s.digits, img: s.img })))
+  const cv = useRef<HTMLCanvasElement>(null)
+  const strokes = useRef<Pt[][]>([])
+  const live = useRef<Pt[] | null>(null)
+  const sample = useRef<number[] | null>(useZoo.getState().label !== null ? useZoo.getState().base : null)
+  const raf = useRef(0)
+  const [inked, setInked] = useState(!!sample.current)
+  const [nStrokes, setN] = useState(0)
+  const ctx = () => cv.current!.getContext('2d', { willReadFrequently: true })!
+  const line = (c: CanvasRenderingContext2D, pts: Pt[]) => {
+    c.beginPath(); c.moveTo(pts[0].x, pts[0].y)
+    if (pts.length === 1) c.lineTo(pts[0].x + 0.01, pts[0].y)
+    for (let i = 1; i < pts.length; i++) c.quadraticCurveTo(pts[i - 1].x, pts[i - 1].y, (pts[i - 1].x + pts[i].x) / 2, (pts[i - 1].y + pts[i].y) / 2)
+    c.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y); c.stroke()
   }
+  const redraw = () => {
+    const c = ctx(), ink = getComputedStyle(cv.current!).color
+    c.clearRect(0, 0, PAD, PAD); c.fillStyle = ink; c.strokeStyle = ink; c.lineWidth = BRUSH * 2; c.lineCap = 'round'; c.lineJoin = 'round'
+    if (sample.current) { const k = PAD / 8; sample.current.forEach((v, i) => { c.globalAlpha = Math.min(1, v); c.fillRect((i % 8) * k, Math.floor(i / 8) * k, k + 0.5, k + 0.5) }); c.globalAlpha = 1 }
+    for (const st of strokes.current) line(c, st)
+    if (live.current) line(c, live.current)
+  }
+  /** Read the pad, centre it like MNIST, and hand the 8 by 8 picture to the networks: at most once per frame. */
+  const commit = () => {
+    raf.current = 0
+    const d = ctx().getImageData(0, 0, PAD, PAD).data, ink = new Float32Array(PAD * PAD)
+    for (let i = 0; i < ink.length; i++) ink[i] = d[i * 4 + 3] / 255
+    useZoo.getState().setImg(inkTo8x8(ink, PAD), null)
+    setInked(strokes.current.length > 0 || !!live.current || !!sample.current)
+    setN(strokes.current.length)
+  }
+  const later = () => { redraw(); if (!raf.current) raf.current = requestAnimationFrame(commit) }
+  useEffect(() => {
+    redraw()
+    // on a phone the rail is a bottom sheet: open it so the whole pad shows
+    if (matchMedia('(max-width: 959px)').matches) document.querySelector<HTMLElement>('.inspector')?.style.setProperty('--sheet', '84dvh')
+    return () => cancelAnimationFrame(raf.current)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const at = (e: { clientX: number; clientY: number }): Pt => { const r = cv.current!.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * PAD, y: ((e.clientY - r.top) / r.height) * PAD } }
+  const clear = () => { strokes.current = []; live.current = null; sample.current = null; later() }
+  const undo = () => { if (strokes.current.length) { strokes.current.pop(); later() } }
+  const pick = (d: number) => {
+    const k = digits ? digits.labels.findIndex((l) => l === d) : -1
+    if (k < 0 || !digits) return
+    strokes.current = []; live.current = null; sample.current = digits.images[k]; later()
+  }
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (e.metaKey || e.ctrlKey || e.altKey || t?.closest?.('input,textarea,select,[contenteditable]')) return
+      if (e.key === 'c' || e.key === 'C') clear(); else if (e.key === 'z' || e.key === 'Z') undo()
+    }
+    document.addEventListener('keydown', key)
+    return () => document.removeEventListener('keydown', key)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const end = () => { if (live.current) { strokes.current.push(live.current); live.current = null; later() } }
+  const reads = useMemo(() => (NETS.every((n) => packs[n.id]) ? NETS.map((n) => ({ id: n.id, r: readDigit(n.id, packs[n.id]!, img) })) : null), [img, packs])
+  const verdict = useMemo(() => (reads && inked ? consensus(reads.map((x) => x.r)) : null), [reads, inked])
   return (
-    <div className="drawpad">
-      <canvas ref={ref} width={192} height={192} aria-label="Draw a digit: 8 by 8 pixels"
-        onPointerDown={(e) => { drawing.current = true; (e.target as HTMLElement).setPointerCapture(e.pointerId); paint(e) }}
-        onPointerMove={(e) => { if (drawing.current) paint(e) }} onPointerUp={() => { drawing.current = false }} />
-      <div className="col">
-        <p className="small">Draw a digit<Hint>Every network recomputes as you draw. Pick a test digit below, or draw your own with the mouse.</Hint></p>
-        <button className="btn2 sm" onClick={() => useZoo.getState().setImg(new Array(64).fill(0), null)}>Clear</button>
+    <div className="s6padwrap">
+      <div className="s6pad">
+        <canvas ref={cv} data-pad width={PAD} height={PAD} aria-label="Draw a number here" role="img" style={{ touchAction: 'none' }}
+          onPointerDown={(e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return
+            e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId)
+            if (sample.current) { sample.current = null; strokes.current = [] }   // drawing over a sample digit starts fresh
+            live.current = [at(e)]; later()
+          }}
+          onPointerMove={(e) => { if (!live.current) return; const evs = (e.nativeEvent as PointerEvent).getCoalescedEvents?.() ?? []; for (const q of evs.length ? evs : [e.nativeEvent]) live.current.push(at(q)); later() }}
+          onPointerUp={end} onPointerCancel={end} />
+        {!inked && <div className="s6guide" aria-hidden><i /><span>Draw a number</span></div>}
       </div>
-    </div>
-  )
-}
-
-function Gallery() {
-  const digits = useZoo((s) => s.digits)
-  if (!digits) return null
-  return (
-    <div className="gallery" role="group" aria-label="Test digits">
-      {digits.images.slice(0, 24).map((im, k) => (
-        <button key={k} title={`a ${digits.labels[k]} from the test set`} onClick={() => useZoo.getState().setImg(im, digits.labels[k])}>
-          <svg viewBox="0 0 8 8" width="30" height="30">{im.map((v, i) => <rect key={i} x={i % 8} y={Math.floor(i / 8)} width="1" height="1" fill={`rgba(255,169,77,${v})`} />)}</svg>
-        </button>
-      ))}
+      <div className="s6row">
+        <button className="btn2" onClick={clear} title="Clear (C)">Clear</button>
+        <button className="btn2" onClick={undo} disabled={!nStrokes} title="Undo the last stroke (Z)">Undo</button>
+        <span className="s6line">Try a digit</span>
+      </div>
+      <div className="s6chips" role="group" aria-label="Try a digit">{Array.from({ length: 10 }, (_, d) => <button key={d} className="btn2" onClick={() => pick(d)}>{d}</button>)}</div>
+      <div className="s6see" aria-live="polite">
+        {verdict ? (
+          <>
+            <p className="s6big" data-pad-result>I see a <b>{verdict.top}</b> · {Math.round(verdict.pct * 100)} %</p>
+            {verdict.second !== null && <p className="s6line">or a {verdict.second} · {Math.round(verdict.pct2 * 100)} %</p>}
+            <div className="s6pills">{reads!.map(({ id, r }) => <span key={id} className="s6pill" style={{ borderColor: NET_COLOR[id] }}><b style={{ color: NET_COLOR[id] }} aria-hidden>{GLYPH[id]}</b>{NAME[id]} {r.digit ?? '?'}</span>)}</div>
+          </>
+        ) : <p className="s6line">Draw, or pick a digit. Five networks read it as you draw.</p>}
+      </div>
     </div>
   )
 }
@@ -240,6 +288,18 @@ export function CompareCard() {
 
 /* ================================================================================ S6 model UI */
 const CSS = `
+.s6padwrap{display:flex;flex-direction:column;gap:10px}
+.s6pad{position:relative;width:100%;max-width:420px;aspect-ratio:1;min-width:280px;margin:0 auto;border-radius:16px;background:var(--surface);border:1px solid var(--line);overflow:hidden}
+.s6pad canvas{position:absolute;inset:0;width:100%;height:100%;color:var(--fg);cursor:crosshair;touch-action:none}
+.s6guide{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;color:var(--muted)}
+.s6guide i{position:absolute;inset:18%;border:2px dashed color-mix(in srgb,var(--muted) 45%,transparent);border-radius:14px}
+.s6guide span{position:relative;font-size:18px}
+.s6chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(40px,1fr));gap:6px}
+.s6chips button,.s6padwrap .btn2{min-height:44px}
+.s6see{display:flex;flex-direction:column;gap:4px}
+.s6big{margin:0;font-size:24px} .s6big b{font-size:30px}
+.s6pills{display:flex;flex-wrap:wrap;gap:6px}
+.s6pill{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border:1.5px solid;border-radius:999px;font-size:12.5px}
 #dock-slot:has([data-s6dock])>:not([data-s6dock]){display:none}
 #model-picker-slot:has([data-picker])>:not([data-picker]){display:none}
 .s6card{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;width:min(440px,calc(100% - 28px));display:flex;flex-direction:column;gap:10px;padding:18px 20px;background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px);box-shadow:0 12px 40px #0008}
@@ -696,7 +756,6 @@ export function ZooView() {
           <div className="stack">
             {!loaded && <p className="hint">Loading the networks…</p>}
             <DrawPad />
-            <Gallery />
             <CompareCard />
             <Output />
             <CalcCard />

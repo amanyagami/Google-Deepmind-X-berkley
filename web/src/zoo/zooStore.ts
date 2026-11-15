@@ -64,7 +64,7 @@ interface Z {
   net: NetId
   packs: Partial<Record<DigitNet, Pack>>
   digits: { images: number[][]; labels: number[] } | null
-  /** what was drawn or picked; `img` is this after the stress test (what every network sees) */
+  /** what was drawn or picked; `img` is what every network sees (the pad centred like MNIST) */
   base: number[]
   img: number[]
   label: number | null
