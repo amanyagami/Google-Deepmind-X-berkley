@@ -12,5 +12,5 @@ server/hw_*.txt
 examples/
 *.png
 !web/public/**/*.png
-# editor and agent settings
+# editor settings
 .vscode/
