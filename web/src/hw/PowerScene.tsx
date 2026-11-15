@@ -622,6 +622,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
               <Lightformer form="rect" intensity={1.5} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />
             </Environment>
             <Pcb />
+            <Chip pos={[-8.6, 0.2, 6.2]} name="▲ power  ○ data" sub="amber rails carry power, blue rails carry data" prio={0.3} />
             <DcIn /><Vrm /><CpuChip /><Ram /><Keyboard /><Screen />
             <Small pos={SSDP} id="ssd" name="SSD" sub="power not metered" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
             <Small pos={NICP} id="nic" name="Network" sub="power not metered" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
