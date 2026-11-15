@@ -534,3 +534,11 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 .app { --strip: 52px; }
 #dock-slot * { flex-wrap: nowrap; }
 #dock-slot { overflow: hidden; }
+@media (max-width: 480px) {
+  .topbar { gap: 4px; padding: 0 8px; }
+  .pickbtn { max-width: 88px; padding: 6px; }
+  .topbar .seg button { padding: 6px 7px; }
+  .themebtn { padding: 0 8px; min-width: 0; }
+  .topbar .grow { flex: 0 1 0; }
+}
+@media (max-width: 480px) { #model-picker-slot { flex: 0 1 108px; max-width: 108px; } #model-picker-slot > * { max-width: 100%; min-width: 0; } #model-picker-slot button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
