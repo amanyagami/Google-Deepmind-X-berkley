@@ -443,6 +443,28 @@ export const checks = [
     for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n)
       res.push([n, await p.page.waitForFunction((x) => window.__zoo.getState().out && window.__zoo.getState().net === x, n, { timeout: 15000 }).then(() => 1, () => 0)]) }
     return ok(res.every(([, v]) => v), res.map(([n, v]) => `${n}:${v ? 'ok' : 'none'}`).join(' ')) } },
+  { id: 'A40', title: 'input per model: dock prompt only for text models; changing a net\'s input changes its 3D input within 300 ms', run: async (env) => {
+    const out = []; let good = true
+    for (const w of [1480, 390]) {
+      const p = await env.open({ w }); await p.goto('', 2500); const pg = p.page
+      if (!(await pg.evaluate(() => !!window.__zoo))) return S('no window.__zoo')
+      const vis = (sel) => pg.evaluate((s) => [...document.querySelectorAll(s)].some((e) => { const r = e.getBoundingClientRect(), c = getComputedStyle(e); return r.width > 0 && r.height > 0 && c.visibility !== 'hidden' && c.display !== 'none' }), sel)
+      await pg.evaluate(() => window.__zoo.getState().setNet('llm')); await pg.waitForTimeout(400)
+      const llm = await vis('[data-prompt]'); if (!llm) good = false; const res = [`llm prompt ${llm ? 'shown' : 'MISSING'}`]
+      for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) {
+        await pg.evaluate((x) => window.__zoo.getState().setNet(x), n); await pg.waitForFunction((x) => window.__zoo.getState().net === x && window.__zoo.getState().out, n, { timeout: 10000 }).catch(() => {}); await pg.waitForTimeout(300)
+        const prompt = await vis('[data-prompt]'), lang = await vis('[data-lang-picker], #s6lang'), dock = await vis(`[data-net-dock=${n}]`), q = n === 'vlm' ? await vis('[data-question]') : true
+        const before = await pg.evaluate(() => JSON.stringify([window.__zoo.getState().out?.input, window.__zoo.getState().out?.ids]))
+        const t0 = Date.now()
+        if (n === 'vlm') await pg.locator('[data-question]').first().fill('it is', { timeout: 3000 }).catch(() => {})
+        else await pg.locator(`[data-net-dock=${n}] button:has-text("New digit")`).first().click({ timeout: 3000 }).catch(() => {})
+        const changed = await pg.waitForFunction((b) => JSON.stringify([window.__zoo.getState().out?.input, window.__zoo.getState().out?.ids]) !== b, before, { timeout: 2000, polling: 'raf' }).then(() => true, () => false), ms = Date.now() - t0
+        const ok1 = !prompt && !lang && dock && q && changed && ms <= 300; if (!ok1) good = false
+        res.push(`${n}:${prompt ? ' PROMPT' : ''}${lang ? ' LANG' : ''}${dock ? '' : ' NO-DOCK'}${q ? '' : ' NO-QUESTION'} ${changed ? ms + 'ms' : 'UNCHANGED'}`)
+      }
+      out.push(`${w}px ${res.join(', ')}`)
+    }
+    return ok(good, out.join(' | ')) } },
   { id: 'L6', tier: 3, title: 'idle cost: companion watts with the page open vs blank (info only)', run: async (env) => {
     const pw = async () => { const xs = []; for (let i = 0; i < 8; i++) { xs.push((await fetch('http://127.0.0.1:8000/api/hw/power').then((r) => r.json())).pkg_w); await sleep(250) } return xs.reduce((a, b) => a + b, 0) / xs.length }
     try { const blank = await pw(); const p = await env.open({ companion: 'real', hub: false }); await p.goto('#machine', 3000); const page = await pw(); return P(`blank ${blank.toFixed(1)} W, page ${page.toFixed(1)} W`) } catch (e) { return S('companion power API unavailable: ' + e.message) } } },

@@ -100,18 +100,18 @@ export function setText(el: HTMLElement | null, t: string) {
 const CSS = `
 .nsc{position:relative;pointer-events:auto;display:flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:0;padding:0;margin:0;font:inherit;color:var(--fg,#e8ecf8);cursor:pointer;touch-action:manipulation}
 .nsc.ns-static{pointer-events:none;min-height:0;min-width:0;cursor:default}
-.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,rgba(124,92,255,.55),rgba(34,211,238,.4) 55%,rgba(255,122,182,.5)) border-box;box-shadow:0 6px 18px rgba(2,4,20,.28),0 0 0 1px rgba(255,255,255,.02) inset;border-radius:10px;padding:3px 10px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.25 var(--body,system-ui,sans-serif);text-align:center}
+.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,rgba(124,92,255,.55),rgba(34,211,238,.4) 55%,rgba(255,122,182,.5)) border-box;box-shadow:0 6px 18px rgba(2,4,20,.28),0 0 0 1px rgba(255,255,255,.02) inset;border-radius:10px;padding:3px 10px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 12px/1.25 var(--body,system-ui,sans-serif);text-align:center}
 .nsc b{font-weight:600;font-size:12px;display:block}
 .nsc .g{margin-right:5px;color:var(--gl,inherit)}
 @keyframes ns-pop{from{opacity:0;transform:scale(.94) translateY(3px)}to{opacity:1;transform:none}}
 @keyframes ns-rise{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
 .nsstage{animation:ns-rise .6s var(--ease,cubic-bezier(.2,.8,.2,1)) both}
 @media (prefers-reduced-motion:reduce){.nsstage,.nsc .box{animation:none;transition:none}}
-.nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:11.5px}
+.nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:12px}
 .nsc:hover .sub,.nsc:focus-visible .sub,.nsc.on .sub{display:block}
-.nsc .lv{display:block;font:600 11.5px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
+.nsc .lv{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
 .nsc .lv .livedot{width:5px;height:5px;margin:0 5px 0 0;vertical-align:1px;box-shadow:none}
-.nsc .sc{display:block;font:600 11.5px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
+.nsc .sc{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
 .nsc:hover .box,.nsc.on .box,.nsc.hov .box{box-shadow:0 8px 22px rgba(2,4,20,.34),0 0 16px color-mix(in srgb,var(--pos,#ffa94d) 45%,transparent);transform:translateY(-1px)}
 .nsc.on .box{background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,#ffa94d,#ff7ab6) border-box}
 .nsc:focus-visible{outline:none}
@@ -119,7 +119,7 @@ const CSS = `
 .nsc .lead{position:absolute;left:50%;top:50%;height:0;border-top:1px dashed rgba(154,165,199,.7);transform-origin:0 0;pointer-events:none;display:none;z-index:-1}
 .nsc .lead::after{content:"";position:absolute;right:-2px;top:-3px;width:5px;height:5px;border-radius:50%;background:#9aa5c7}
 .nsw{font:500 11.5px var(--mono,ui-monospace,monospace);color:var(--fg,#e8ecf8);background:color-mix(in srgb,var(--bg,#060913) 94%,transparent);border-radius:6px;padding:0 5px;white-space:nowrap;pointer-events:none}
-.nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 11.5px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
+.nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 12px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
 .nsreset{position:absolute;right:12px;top:60px;animation:ns-pop .2s ease both;z-index:6;width:40px;height:40px;display:grid;place-items:center;border-radius:12px;border:1px solid var(--line,#27314f);background:color-mix(in srgb,var(--panel,#0f1526) 88%,transparent);color:var(--fg,#e8ecf8);font:600 18px/1 var(--body,system-ui);cursor:pointer;box-shadow:var(--sh-1,none);backdrop-filter:blur(6px)}
 .nsreset:hover{border-color:color-mix(in srgb,var(--brand-1,#7c5cff) 55%,var(--line,#27314f))}
 .nssr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
@@ -831,11 +831,12 @@ function CnnScene() {
       <Tiles get={() => Z().out?.conv1} count={512} place={c1} size={0.14} stage="conv1" maxAbs={maxOf(() => Z().out?.conv1)} layer="conv1" kind="cell" lift={0.5} scanReveal />
       <Tag pos={[-3.6, 0.2, 6.6]} name="Convolution 1" grp="conv1" sub="8 filters of 3×3 · ReLU" />
       <Tiles get={() => Z().out?.pool1} count={128} place={p1} size={0.18} stage="pool1" maxAbs={maxOf(() => Z().out?.pool1)} layer="pool1" kind="cell" lift={0.2} />
-      <Tag pos={[-1.2, 0.2, -6.6]} name="Max pool" grp="pool1" sub="keep the largest of each 2×2" />
+      <Tag pos={[-1.2, 0.2, -6.6]} name="Max pool 1" grp="pool1" sub="largest of each 2×2 · 8 maps, 8×8 → 4×4" />
       <Kernel stage="conv2" n={4} size={0.2} at={(x, y) => [-1.2 + (x - 1.5) * 0.2, 0.3, mapZ(0, 8) + (y - 1.5) * 0.2]} />
       <Tiles get={() => Z().out?.conv2} count={256} place={c2} size={0.16} stage="conv2" maxAbs={maxOf(() => Z().out?.conv2)} layer="conv2" kind="cell" lift={0.5} scanReveal />
       <Tag pos={[1.5, 0.2, 6.6]} name="Convolution 2" grp="conv2" sub="16 filters, each sees all 8 maps" />
       <Tiles get={() => Z().out?.pool2} count={64} place={p2} size={0.18} stage="pool2" maxAbs={maxOf(() => Z().out?.pool2)} layer="pool2" kind="cell" lift={0.2} />
+      <Tag pos={[3.8, 0.2, -6.6]} name="Max pool 2" grp="pool2" sub="largest of each 2×2 · 16 maps, 4×4 → 2×2" />
       <Bars origin={[6.4, 0, 0]} stage="out" />
       <Tag pos={[6.4, 0.2, 3.6]} name="Scores" grp="scores" sub="one dense layer on 64 numbers" />
     </group>
@@ -905,6 +906,7 @@ function VitScene() {
 function VlmScene() {
   const vocab = useZoo((s) => s.packs.vlm?.vocab ?? [])
   const nWords = useZoo((s) => s.out?.ids?.length ?? 0)
+  const given = useZoo((s) => (s.net === 'vlm' ? s.out?.given ?? 0 : 0))
   const imgTok = (i: number): [number, number, number] => [-4.3 + ((i % 4) - 1.5) * 0.85, 0, ((Math.floor(i / 4)) - 1.5) * 0.85]
   const imgCell = (i: number): [number, number, number] => { const t = Math.floor(i / 24), k = i % 24; const p = imgTok(t); return [p[0] + ((k % 6) - 2.5) * 0.1, 0, p[2] + (Math.floor(k / 6) - 1.5) * 0.1] }
   const wordX = (k: number) => -1.0 + k * 1.08
@@ -920,7 +922,9 @@ function VlmScene() {
     for (let k = 0; k < 12; k++) {
       const on = k < shown && k < ids.length
       d.position.set(wordX(k), 0.08, 3.2); if (on) d.scale.set(0.78, 0.1, 0.34); else d.scale.setScalar(0.0001); d.updateMatrix(); pills.current.setMatrixAt(k, d.matrix)
-      if (k === shown - 1) c.copy(AMBER).multiplyScalar(2.2); else c.copy(INK).lerp(BLUE, 0.45); pills.current.setColorAt(k, c)
+      // the user's own words (after <bos>) glow blue; the word being written glows amber
+      const mine = k >= 1 && k <= (s.out?.given ?? 0)
+      if (k === shown - 1) c.copy(AMBER).multiplyScalar(2.2); else if (mine) c.copy(TH.light ? L_BLUE : BLUE).multiplyScalar(TH.light ? 1 : 1.8); else c.copy(INK).lerp(BLUE, 0.45); pills.current.setColorAt(k, c)
       const el = wordsRef.current[k]; if (el) { el.style.display = on ? '' : 'none'; setText(el, on ? vocab[ids[k]] ?? '' : '') }
     }
     pills.current.instanceMatrix.needsUpdate = true; if (pills.current.instanceColor) pills.current.instanceColor.needsUpdate = true
@@ -952,7 +956,7 @@ function VlmScene() {
         }
         return res
       }} />
-      <Tag pos={[3.8, 0.2, 4.3]} grp="words" name="Language model" sub={`writes one word at a time · ${nWords ? nWords - 1 : 0} words`} />
+      <Tag pos={[3.8, 0.2, 4.3]} grp="words" name="Language model" sub={given ? `your ${given} word${given > 1 ? 's' : ''} in blue, then it writes the rest` : `writes one word at a time · ${nWords ? nWords - 1 : 0} words`} />
     </group>
   )
 }
@@ -967,8 +971,9 @@ function LlmScene() {
   const T = useZoo((s) => (s.net === 'llm' ? s.out?.T ?? 0 : 0))
   const L = useZoo((s) => (s.net === 'llm' ? s.out?.L ?? 0 : 0))
   const nh = useZoo((s) => (s.net === 'llm' ? s.out?.nh ?? 0 : 0))
-  const last = useRef<{ T: number; L: number; nh: number } | null>(null)
-  if (T && L) last.current = { T, L, nh }
+  const draft = useZoo((s) => (s.net === 'llm' && s.out?.draft ? 'draft' : ''))
+  const last = useRef<{ T: number; L: number; nh: number; draft: string } | null>(null)
+  if (T && L) last.current = { T, L, nh, draft }
   return last.current ? <LlmLayout {...last.current} /> : <group />
 }
 
@@ -1013,7 +1018,7 @@ function llmDef(T: number, L: number, nh: number): SceneDef {
   }
 }
 
-function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
+function LlmLayout({ T, L, nh, draft }: { T: number; L: number; nh: number; draft: string }) {
   const active = useActive()
   const def = useMemo(() => llmDef(T, L, nh), [T, L, nh])
   DEFS.llm = def
@@ -1033,7 +1038,7 @@ function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
     ;(marker.current.material as THREE.MeshBasicMaterial).opacity = reduceMotion ? 0.55 : 0.4 + 0.25 * Math.sin(clock.elapsedTime * 6)
     marker.current.visible = r > 0 && r < 1
     marker.current.position.x = colX(k)
-    setText(blockTag.current, r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
+    setText(blockTag.current, s.out?.draft ? 'press Run to send it in' : s.out?.noInside ? 'no inside view in the browser' : r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
     const toks: string[] = s.out?.tokens ?? []
     for (let t = 0; t < MAXT; t++) { const el = words.current[t]; if (el) { el.style.display = t < T ? '' : 'none'; if (t < T) { setText(el, (toks[t] ?? '').replace(/\n/g, '⏎') || '·'); const on = reach('llm', s.t, 'input') > (t + 0.5) / T; el.dataset.prio = on ? '1' : '0.5'; el.style.color = on ? '' : 'var(--muted,#aab4d2)' } } }
   })
@@ -1083,7 +1088,7 @@ function LlmLayout({ T, L, nh }: { T: number; L: number; nh: number }) {
       {Array.from({ length: MAXT }, (_, t) => (
         <Word key={t} pos={[-9.0, 0.25, z(Math.min(t, T - 1))]} hidden={!active} elRef={(el) => { words.current[t] = el }} />
       ))}
-      <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={`${T} tokens`} grp="tok" />
+      <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={draft ? `${T} words · not run yet` : `${T} tokens`} grp="tok" />
       <Tag pos={[0, 0.2, zHead - nh * 0.2 - 0.5]} name="Attention heads" sub={`${nh} per block`} grp="heads" />
       <Tag pos={[colX(mid), 0.2, z(T - 1) + 1.3]} name={`${L} blocks`} sub="one sphere per token, per block · arrows pick a block" grp="blocks" onKey={blocksKey} />
       <Chip pos={[0, 1.6, zHead - nh * 0.2 - 1.3]} name="Now playing" hidden={!active} liveRef={(el) => { blockTag.current = el }} />
@@ -1146,7 +1151,8 @@ function Rig() {
     if (!c) return
     const same = L.net === net && L.key === key, insChanged = L.ins !== inspect
     if (same && !insChanged && Math.abs(size.width - L.w) < 1 && Math.abs(size.height - L.h) < 1) return
-    const kind: 'resize' | 'select' | 'net' = !same ? 'net' : insChanged ? 'select' : 'resize'
+    // a new network re-aims from its own angle; a run (or typed prompt) of a new size keeps the user's angle
+    const kind: 'resize' | 'select' | 'net' | 'shape' = L.net !== net ? 'net' : !same ? 'shape' : insChanged ? 'select' : 'resize'
     L.w = size.width; L.h = size.height; L.net = net; L.key = key; L.ins = inspect
     const id = requestAnimationFrame(() => {
       const def = DEFS[net]

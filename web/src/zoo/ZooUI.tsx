@@ -2,20 +2,43 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
-import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel, consensus, inkTo8x8, LANGS, langPrompt, isMultilingual, type LangId } from './nets'
+import { FLOPS, LAYER_LEGEND, VERDICT_WORD, VLM_MAX_WORDS, vlmWords, etaSecs, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel, consensus, inkTo8x8, LANGS, langPrompt, isMultilingual, type LangId } from './nets'
 import { locateZ, NETS, STAGES, totalZ, useZoo, type CatRow, type DigitNet, type NetId } from './zooStore'
 import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
 import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
-import { Explainer, Hint, Inspector, Peek, TopBars, inspectCrumb, inspectParent, showTok } from '../ui/charts'
+import { Explainer, Hint, Inspector, Peek, TopBars, showTok } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
 
 /* ------------------------------------------------------------------------------- drawing pad */
-const GLYPH: Record<DigitNet, string> = { mlp: '●', cnn: '■', rnn: '▲', vit: '◆', vlm: '★' }
 const PAD = 280, BRUSH = 8
 type Pt = { x: number; y: number }
+/** The pad's "try a digit", reachable from the dock (the pad lives in the rail and stays mounted on the net tabs). */
+const PAD_API: { pick: ((d: number) => void) | null } = { pick: null }
+let nextDigit = 1
+
+/** The 8 by 8 picture the network sees, drawn straight from the store (no React render per stroke). */
+function MiniInput() {
+  const cv = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const c = cv.current?.getContext('2d')
+    if (!c) return
+    const data = c.createImageData(8, 8)   // reused for every redraw
+    const draw = (img: number[]) => {
+      const ink = getComputedStyle(cv.current!).color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [230, 235, 255]
+      for (let i = 0; i < 64; i++) { data.data[i * 4] = ink[0]; data.data[i * 4 + 1] = ink[1]; data.data[i * 4 + 2] = ink[2]; data.data[i * 4 + 3] = Math.round(Math.min(1, Math.max(0, img[i] ?? 0)) * 255) }
+      c.putImageData(data, 0, 0)
+    }
+    draw(useZoo.getState().img)
+    const off = useZoo.subscribe((s, p) => { if (s.img !== p.img) draw(s.img) })
+    const mo = new MutationObserver(() => draw(useZoo.getState().img))   // theme switch changes the ink
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => { off(); mo.disconnect() }
+  }, [])
+  return <canvas ref={cv} className="s6mini" width={8} height={8} data-mini-input aria-label="The 8 by 8 picture the network sees" role="img" />
+}
 
 /** One big square pad: thick smooth strokes (mouse, touch, pen), live guesses from all five networks, Clear, Undo, 0 to 9. */
 function DrawPad() {
@@ -53,14 +76,16 @@ function DrawPad() {
   const later = () => { redraw(); if (!raf.current) raf.current = requestAnimationFrame(commit) }
   useEffect(() => {
     redraw()
+    PAD_API.pick = (d) => pick(d)
     // on a phone the rail is a bottom sheet: open it so the whole pad shows
     if (matchMedia('(max-width: 959px)').matches) document.querySelector<HTMLElement>('.inspector')?.style.setProperty('--sheet', '84dvh')
-    return () => cancelAnimationFrame(raf.current)
+    return () => { cancelAnimationFrame(raf.current); PAD_API.pick = null }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const at = (e: { clientX: number; clientY: number }): Pt => { const r = cv.current!.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * PAD, y: ((e.clientY - r.top) / r.height) * PAD } }
   const clear = () => { strokes.current = []; live.current = null; sample.current = null; later() }
   const undo = () => { if (strokes.current.length) { strokes.current.pop(); later() } }
   const pick = (d: number) => {
+    const digits = useZoo.getState().digits
     const k = digits ? digits.labels.findIndex((l) => l === d) : -1
     if (k < 0 || !digits) return
     strokes.current = []; live.current = null; sample.current = digits.images[k]; later()
@@ -101,9 +126,8 @@ function DrawPad() {
       <div className="s6see" aria-live="polite">
         {verdict ? (
           <>
-            <p className="s6big" data-pad-result>I see a <b>{verdict.top}</b> · {Math.round(verdict.pct * 100)} %</p>
-            {verdict.second !== null && <p className="s6line">or a {verdict.second} · {Math.round(verdict.pct2 * 100)} %</p>}
-            <div className="s6pills">{reads!.map(({ id, r }) => <span key={id} className="s6pill" style={{ borderColor: NET_COLOR[id] }}><b style={{ color: NET_COLOR[id] }} aria-hidden>{GLYPH[id]}</b>{NAME[id]} {r.digit ?? '?'}</span>)}</div>
+            <p className="s6big" data-pad-result>I see a <b>{verdict.top}</b> · {pct(verdict.pct)}</p>
+            {verdict.second !== null && verdict.pct2 >= 0.05 && <p className="s6line">or a {verdict.second} · {pct(verdict.pct2)}</p>}
           </>
         ) : <p className="s6line">Draw, or pick a digit. Five networks read it as you draw.</p>}
       </div>
@@ -116,11 +140,18 @@ function Output() {
   const { net, out, label, pack } = useZoo(useShallow((s) => ({ net: s.net, out: s.out, label: s.label, pack: s.packs[s.net] })))
   if (!out || !pack) return null
   if (net === 'vlm') {
-    const words = out.ids.slice(1).map((i: number) => pack.vocab![i]).filter((w: string) => w !== '<eos>')
+    const words: string[] = out.ids.slice(1).map((i: number) => pack.vocab![i]).filter((w: string) => w !== '<eos>')
+    const given = out.given ?? 0
+    const add = (w: string) => { const z = useZoo.getState(); z.setWords(`${z.words.trim()} ${w}`.trim()) }
     return (
       <div className="ccard">
-        <h4>Caption written by the model</h4>
-        <p className="caption-out">“{words.join(' ').replace(' ,', ',')}”</p>
+        <h4>Answer <small>your words, then the model's</small></h4>
+        <p className="caption-out">“{words.map((w, i) => <span key={i}>{i && w !== ',' ? ' ' : ''}{i < given ? <b className="s6mine">{w}</b> : w}</span>)}”</p>
+        <p className="s6line">Words it knows. Tap to add one (up to {VLM_MAX_WORDS}).</p>
+        <div className="s6chips s6vocab" role="group" aria-label="Words it knows">
+          {pack.vocab!.slice(2).map((w) => <button key={w} className="btn2" onClick={() => add(w)}>{w}</button>)}
+          <button className="btn2" onClick={() => useZoo.getState().setWords('')}>Clear</button>
+        </div>
         <p className="small mono">{label !== null ? `the test image is a ${label}` : 'your drawing'}<Hint>Each word is chosen from {pack.vocab!.length} possible words, given the image tokens and the words written so far.</Hint></p>
       </div>
     )
@@ -130,7 +161,7 @@ function Output() {
     <div className="ccard">
       <h4>Prediction <small>{label !== null ? `the test image is a ${label}` : 'your drawing'}</small></h4>
       <div className="probs">{out.probs.map((p: number, i: number) => <div key={i} className={i === best ? 'on' : ''}><i style={{ height: `${Math.max(2, p * 100)}%` }} /><span>{i}</span></div>)}</div>
-      <p className="small mono">{best} · {(out.probs[best] * 100).toFixed(1)}% sure</p>
+      <p className="small mono">{best} · {pct(out.probs[best])} sure</p>
     </div>
   )
 }
@@ -259,7 +290,9 @@ function ZooTimeline() {
 
 /** One fixed colour per network (validated categorical palette, dark surface), used everywhere a network is identified. */
 export const NET_COLOR: Record<DigitNet, string> = { mlp: '#3987e5', cnn: '#d95926', rnn: '#199e70', vit: '#c98500', vlm: '#d55181' }
-const NAME: Record<DigitNet, string> = { mlp: 'MLP', cnn: 'CNN', rnn: 'RNN (GRU)', vit: 'ViT', vlm: 'VLM' }
+const NAME: Record<DigitNet, string> = { mlp: 'MLP', cnn: 'CNN', rnn: 'RNN', vit: 'ViT', vlm: 'VLM' }
+/** One percent format everywhere: whole numbers, no space. */
+const pct = (p: number) => `${Math.round(p * 100)}%`
 const fmtUs = (us: number) => (us >= 1000 ? `${(us / 1000).toFixed(1)} ms` : `${Math.round(us)} µs`)
 
 /* ------------------------------------------------------------------- all five, side by side */
@@ -278,7 +311,7 @@ export function CompareCard() {
           <button key={id} role="row" className={`cmpr ${id === net ? 'on' : ''}`} onClick={() => useZoo.getState().setNet(id)} title={r?.caption ? `caption: “${r.caption}”` : `show the ${NAME[id]} in 3D`}>
             <span role="cell"><i className="sw" style={{ background: NET_COLOR[id] }} />{NAME[id]}</span>
             <b role="cell" className={`mono dig ${label !== null && r?.digit !== null && r && r.digit !== label ? 'wrong' : ''}`}>{r ? (r.digit ?? '?') : '…'}</b>
-            <span role="cell" className="conf"><i style={{ width: `${(r?.conf ?? 0) * 100}%` }} /><em className="mono">{r ? `${Math.round(r.conf * 100)}%` : ''}</em></span>
+            <span role="cell" className="conf"><i style={{ width: `${(r?.conf ?? 0) * 100}%` }} /><em className="mono">{r ? pct(r.conf) : ''}</em></span>
             <span role="cell" className="spd"><i style={{ width: `${((timing[id]?.us ?? 0) / maxUs) * 100}%` }} /><em className="mono">{timing[id] ? fmtUs(timing[id]!.us) : '…'}</em></span>
           </button>
         ))}
@@ -358,6 +391,26 @@ const CSS = `
 .s6dock button,.s6dock input,.s6dock select{min-height:44px}
 .s6dock .btn2.sm,.s6err .btn2{min-height:44px}
 .s6err{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.zoonets{display:flex;flex-wrap:nowrap;max-width:calc(100% - 28px);overflow-x:auto;scrollbar-width:none}
+.zoonets button{white-space:nowrap;flex:none}
+@media (max-width:600px){.zoonets .sfx{display:none}.zoonets button{padding-inline:9px}}
+.zoo .tlseg span{font:500 12px var(--body);opacity:0;transition:opacity .15s}
+.zoo .tlseg.on span,.zoo .tlseg:hover span{opacity:1}
+@media (prefers-reduced-motion:reduce){.zoo .tlseg span{transition:none}}
+.zoohud .eyebrow,.zoo .cmph span,.s6grp{text-transform:none;letter-spacing:0;font-family:var(--body)}
+.zoo .cmph span{font-size:12px}
+.s6grp{font-size:12.5px;font-weight:600}
+.s6tok .gap{display:inline-block;width:.6em;margin-right:2px;border-bottom:1px solid var(--faint)}
+.s6netin{flex-wrap:nowrap;width:100%;min-width:0}
+.s6mini{width:44px;height:44px;flex:none;image-rendering:pixelated;color:var(--fg);background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.s6what{white-space:nowrap;flex:none}
+.s6netin .s6words{flex:1 1 auto;min-width:0}
+.s6netin>.btn2{flex:none;white-space:nowrap}
+.s6netin>.btn2[data-primary]{margin-left:auto}
+.s6netin .s6words~.btn2[data-primary]{margin-left:0}
+.s6mine{color:var(--pos-ink)}
+.s6vocab{grid-template-columns:repeat(auto-fill,minmax(64px,1fr))}
+@media (max-width:600px){.s6netin{flex-wrap:wrap}.s6netin .s6words{flex:1 1 calc(100% - 140px)}.s6what{font-size:12.5px}}
 .s6note{position:absolute;left:14px;right:14px;top:64px;text-align:center;z-index:3}
 @media (max-width:900px){.s6crumb,.s6legend{bottom:140px}}
 `
@@ -532,7 +585,7 @@ function Picker() {
   const [text, setText] = useState('')
   const box = useRef<HTMLDivElement>(null)
   const slot = usePortal('model-picker-slot')
-  useEffect(() => { const f = () => setOpen(true); window.addEventListener('ns-open-picker', f); return () => window.removeEventListener('ns-open-picker', f) }, [])
+  useEffect(() => { const f = (e: Event) => { setOpen(true); if ((e as CustomEvent).detail?.link) setOther(true) }; window.addEventListener('ns-open-picker', f); return () => window.removeEventListener('ns-open-picker', f) }, [])
   useEffect(() => { if (open && examples.length) useZoo.getState().loadCatalog() }, [open, examples.length])
   useEffect(() => {
     if (!open) return
@@ -548,16 +601,16 @@ function Picker() {
       <button className="s6pickbtn" aria-haspopup="true" aria-expanded={open} onClick={() => setOpen(!open)} title="Choose a model"><span>Model: <b>{current?.title ?? (repo.split('/').pop() || 'none')}</b></span><i aria-hidden>▾</i></button>
       {open && (
         <div className="s6pop" role="menu" aria-label="Models">
-          {groupByTask(rows).map((g) => (
+          {[...groupByTask(rows.filter((r) => !(r.recorded && backend !== 'online'))), ...(backend !== 'online' && rows.some((r) => r.recorded) ? [{ task: 'recorded', label: 'Recorded runs', rows: rows.filter((r) => r.recorded) }] : [])].map((g) => (
             <div key={g.task} role="group" aria-label={g.label}>
               <div className="s6grp">{g.label}</div>
               {g.rows.map((r) => {
                 const sug = r.verdict === 'too-big' ? smallerSuggestion(r as any, rows as any) : null
-                const note = r.recorded && backend !== 'online' ? 'recorded run, no download' : r.plan ? r.bytes == null ? (r.fit?.where === 'companion' ? 'runs on the companion' : 'size unknown') : `${fmtBytes(r.bytes)}${r.plan.cached ? '' : r.plan.etaSeconds ? ` · ${fmtEta(r.plan.etaSeconds)}` : ''}` : 'reading size…'
+                const note = r.recorded && backend !== 'online' ? 'no download' : r.plan ? r.bytes == null ? (r.fit?.where === 'companion' ? 'runs on the companion' : 'size unknown') : `${fmtBytes(r.bytes)}${r.plan.cached ? '' : ` · ${fmtEta(etaSecs(r.bytes))}`}` : '…'
                 return (
-                  <button key={r.id} role="menuitem" className="s6rowb" aria-current={!!current && current.id === r.id} onClick={() => { setOpen(false); loadExample(r.id) }}>
+                  <button key={r.id} role="menuitem" className="s6rowb" aria-current={!!current && current.id === r.id} onClick={() => { setOpen(false); void useZoo.getState().setNet('llm'); loadExample(r.id) }}>
                     <span>{r.title}{r.plan?.cached && <b className="s6v-fits" data-cached> cached ✓</b>}</span>
-                    {r.verdict && <em className={`s6v-${r.verdict}`}>{VERDICT_WORD[r.verdict]}</em>}
+                    {r.verdict && r.verdict !== 'fits' && <em className={`s6v-${r.verdict}`}>{VERDICT_WORD[r.verdict]}</em>}
                     <small>{note}{sug ? ` · try ${sug.title}` : ''}</small>
                   </button>
                 )
@@ -567,7 +620,7 @@ function Picker() {
           <div className="s6grp">More</div>
           <button className="s6rowb" onClick={() => setOther(!other)} aria-expanded={other}><span>Use another model…</span></button>
           {other && (
-            <form className="s6dock" style={{ border: 0, margin: 6 }} onSubmit={(e) => { e.preventDefault(); if (text.trim()) { loadModel(text); setOpen(false) } }}>
+            <form className="s6dock" style={{ border: 0, margin: 6 }} onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void useZoo.getState().setNet('llm'); loadModel(text); setOpen(false) } }}>
               <label className="s6line" htmlFor="s6hf">A Hugging Face link or name</label>
               <input id="s6hf" type="text" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} placeholder="org/model" />
               <button className="btn2" type="submit" disabled={probing}>{probing ? 'Reading…' : 'Load'}</button>
@@ -734,6 +787,9 @@ function RunDock() {
   const bad = useProblem(task, input.kind === kindOf(task) ? input : spec?.defaultInput ?? input, caps)
   const first = viaBrowser && !!plan && !plan.cached && lastStats?.repo?.toLowerCase() !== spec?.repo?.toLowerCase()
   const can = !!(spec || probe) && !running && !busy && !(bad && mode !== 'replay')
+  const net = useZoo((s) => s.net)
+  // the dock follows the tab: the prompt only for the language model, the digit (and the VLM's words) for the small nets
+  if (net !== 'llm') { const n = <NetDock net={net} compact={!!slot} />; return slot ? createPortal(n, slot) : n }
   const node = (
     <div className={`s6dock ${slot ? 'compact' : 'fallback'}`} aria-label="Run" data-s6dock>
       <div className="s6row" style={{ flexWrap: 'nowrap', width: '100%', alignItems: 'flex-start' }}>
@@ -744,6 +800,42 @@ function RunDock() {
     </div>
   )
   return slot ? createPortal(node, slot) : node
+}
+
+/** Open the rail where the pad lives and bring the pad into view. */
+function openPad() {
+  useStore.getState().setRail('model', true)
+  requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-pad]')?.scrollIntoView({ block: 'nearest', behavior: 'auto' }))
+}
+function newDigit() {
+  const d = nextDigit; nextDigit = (nextDigit + 3) % 10
+  if (PAD_API.pick) PAD_API.pick(d)
+  else { const z = useZoo.getState(), k = z.digits?.labels.indexOf(d) ?? -1; if (k >= 0) z.setImg(z.digits!.images[k], d) }
+}
+
+/** The dock on a small-network tab: no prompt and no language. The picture the net sees, Draw, New digit; the VLM also
+ *  takes a few words, which it finishes. Same height as the prompt dock, so switching tabs does not move the page. */
+function NetDock({ net, compact }: { net: NetId; compact: boolean }) {
+  const { words, setWords, label, vocab } = useZoo(useShallow((s) => ({ words: s.words, setWords: s.setWords, label: s.label, vocab: s.packs.vlm?.vocab ?? null })))
+  const unknown = net === 'vlm' && vocab ? vlmWords(words, vocab).unknown : []
+  return (
+    <div className={`s6dock ${compact ? 'compact' : 'fallback'}`} aria-label="Input" data-s6dock data-net-dock={net}>
+      <div className="s6row s6netin">
+        <MiniInput />
+        <span className="s6line s6what">{net === 'vlm' ? 'Picture' : 'Digit'}<b>{label !== null ? ` · sample ${label}` : ' · yours'}</b></span>
+        {net === 'vlm' && (
+          <>
+            <label className="sr" htmlFor="s6words">Your words. The model finishes the sentence about the picture.</label>
+            <input id="s6words" data-question className="s6in s6words" type="text" value={words} maxLength={60} spellCheck={false} autoComplete="off"
+              placeholder="e.g. it is" onChange={(e) => setWords(e.target.value)} title="Your first words. It finishes the sentence about the picture." />
+          </>
+        )}
+        <button className="btn2" data-primary onClick={openPad}>Draw</button>
+        <button className="btn2" onClick={newDigit}>New digit</button>
+      </div>
+      {unknown.length > 0 && <p className={`s6line ${compact ? 's6float s6small' : ''}`} role="status">It knows 20 words. Skipped: {unknown.slice(0, 4).join(', ')}</p>}
+    </div>
+  )
 }
 
 /* ---------------------------------------------------------------------------- result card */
@@ -764,7 +856,7 @@ function Result() {
         <div className="ccard"><h4>Your text <small>before the model cuts it up</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{preview.map((t, i) => <span key={i} className="s6tok" data-token>{t}</span>)}</div></div>
       )}
       {tokens.length > 0 && (
-        <div className="ccard"><h4>Tokens <small>the pieces the model reads</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{tokens.slice(0, 60).map((t, i) => <span key={i} className="s6tok" data-token>{showTok(t)}</span>)}</div></div>
+        <div className="ccard"><h4>Tokens <small>the pieces the model reads</small></h4><div dir="auto" lang={lang} style={{ lineHeight: 1.9 }}>{tokens.slice(0, 60).map((t, i) => { const sp = /^[ Ġ▁]/.test(t); return <span key={i} className="s6tok" data-token>{sp && <i className="gap" aria-label="space" />}{showTok(sp ? t.slice(1) : t)}</span> })}</div><p className="s6line">A line before a piece means it starts a new word.</p></div>
       )}
       {final && !running && (
         <div className="ccard">
@@ -787,17 +879,6 @@ function Result() {
 }
 
 /* ------------------------------------------------------------------------------------- view */
-function Crumb() {
-  const inspect = useZoo((s) => s.inspect)
-  if (!inspect) return null
-  const parts = inspectCrumb(inspect).split(' › ')
-  return (
-    <nav className="s6crumb" aria-label="Where you are">
-      {parts.map((p, i) => <span key={i}>{i > 0 && ' › '}{i === parts.length - 1 ? <b aria-current="location">{p}</b> : <span>{p}</span>}</span>)}
-      <button className="btn2 sm" aria-label="Go up one level (Esc)" onClick={() => useZoo.getState().setInspect(inspectParent(inspect))}>Esc</button>
-    </nav>
-  )
-}
 
 function Empty() {
   const { net } = useZoo(useShallow((s) => ({ net: s.net })))
@@ -832,8 +913,10 @@ export function ZooView() {
         <ZooScene />
         <Picker />
         <div className="vswitch seg zoonets" role="group" aria-label="Network">
-          <button className={`real ${net === 'llm' ? 'on' : ''}`} onClick={() => useZoo.getState().setNet('llm')} title="The model loaded at the top, on your prompt">{short}</button>
-          {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} onClick={() => useZoo.getState().setNet(n.id as NetId)} title="A tiny network that reads 8×8 handwritten digits">{n.short}</button>)}
+          <button className={`real ${net === 'llm' ? 'on' : ''}`} onClick={() => useZoo.getState().setNet('llm')} title={`${short}: a real language model, on your prompt`}>{short.replace(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i, '')}<span className="sfx">{short.match(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i)?.[0] ?? ''}</span></button>
+          {/* the pad stays one tap away (Draw in the dock): an open drawer would cover this tab row and half the scene */}
+          {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} data-net-tab={n.id} onClick={() => void useZoo.getState().setNet(n.id as NetId)} title={n.id === 'vlm' ? 'A tiny network that looks at a digit and finishes your words about it' : 'A tiny network that reads 8×8 handwritten digits'}>{n.short}</button>)}
+          <button className="more" data-more-models onClick={() => window.dispatchEvent(new CustomEvent('ns-open-picker', { detail: { link: true } }))} title="Load another model from a Hugging Face link">More…</button>
         </div>
         {p && (
           <Peek className="phud zoohud" data-hud="net" label={`More about the ${p.title}`}
@@ -847,7 +930,6 @@ export function ZooView() {
         )}
         <Explainer key={net} id={net === 'llm' ? 'model' : `net-${net}`} placement="bottom-left"><Say id={net} /></Explainer>
         <Empty />
-        <Crumb />
         <Legend />
         <div className="stagebottom"><ZooTimeline /></div>
         {typeof (useStore.getState() as any).autoStart === 'function' ? <AutoStrip /> : <FirstVisit />}
@@ -862,7 +944,7 @@ export function ZooView() {
             <CompareCard />
             <Output />
             <CalcCard />
-            <p className="small">About these networks<Hint>All five learned from the same 1,500 digits. Compare how each one solves it.</Hint></p>
+            <p className="s6line">All five learned from the same 1,500 digits.</p>
           </div>
         </div>}
       </aside>
