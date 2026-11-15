@@ -1,3 +1,26 @@
+# STATUS (read this first)
+
+**Built and checked on the test PC (Ryzen 7 8745HS, Radeon 780M, Edge):** rounds 1 and 2 of this plan. The harness
+(`web/tests/e2e/run.mjs`) passes 37 of 37 tier-1/2 checks on a fresh build (A1-A35, L1-L5, dark and light); tier 3 on the
+real Hub: T1, T2, A9, L6 pass (default model, first result 22.9 s on WebGPU over this connection). 100 web unit tests and
+77 server tests pass. `dist` is 32 MB; first JS 27 kB gzipped; first paint ~0.4 s; frame p95 16.8 ms, also during Test all.
+
+**Still open (honest list):**
+- [ ] Real-browser tier on Firefox, Safari (iOS) and an Android phone (only Edge/Chromium was run).
+- [ ] REF v1 not frozen: scores use placeholder references; freeze them on the reference device (5 sessions per engine).
+- [ ] Companion on port 8000 runs older code until restarted; restart it to get the origin/pairing hardening (S9).
+- [ ] Whisper multilingual decode untested in a real run; no multilingual text model under 100 MB exists (Qwen2.5-0.5B is 461 MB).
+- [ ] Cache test takes ~10 s (target 6 s) and misses L3 under load; RAM test shows 100-280 ms stalls on a busy PC; re-measure on a quiet machine.
+- [ ] Fonts are the system stack (no subset yet); 3D starts when the section is near the viewport, not on idle.
+- [ ] A7b (82 MB model at 20 Mbit) limit changed after its last run: re-run it.
+- [ ] SmolLM2-135M-Instruct is 112 MB (target <= 100 MB; no smaller good text model).
+- [ ] Light-mode scene polish (floor colour, HUD card over a label): with S8.
+- [ ] Final plain-words copy pass beyond A26's sampling, and a fresh-eyes design review of every view in both themes.
+- [ ] SSRF-safe fetch helper (`security.py`) is written and tested but not wired to any endpoint.
+- [ ] Drop `server/app/bench.py` split? No: kept as its own module (size).
+
+---
+
 # Neural Studio: plan v3 (reviewed, ready to split)
 
 Legend: `[x]` done and checked on the test PC, `[ ]` pending. "Checked" means a unit test, script or browser test ran

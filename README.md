@@ -35,40 +35,29 @@ Open the `neural-studio` folder (File > Open Folder), then:
 - **F5** opens it in Edge with the debugger attached (full WebGPU).
 - Terminal > Run Task has the build, the unit tests, the web-app-only server and the live 3D browser test.
 
-## The four views
+## What you see
 
-They are not tabs: it is **one continuous page**. The four sections are stacked, each as tall as the window, and you
-scroll through them (the page settles on each one). The top bar is the same everywhere: it jumps to a section and
-shows which one you are at (`#model`, `#journey`, `#power`, `#zoo` in the URL open the page there). The Hugging Face
-link and the example chips stay put, so the same model carries across Model, Journey and Electricity. Only the sections
-on screen draw their 3D, so four live scenes do not slow each other (or the measurements) down. A plain mouse wheel over
-a 3D scene scrolls the page; **Ctrl + wheel** (or a trackpad pinch) zooms it. On a phone the page scrolls normally and
-only the row of section links stays on screen.
+One page, no tabs. **Model** (left) and **Machine** (right) sit side by side on a wide screen and stack on a phone.
+Each has a **Details** drawer, closed until you open it (Esc or a click outside closes it). A slim score strip sits on top.
 
-- **Model**: the probe reads `config.json` and the safetensors header with HTTP Range requests (no weights
-  downloaded) and draws the model. Multi-part models such as SmolVLM show their vision tower, connector and
-  language model as separate stacks. It runs live, with attention rebuilt from q and k, reversible edits, A/B
-  comparison and a head scan.
-- **Journey** and **Electricity** (the machine). Every part of the 3D machine shows its live numbers on its label (CPU
-  load, clock and watts, each core, RAM in use, SSD and network throughput), 10 times a second. The side panel (score,
-  flow, live charts, speed, specs) is behind the **Details** button.
-  - *Journey of a prompt* follows one prompt from keystroke to screen through the real CPU, caches, RAM, SSD and
-    network, timed per operation. The timeline can be scrubbed and rewound. Double-click to dive: component, core
-    (with both SMT threads), then one real dot product in cache lines. The RAM dive shows the KV cache growing.
-  - *Electricity* is a **live** 3D view of the power in this machine: current flows from the power input through the
-    voltage regulator into each core, with every core's colour, height and sparks driven by its own measured watts,
-    10 times a second. It is live at all times: open any app and watch it change, and while the test runs every
-    stage drives it as it happens. SSD and network glow from the OS disk and network counters. After the test, one
-    click replays the recorded run (scrub and rewind); "Live now" goes back. You get energy per test, work per
-    joule, per-core energy, thermal-throttle detection, and what the live 3D view itself costs.
-  - The device score has sub-scores per component, live while measuring, with the spread across repeat runs.
-- **Network zoo**: five tiny networks trained here on 8×8 handwritten digits, computed in the browser. Draw a digit
-  and every network recomputes. A timeline plays each one's flow, and double-clicking any neuron, cell, memory unit or
-  token shows its arithmetic with the real numbers. The VLM writes a caption word by word, and its attention arcs show
-  where it looks. Beside the 3D view:
-  - **All five networks** read the same image side by side (digit, confidence, measured time per image on this device).
-  - **Stress test**: noise, shift and stroke width change the image every network sees.
-  - **Robustness test**: accuracy of all five on the 48 test digits at six noise levels, drawn as one chart with a table view.
+- **First visit.** Type your name (it stays on this device and goes on your score card). The default model downloads by
+  itself with a progress bar and Cancel, then runs. Models are saved on this device: the second visit downloads nothing
+  and works offline. Open the 💡 in the top bar to see what is saved and clear it.
+- **Light and dark.** The toggle in the top bar follows your system and remembers your choice.
+- **💡 explainers.** Each animation explains itself in a few short lines when the page opens. The 💡 next to it shows it
+  again; it vanishes when the mouse leaves.
+- **Model.** The real model as a 3D machine: your prompt as tiles, one sphere per token per block, attention heads and
+  arcs, next-word scores. Types of layer differ in shape and colour. Pick a language for the prompt (8 to start), type
+  anything, press Run. Click a block to open the inspector: weights as a heatmap that zooms down to the real numbers,
+  vectors, and top-10 logits. Nothing loads until you click. The five tiny nets (MLP, CNN, RNN, ViT, VLM) sit in the same
+  box: draw a digit on the big pad (or tap 0-9) and all five answer at once.
+- **Machine.** Every part of the machine shows live numbers, and the same prompt is replayed through the real hardware
+  (companion only). The score strip shows your overall score; the Machine drawer shows it again with five rows
+  (Compute, Memory, GPU, Storage, Model). Click a row to open its tests; every test has a default input and "use my own".
+  After "Test all" you get one score with how much was tested, the weakest part, and a share card.
+- **Speed.** First JS is about 27 kB gzipped; the 3D loads when needed; models run in a Web Worker so the page never
+  stalls. The service worker makes repeat visits instant.
+- **Privacy.** Everything runs in your browser. Only model files come from Hugging Face. Your name never leaves the device.
 
 ## What is where
 
