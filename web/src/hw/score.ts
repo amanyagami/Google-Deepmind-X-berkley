@@ -365,7 +365,7 @@ export function exportResults(opts: { includeDevice: boolean; includeName?: bool
   let final: FinalScore | null = null
   try { final = finalScore(results) } catch { /* mixed scales: export the raw results only */ }
   const doc = {
-    app: 'neural-studio', v: 1, at: new Date().toISOString(),
+    app: 'kundali', v: 1, at: new Date().toISOString(),
     ...(opts.includeName !== false && name ? { name } : {}),
     final: final && { score: Math.round(final.score), ci95: final.ci95.map(Math.round), provisional: final.provisional, coverage: final.coverage, limiting: final.limiting, scale: final.scale, workloads: final.workloads, flags: final.flags },
     results: Object.fromEntries(rs),

@@ -1,4 +1,4 @@
-# Neural Studio
+# Kundali
 
 Paste a Hugging Face link and see the model as a 3D machine, run it live, change it, and see how this computer
 computes it. You can follow one prompt through the real hardware, watch the electricity of every test, and compare
@@ -29,7 +29,7 @@ python -m http.server 5180 --directory web\dist     # or: the app alone, as a st
 ### In VS Code
 
 Open the `neural-studio` folder (File > Open Folder), then:
-- **Ctrl+Shift+B** starts the companion (task "Neural Studio: start").
+- **Ctrl+Shift+B** starts the companion (task "Kundali: start").
 - **View in VS Code**: Ctrl+Shift+P > "Simple Browser: Show" > `http://127.0.0.1:8000/#machine`. VS Code's built-in
   browser may not offer WebGPU, so the GPU test can report "unavailable" there.
 - **F5** opens it in Edge with the debugger attached (full WebGPU).
@@ -45,7 +45,7 @@ Replace `PROJECT_ID` and `REGION` (for example `europe-west1`).
 gcloud auth login
 gcloud config set project PROJECT_ID
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
-gcloud run deploy neural-studio --source . --region REGION --allow-unauthenticated --port 8080 --memory 512Mi --cpu 1 --min-instances 0
+gcloud run deploy kundali --source . --region REGION --allow-unauthenticated --port 8080 --memory 512Mi --cpu 1 --min-instances 0
 ```
 
 The last command prints the app's URL. Run it again to ship a new version.
@@ -53,8 +53,8 @@ The last command prints the app's URL. Run it again to ship a new version.
 Test the image on this PC first (needs Docker Desktop):
 
 ```powershell
-docker build -t neural-studio .
-docker run --rm -p 8080:8080 -e PORT=8080 neural-studio   # open http://127.0.0.1:8080
+docker build -t kundali .
+docker run --rm -p 8080:8080 -e PORT=8080 kundali   # open http://127.0.0.1:8080
 ```
 
 ## What you see

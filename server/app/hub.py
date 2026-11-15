@@ -54,7 +54,7 @@ class ReadStats:
 
 
 def _headers(extra: dict | None = None) -> dict:
-    h = {"User-Agent": "neural-studio/0.1"}
+    h = {"User-Agent": "kundali/0.1"}
     token = os.environ.get("HF_TOKEN")
     if token:
         h["Authorization"] = f"Bearer {token}"

@@ -1,4 +1,4 @@
-/* Neural Studio offline shell. Versioned by the build: the build replaces BUILD and PRECACHE.
+/* Kundali offline shell. Versioned by the build: the build replaces BUILD and PRECACHE.
  * Hashed assets: cache first. index.html: network first. Never touches the Model Hub or any other site. */
 const BUILD = '__BUILD__'
 const PRECACHE = '__PRECACHE__'.split(',').filter(Boolean)

@@ -152,7 +152,7 @@ function TopBar({ view }: { view: AppView }) {
   const device = useDevice()
   return (
     <header className="topbar">
-      <div className="brand"><span className="logo" aria-hidden /><span className="brandname">Neural Studio</span></div>
+      <div className="brand"><span className="logo" aria-hidden /><span className="brandname">Kundali</span></div>
       <div id="model-picker-slot"><PickerFallback /></div>
       <nav className="seg" aria-label="Sections">
         {SECTIONS.map((x) => (

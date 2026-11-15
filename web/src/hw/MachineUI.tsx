@@ -281,7 +281,7 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   g.fillStyle = '#0a0e19'; g.fillRect(0, 0, 1200, 630)
   g.fillStyle = '#ffa94d'; g.fillRect(0, 0, 400, 8)
   g.textBaseline = 'alphabetic'
-  g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText(who ? `${who.toUpperCase()} · DEVICE SCORE` : 'NEURAL STUDIO · DEVICE SCORE', 64, 90)
+  g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText(who ? `${who.toUpperCase()} · DEVICE SCORE` : 'KUNDALI · DEVICE SCORE', 64, 90)
   g.fillStyle = '#ffa94d'; g.font = `700 150px ${sans}`; g.fillText(f.score != null ? `▲ ${f.score.toLocaleString('en-US')}` : '○ not tested', 56, 270)
   g.fillStyle = '#e8ecf8'; g.font = `600 44px ${sans}`; g.fillText(f.tier, 64, 336)
   g.fillStyle = '#c3cbe6'; g.font = `400 30px ${sans}`
@@ -315,12 +315,12 @@ function SharePanel({ f, name: who, onClose }: { f: Final; name: string; onClose
   const say = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 2500) }
   const json = () => {
     const txt = exportResults({ includeDevice: withName, includeName: true }, res, info, who)
-    const u = URL.createObjectURL(new Blob([txt], { type: 'application/json' })); download(u, 'neural-studio-results.json'); setTimeout(() => URL.revokeObjectURL(u), 1000)
+    const u = URL.createObjectURL(new Blob([txt], { type: 'application/json' })); download(u, 'kundali-results.json'); setTimeout(() => URL.revokeObjectURL(u), 1000)
   }
   const copy = async () => { try { history.replaceState(null, '', link()); await navigator.clipboard.writeText(link()); say('Link copied.') } catch { say('Could not copy. Use the address bar.') } }
   const share = async () => {
     try {
-      const blob = await (await fetch(url)).blob(), file = new File([blob], 'neural-studio-score.png', { type: 'image/png' })
+      const blob = await (await fetch(url)).blob(), file = new File([blob], 'kundali-score.png', { type: 'image/png' })
       const data: any = { title: 'My device score', text: `▲ ${f.score} · ${f.tested} of ${f.total} tested`, url: link() }
       if ((navigator as any).canShare?.({ files: [file] })) data.files = [file]
       await navigator.share(data)
@@ -331,7 +331,7 @@ function SharePanel({ f, name: who, onClose }: { f: Final; name: string; onClose
       <img src={url} alt={`Share card: score ${f.score}, ${f.tier}`} width={1200} height={630} className="t5-prev" data-testid="share-img" />
       <label className="t5-chk"><input type="checkbox" checked={withName} onChange={(e) => setWithName(e.target.checked)} /> Add my device name</label>
       <div className="t5-row">
-        <button type="button" className="t5-btn pri" onClick={() => download(url, 'neural-studio-score.png')}>Save image</button>
+        <button type="button" className="t5-btn pri" onClick={() => download(url, 'kundali-score.png')}>Save image</button>
         <button type="button" className="t5-btn" onClick={json}>Save data</button>
         <button type="button" className="t5-btn" onClick={copy}>Copy link</button>
         {typeof navigator !== 'undefined' && 'share' in navigator && <button type="button" className="t5-btn" onClick={share}>Share…</button>}
@@ -360,9 +360,9 @@ function ScoreHero() {
   const shareNow = async () => {
     const url = drawShare(f, deviceClass(res), null, name).toDataURL('image/png')
     if (typeof navigator !== 'undefined' && 'share' in navigator && matchMedia('(pointer: coarse)').matches) {
-      try { const file = new File([await (await fetch(url)).blob()], 'neural-studio-score.png', { type: 'image/png' }); const d: any = { title: 'My device score', text: `▲ ${f.score ?? '—'} · ${f.tested} of ${f.total} tested` }; if ((navigator as any).canShare?.({ files: [file] })) d.files = [file]; await navigator.share(d); return } catch (e: any) { if (e?.name === 'AbortError') return }
+      try { const file = new File([await (await fetch(url)).blob()], 'kundali-score.png', { type: 'image/png' }); const d: any = { title: 'My device score', text: `▲ ${f.score ?? '—'} · ${f.tested} of ${f.total} tested` }; if ((navigator as any).canShare?.({ files: [file] })) d.files = [file]; await navigator.share(d); return } catch (e: any) { if (e?.name === 'AbortError') return }
     }
-    download(url, 'neural-studio-score.png')
+    download(url, 'kundali-score.png')
   }
   const browser = useHW((s) => s.source !== 'companion')
   const rest = TEST_IDS.filter((i) => !(res[i] && res[i].input.kind === 'default'))

@@ -1,4 +1,4 @@
-"""Neural Studio API.
+"""Kundali API.
 
   GET  /api/health
   GET  /api/probe?repo=...          config + safetensors header via Range, typed graph, zero weights downloaded
@@ -40,7 +40,7 @@ async def lifespan(_app):
     hw.sweep_temp()
 
 
-app = FastAPI(title="Neural Studio", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Kundali", version="0.3.0", lifespan=lifespan)
 
 
 @app.middleware("http")

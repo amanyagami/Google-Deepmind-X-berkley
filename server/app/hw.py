@@ -535,7 +535,7 @@ def _network(cb=None, seconds: float = 3.0, cancel=None) -> dict | None:
     cap = 64 * 2**20
     try:
         t0 = time.perf_counter()
-        r = requests.get(url, headers={"Range": f"bytes=0-{cap - 1}", "User-Agent": "neural-studio/0.1"}, stream=True, timeout=(5, 5))
+        r = requests.get(url, headers={"Range": f"bytes=0-{cap - 1}", "User-Agent": "kundali/0.1"}, stream=True, timeout=(5, 5))
         ttfb = time.perf_counter() - t0
         got, w_got = 0, 0
         t1 = w_t = time.perf_counter()

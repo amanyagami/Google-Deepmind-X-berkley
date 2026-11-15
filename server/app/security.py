@@ -31,7 +31,7 @@ _TOKEN = os.environ.get("NEURAL_STUDIO_TOKEN") or None
 
 
 def announce() -> None:
-    print(f"\n  Neural Studio pairing code: {PAIR}\n  (enter it in the web app; it is valid until this server stops)\n", flush=True)
+    print(f"\n  Kundali pairing code: {PAIR}\n  (enter it in the web app; it is valid until this server stops)\n", flush=True)
 
 
 def _split_env(name: str) -> set[str]:
@@ -271,7 +271,7 @@ def _open(ip: str, port: int, host: str, path: str, timeout: float, max_bytes: i
     pool = urllib3.HTTPSConnectionPool(ip, port=port, server_hostname=host, assert_hostname=host, cert_reqs="CERT_REQUIRED",
                                        timeout=urllib3.Timeout(connect=5, read=min(timeout, 10)), retries=False)
     try:
-        r = pool.urlopen("GET", path, headers={"Host": host if port == 443 else f"{host}:{port}", "User-Agent": "neural-studio/0.1"},
+        r = pool.urlopen("GET", path, headers={"Host": host if port == 443 else f"{host}:{port}", "User-Agent": "kundali/0.1"},
                          redirect=False, retries=False, preload_content=False)
         body = bytearray()
         try:

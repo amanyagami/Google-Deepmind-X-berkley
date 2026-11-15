@@ -1,4 +1,4 @@
-# Neural Studio web app for Google Cloud Run (static, browser mode; no companion server).
+# Kundali web app for Google Cloud Run (static, browser mode; no companion server).
 # Stage 1: build web/ with Node.
 FROM node:22-alpine AS build
 WORKDIR /app/web
