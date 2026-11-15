@@ -81,6 +81,27 @@ function ThemeToggle() {
   return <button className="btn2 themebtn" data-theme-toggle onClick={() => set(next)} aria-label={`Theme: ${label}. Switch to ${next}.`} title={`Theme: ${label}`}><Ico d={theme === 'light' ? SUN : theme === 'dark' ? MOON : SCREEN} /><span className="themelbl">{label}</span></button>
 }
 
+/** Four small steps on the name card: what the page does, in plain words. Icons are inline SVG with the brand gradient. */
+const HOW: { t: string; d: string; icon: string }[] = [
+  { t: 'Get a model', d: 'It comes from Hugging Face and runs on your device.', icon: 'M4 5h16v10H4zM2 19h20M12 2v7M9 6l3 3 3-3' },
+  { t: 'Watch it think', d: 'Your prompt flows through the 3D blocks.', icon: 'M3 8l5-3 5 3v6l-5 3-5-3zM11 10l5-3 5 3v6l-5 3-5-3z' },
+  { t: 'See the power', d: 'Electricity moves through CPU, GPU and RAM.', icon: 'M13 2L4 14h7l-1 8 9-12h-7z' },
+  { t: 'Get your score', d: 'Test all gives you a score card.', icon: 'M8 21h8M12 17v4M7 4h10v5a5 5 0 01-10 0zM7 6H4a3 3 0 003 4M17 6h3a3 3 0 01-3 4' },
+]
+function HowItWorks() {
+  return (
+    <ol className="howto" aria-label="How it works">
+      <svg width="0" height="0" aria-hidden style={{ position: 'absolute' }}><defs><linearGradient id="ns-howg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#9a82ff" /><stop offset=".55" stopColor="#3ddcf5" /><stop offset="1" stopColor="#ff8fc4" /></linearGradient></defs></svg>
+      {HOW.map((h, i) => (
+        <li key={h.t} style={{ animationDelay: `${120 + i * 90}ms` }}>
+          <span className="howicon" aria-hidden><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="url(#ns-howg)" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d={h.icon} /></svg><b>{i + 1}</b></span>
+          <span className="howtxt"><strong>{h.t}</strong><span>{h.d}</span></span>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 /** First visit: ask for a name (stays on this device). Enter continues; "Use Guest" skips. */
 function NameCard() {
   const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
@@ -91,9 +112,12 @@ function NameCard() {
   return (
     <div className="namewall" data-namecard>
       <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
-        <h3 id="nm-t">What is your name?<Hint label="About your name">It stays on this device. It goes on your score card.</Hint></h3>
-        <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
-        <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
+        <div className="namefields">
+          <h3 id="nm-t">What is your name?<Hint label="About your name">It stays on this device. It goes on your score card.</Hint></h3>
+          <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+          <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
+        </div>
+        <HowItWorks />
       </form>
     </div>
   )

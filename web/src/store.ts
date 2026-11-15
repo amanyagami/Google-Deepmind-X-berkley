@@ -46,7 +46,7 @@ interface S {
   /** the visitor's name: stays on this device (ns.name); '' until the name card is answered */
   name: string
   setName: (n: string) => void
-  /** theme choice (ns.theme): 'system' follows the OS */
+  /** theme choice (ns.theme): dark by default; 'system' follows the OS */
   theme: 'system' | 'light' | 'dark'
   setTheme: (t: 'system' | 'light' | 'dark') => void
   /** the section the page is scrolled to (most of the screen) */
@@ -330,7 +330,7 @@ export const useStore = create<S>((set, get) => {
     setRail: (id, open) => set((s) => { const railOpen = { ...s.railOpen, [id]: open }; lsSet('ns.rail', JSON.stringify(railOpen)); return { railOpen } }),
     name: lsGet('ns.name') ?? '',
     setName: (n) => { const name = n.trim().slice(0, 40); lsSet('ns.name', name); set({ name }) },
-    theme: (lsGet('ns.theme') as 'system' | 'light' | 'dark') || 'system',
+    theme: (lsGet('ns.theme') as 'system' | 'light' | 'dark') || 'dark',   // dark is the default for everyone
     setTheme: (theme) => { lsSet('ns.theme', theme); set({ theme }) },
     appView: location.hash === '#machine' || location.hash === '#journey' ? 'journey' : location.hash === '#power' ? 'power' : 'model',
     setAppView: (appView: AppView) => set({ appView } as any),
