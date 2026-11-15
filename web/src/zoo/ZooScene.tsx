@@ -1091,7 +1091,6 @@ function LlmLayout({ T, L, nh, draft }: { T: number; L: number; nh: number; draf
       <Tag pos={[-8.2, 0.2, z(T - 1) + 1.3]} name="Your prompt" sub={draft ? `${T} words · not run yet` : `${T} tokens`} grp="tok" />
       <Tag pos={[0, 0.2, zHead - nh * 0.2 - 0.5]} name="Attention heads" sub={`${nh} per block`} grp="heads" />
       <Tag pos={[colX(mid), 0.2, z(T - 1) + 1.3]} name={`${L} blocks`} sub="one sphere per token, per block · arrows pick a block" grp="blocks" onKey={blocksKey} />
-      <Chip pos={[0, 1.6, zHead - nh * 0.2 - 1.3]} name="Now playing" hidden={!active} liveRef={(el) => { blockTag.current = el }} />
       <Bars origin={[7.6, 0, 0]} stage="out" />
       <Tag pos={[7.6, 0.2, 3.9]} name="Next word" sub="top 10 guesses" grp="scores" />
     </DefCtx.Provider>

@@ -1,10 +1,10 @@
-// Uses the recorded pack from the test PC (web/public/examples/machine.json).
+// Uses the recorded pack from the test PC (web/tests/fixtures/machine.json, a test fixture only).
 import { readFileSync } from 'node:fs'
 import { expect, test } from 'vitest'
 import { activityAt, buildTimeline, locate } from '../src/hw/timeline'
 import { computeScores, REF, REF_BROWSER } from '../src/hw/score'
 
-const pack = JSON.parse(readFileSync(new URL('../public/examples/machine.json', import.meta.url), 'utf8'))
+const pack = JSON.parse(readFileSync(new URL('./fixtures/machine.json', import.meta.url), 'utf8'))
 
 test('timeline: segments are contiguous and locate() is monotonic', () => {
   for (const expanded of [false, true]) {
@@ -33,11 +33,6 @@ test('scores: plain ratios to the references; efficiency stays out of the overal
   const without = computeScores(pack.bench, pack.journey, pack.info, null)
   expect(without.overall).toBe(sc.overall)
   expect(sc.by.power).not.toBeNull()
-})
-
-test('scores: a replayed reference run never counts as this machine', () => {
-  const sc = computeScores(pack.bench, pack.journey, pack.info, { ...pack.power, reference: { recorded: 'x', cpu: 'y', bench: pack.bench } })
-  expect(sc.by.power).toBeNull()
 })
 
 test('browser references: the language-model reference follows the engine that ran it', () => {
@@ -367,4 +362,20 @@ test('export carries the name only when allowed, never the theme; history entrie
   vi.stubGlobal('localStorage', { getItem: (k: string) => mem[k] ?? null, setItem: (k: string, v: string) => { mem[k] = v }, removeItem: () => {} })
   mem[RESULTS_KEY] = JSON.stringify({ v: 1, results: {}, history: [{ at: 't', scale: 'native', results: {}, name: 'Ada' }] })
   expect(loadStored().history[0].name).toBe('Ada')
+})
+
+/* ---- B7: a model run fills the Model pillar of the one device score ---- */
+import { finalScore } from '../src/hw/score'
+import { modelResult } from '../src/hw/score'
+import type { RunStats } from '../src/api'
+
+test('a finished model run becomes model:<repo> and fills the Model pillar', () => {
+  const st: RunStats = { where: 'webgpu', repo: 'HuggingFaceTB/SmolLM2-135M-Instruct', task: 'text-generation', loadMs: 900, firstMs: 400, totalMs: 3000, items: 40, unit: 'tokens', perSec: 40, memBytes: null, joules: null, estimatedEnergy: true }
+  const r = modelResult(st, { params: null, fit: null })!
+  expect(r.component).toBe('model:HuggingFaceTB/SmolLM2-135M-Instruct')
+  expect(r.scale).toBe('browser')
+  expect(r.score).toBeGreaterThan(0)
+  const f = finalScore({ [r.component]: r })
+  expect(f.pillars.find((p) => p.id === 'model')!.status).toBe('measured')
+  expect(modelResult({ ...st, where: 'none' })).toBeNull()
 })

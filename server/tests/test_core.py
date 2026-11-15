@@ -442,3 +442,63 @@ def test_ssrf_redirect_to_private_rejected_and_good_path_works():
 def test_ssrf_redirect_limit():
     with pytest.raises(security.UnsafeURL):
         security.safe_fetch("https://a.example/", resolver=PUBLIC, opener=lambda *a: (302, {"location": "https://a.example/"}, b""))
+
+
+# ============================================================ power: cores never exceed the package (D19)
+from app import power as _power
+
+PWH = 1 / _power.PWH_TO_J  # picowatt-hours per joule
+
+
+def _snap(t_ms, pkg_j, cores_j):
+    d = {"pkg_t": t_ms, "pkg_e": pkg_j * PWH, "wall": t_ms / 1000}
+    d.update({f"core{i}_e": c * PWH for i, c in enumerate(cores_j)})
+    return d
+
+
+def test_watts_come_from_energy_deltas_over_one_shared_interval():
+    a, b = _snap(1000, 100.0, [10.0, 10.0]), _snap(1100, 105.0, [11.0, 11.5])   # 0.1 s: 5 J package, 1 J + 1.5 J cores
+    w = _power.watts_from_energy(a, b, 2)
+    assert w["pkg_w"] == pytest.approx(50.0)
+    assert w["core_w"] == pytest.approx([10.0, 15.0])
+    assert w["dt"] == pytest.approx(0.1)
+
+
+def test_energy_watts_refuse_resets_short_intervals_and_missing_counters():
+    a = _snap(1000, 100.0, [10.0])
+    assert _power.watts_from_energy(None, a, 1) is None
+    assert _power.watts_from_energy(a, _snap(1005, 101.0, [10.1]), 1) is None    # 5 ms is too short to trust
+    assert _power.watts_from_energy(a, _snap(1100, 90.0, [10.1]), 1) is None     # counter went backwards
+    w = _power.watts_from_energy(a, _snap(1100, 101.0, [9.0]), 1)                # one core counter reset: that core unknown
+    assert w["core_w"] == [None]
+    b = dict(_snap(1100, 101.0, [10.5]), pkg_t=None)                              # no meter clock: the wall clock is used
+    assert _power.watts_from_energy(dict(a, pkg_t=None), b, 1)["pkg_w"] == pytest.approx(10.0)
+
+
+def test_reconcile_scales_cores_to_the_package_and_flags_it():
+    cores, flag, ratio = _power.reconcile(52.7, [9.0, 9.1, 9.0, 9.2, 9.1, 9.0, 9.1, 9.1])   # 72.6 W of cores, the audit's case
+    assert flag == "core-scaled" and ratio == pytest.approx(72.6 / 52.7, rel=1e-3)
+    assert sum(cores) == pytest.approx(52.7)
+    assert all(c >= 0 for c in cores)
+    ok, flag, ratio = _power.reconcile(50.0, [10.0, None, 12.0])
+    assert ok == [10.0, None, 12.0] and flag is None and ratio == pytest.approx(0.44)
+    assert _power.reconcile(None, [1.0]) == ([1.0], None, None)
+    assert _power.reconcile(0.0, [2.0])[0] == [0.0]
+
+
+def test_build_reading_cores_never_exceed_package_over_200_samples():
+    import random
+    rnd = random.Random(7)
+    prev, t, pkg_j, cores_j = None, 0, 0.0, [0.0] * 8
+    for i in range(201):
+        v = {"pkg_e": pkg_j * PWH, "pkg_t": t, "pkg_mw": 50000.0, **{f"core{k}_e": c * PWH for k, c in enumerate(cores_j)},
+             **{f"core{k}_mw": 9000.0 for k in range(8)}}   # the ready-made counters disagree: 72 W of cores in 50 W
+        r, prev = _power.build_reading(v, prev, 8, t / 1000)
+        assert sum(c or 0 for c in r["core_w"]) <= r["pkg_w"] + 0.02, (i, r)
+        assert r["pkg_w"] - sum(c or 0 for c in r["core_w"]) >= -0.02
+        if i:
+            assert r["from"] == "energy"
+        t += 100
+        p = rnd.uniform(5, 60) * 0.1
+        pkg_j += p
+        cores_j = [c + p * rnd.uniform(0.05, 0.16) for c in cores_j]   # sometimes the cores add up to more than the package

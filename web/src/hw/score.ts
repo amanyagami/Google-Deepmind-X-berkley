@@ -74,7 +74,7 @@ export function computeScores(bench: Record<string, any>, journey: any, info: an
   const sys: Sub[] = [{ id: 'ai', comp: 'system', label: 'Language model speed', score: pts(aiTps, R.ai), value: aiTps ? `${aiTps} tokens/s` : bench.matmul_1 && !bench.ai ? 'not run' : '…',
     detail: aiTps ? `${aiModel} writing one word at a time.${bench.ai?.spread ? ` Spread over ${bench.ai.spread.n} words: ${bench.ai.spread.min}–${bench.ai.spread.max}.` : ''}` : 'A real small language model writing text.' }]
   const S = power?.summary
-  const measuredPower = power && !power.estimated && !power.reference
+  const measuredPower = power && !power.estimated 
   const effCpu = measuredPower && bench.matmul_n && S?.matmul_n?.avg_w ? bench.matmul_n.gflops / S.matmul_n.avg_w : null
   const effAi = measuredPower && aiTps && bench.ai && S?.ai?.avg_w ? (1000 * aiTps) / S.ai.avg_w : null
   const pw: Sub[] = [
@@ -107,7 +107,7 @@ export function computeScores(bench: Record<string, any>, journey: any, info: an
 export function useScores(): Scores {
   const bench = useHW((s) => s.bench)
   // a journey recorded on the test PC says nothing about this machine
-  const journey = useHW((s) => (s.recorded ? null : s.journey))
+  const journey = useHW((s) => s.journey)
   const info = useHW((s) => s.info)
   const power = useHW((s) => s.power)
   return useMemo(() => computeScores(bench, journey, info, power), [bench, journey, info, power])
@@ -346,6 +346,19 @@ function fromRun(st: RunStats, ctx: FromBenchCtx): TestResult {
     samples: st.perSec ? [st.perSec] : [], value: decode, unit: st.unit === 'tokens' ? 'tokens/s' : 'items/s', ci95: [decode, decode], cv: 0,
     score: rs.score, flags, env: { where: st.where === 'none' ? 'wasm' : st.where }, ...(st.joules ? { energy: { joules: st.joules, estimated: st.estimatedEnergy } } : {}), at: ctx.at ?? new Date().toISOString(),
   }
+}
+
+/* ------------------------------------------------------------------ B7: a model run in the device score */
+/** The TestResult of one model run, keyed by repo. null when the run cannot be scored (no runtime, no speed). */
+export function modelResult(stats: RunStats, o: { params?: number | null; fit?: Fit | null; ok?: boolean } = {}): TestResult | null {
+  if (!stats || stats.where === 'none' || !stats.repo) return null
+  // A run that finished passed the runner's degenerate-output check: that is the accuracy gate we have.
+  const r = fromBench('run', stats, { params: o.params ?? null, fit: o.fit ?? null, goldenOk: o.ok ?? true })
+  if (!r) return null
+  const tps = r.value > 0 && isFinite(r.value) ? r.value : null
+  // without a parameter count the work-normalised score is unknown: text generation falls back to the 135M reference speed
+  const score = r.score ?? (stats.task === 'text-generation' && tps ? (1000 * tps) / MODEL_REF[stats.where] : null)
+  return { ...r, component: `model:${stats.repo}`, score: score != null && isFinite(score) ? score : null }
 }
 
 /* ------------------------------------------------------------------ export */

@@ -44,7 +44,7 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 | A15 | select, then `[data-inspector]` <= 500 ms, Esc closes, `__inspector.zoomMax().value` equals the fixture tensor | S7, S6 | S7 |
 | A16 | Tab x250: every `[data-test]`, `[data-block]`, `[data-start]` reached; outline >= 2 px and 3:1 | | S1, S5 |
 | A17 | Hint: click opens, `aria-expanded`, leave closes <= 300 ms, outside tap on touch, popup inside viewport | | S7 |
-| A18 | body text has ▲ and ○; inspector text has +/− before numbers | | S7, S8 |
+| A18 | round 3 (C9): ▲ only on the device score (complete results injected), no ○ on the machine side; inspector text has +/− before numbers | | S7, S8 |
 | A19 | per `.card`/`.ccard`/`[data-card]`: <= 1 visible sentence of <= 120 chars (hints, buttons, `[data-detail]` excluded) | | S5, S6 |
 | A20 | layout-shift sum during `[data-testall]` until `[data-score]` | S5 | S1, S5 |
 | A21 | no-WebGPU, out-of-memory, offline, mic-denied each show `[data-error]` (text + button) <= 2 s, zero errors | S5, S6 | S4, S5, S6 |
@@ -55,8 +55,9 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 | A26 | visible strings of all sections plus every opened hint (prose lines only): avg sentence <= 12 words, max 20, FK grade <= 8, no banned word | | all (copy pass) |
 | L1 | 3D canvases in model/zoo/machine change between two grabs 300 ms apart (was `live`) | | S8 |
 | L2 | tour of sections and five networks, zero page errors (was `layouts`, `models`) | | all |
-| L3 | measured replay: same playhead, same readout (was `power`, `replay`) | | S5 |
-| L4 | recorded journey gives a numeric score (was `recscore`, `browsermode`) | | S3, S5 |
+| L3 | round 3 (owner): live power readout is a pure function of the sensor samples; no replay mode | | S5 |
+| L4 | round 3 (owner): no recorded-run or journey button in browser mode; one component Test gives a result, the strip says 1 / 6 and shows no number yet | | S3, S5 |
+| A41 | round 3 (D19): power card `data-pkg/cores/rest/split` over 200 live samples with cores 50-150 % of the package: cores <= package, rest >= 0, cores + rest = package, split state scaled/unavailable as expected (the recorded pack is covered by vitest) | | S5 |
 | L5 | five networks each produce an output (was `zoo`) | | S6 |
 | L6 | companion idle watts, page open vs blank, information only (was `idlecost`; tier 3) | | |
 | T1, T2 | tier 3 smoke: real Hub reachable, real companion answers, first real score | | |

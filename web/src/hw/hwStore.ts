@@ -74,18 +74,18 @@ const notRunnable = (why: string): RegistryRow['run'] => async () => { throw new
 
 REGISTRY.push(
   { id: 'cpu1', label: 'CPU, one core', pillar: 'compute', weight: 0.4, ref: refOf('cpu1'), run: lazy('run_cpu1'),
-    input: num('Matrix size', 'n', 128, 1024, 128, 256, '128 to 1024, at most 5% of memory', (c) => ({ max: Math.max(128, Math.min(1024, Math.floor(Math.sqrt((memMB(c) * MB * 0.05) / 12) / 128) * 128)) })) },
+    input: num('Grid size', 'n', 128, 1024, 128, 256, '128 to 1024, at most 5% of memory', (c) => ({ max: Math.max(128, Math.min(1024, Math.floor(Math.sqrt((memMB(c) * MB * 0.05) / 12) / 128) * 128)) })) },
   { id: 'cpun', label: 'CPU, all cores', pillar: 'compute', weight: 0.6, ref: refOf('cpun'), run: lazy('run_cpun'),
     input: num('Threads', 'threads', 1, 64, 1, 8, '1 to the number of cores', (c) => ({ max: Math.max(1, c.cores) })) },
   { id: 'cache', label: 'Cache', pillar: 'memory', weight: 0.4, ref: refOf('cache'), run: lazy('run_cache'),
     input: num('Largest size', 'MB', 1, 256, 1, 256, 'at most 25% of the memory budget (32 MB in lite mode)', (c) => ({ max: c.profile === 'lite' ? 32 : Math.max(1, Math.min(256, Math.floor(memMB(c) * 0.25))) })) },
   { id: 'ram', label: 'RAM', pillar: 'memory', weight: 0.6, ref: refOf('ram'), run: lazy('run_ram'),
     input: num('Array per worker', 'MB', 16, 128, 16, 64, '16 to 128 MB per worker, at most 12% of memory in total', (c) => ({ max: Math.max(16, Math.min(128, Math.floor((memMB(c) * 0.12) / Math.max(1, Math.min(8, c.cores))))) })) },
-  { id: 'storage', label: 'File storage', pillar: 'storage', weight: 1, ref: refOf('storage'), run: lazy('run_storage'),
+  { id: 'storage', label: 'Storage', pillar: 'storage', weight: 1, ref: refOf('storage'), run: lazy('run_storage'),
     input: num('File size', 'MB', 16, 512, 16, 128, '16 to 512 MB, at most 10% of the free quota', (c) => ({ max: Math.max(16, Math.min(512, Math.floor(((c.opfs.quotaBytes ?? 4096 * MB) * 0.1) / MB))) })) },
   { id: 'gpu', label: 'GPU', pillar: 'gpu', weight: 1, ref: refOf('gpu'), run: lazy('run_gpu'),
-    input: num('Matrix size', 'N', 512, 4096, 512, 1024, 'buffers at most the smaller of 256 MB and the device limit', (c) => ({ max: Math.max(512, Math.min(4096, Math.floor(Math.sqrt(Math.min(256 * MB, c.gpu.maxBuffer ?? 256 * MB) / 4) / 512) * 512)) })) },
-  { id: 'net', label: 'Connection', pillar: null, weight: 0, ref: {}, run: lazy('run_net'),
+    input: num('Grid size', 'N', 512, 4096, 512, 1024, 'buffers at most the smaller of 256 MB and the device limit', (c) => ({ max: Math.max(512, Math.min(4096, Math.floor(Math.sqrt(Math.min(256 * MB, c.gpu.maxBuffer ?? 256 * MB) / 4) / 512) * 512)) })) },
+  { id: 'net', label: 'Network', pillar: null, weight: 0, ref: {}, run: lazy('run_net'),
     input: { type: 'url', label: 'Test URL', default: '', cap: 'https with CORS, at most 100 MB or 15 s' } },
   { id: 'energy', label: 'Energy', pillar: null, weight: 0, ref: {}, input: null, run: notRunnable('Energy is measured during the other tests') },
 )
@@ -149,9 +149,17 @@ function storeResults(results: Record<string, TestResult>, history: Snapshot[]) 
 }
 let current: AbortController | null = null
 let cancelled = false
+/** The power recorder of the running Test all (null otherwise). With the companion, telemetry samples are pushed in. */
+let rec: { live: boolean; push: (telemetrySample: any) => void } | null = null
+/** Which stage of the power run each test is (the Energy tab and the 3D replay use these names). */
+export const STAGE_OF: Partial<Record<ComponentId, string>> = { cpu1: 'matmul_1', cpun: 'matmul_n', cache: 'cache', ram: 'dram', storage: 'disk', gpu: 'gpu', net: 'net' }
+/** Browser estimate per stage: [busy threads (-1 = all), intensity]. */
+const BUSY: Record<string, [number, number]> = { idle: [0, 1], matmul_1: [1, 1], matmul_n: [-1, 1], cache: [1, 0.8], dram: [-1, 0.6], disk: [1, 0.3], gpu: [1, 0.4] }
 
 export type Source = 'companion' | 'browser'
-export type PowerSample = { t: number; stage: string; pkg_w: number; core_w: number[]; mhz: number | null; util: number[]; estimated?: boolean }
+/** split: 'core-scaled' when the core sensors added up to more than the package and were scaled to it (D19);
+ *  cr: the raw core sum / package before that scaling. */
+export type PowerSample = { t: number; stage: string; pkg_w: number; core_w: number[]; mhz: number | null; util: number[]; estimated?: boolean; split?: 'core-scaled'; cr?: number }
 export interface PowerRun { samples: PowerSample[]; summary: Record<string, any>; source: string; estimated?: boolean; reference?: { recorded: string; cpu: string; bench: any } }
 
 interface HW {
@@ -174,11 +182,13 @@ interface HW {
   testErrors: Record<string, string>
   caps: Capabilities | null
   setCaps: (c: Capabilities | null) => void
-  addResult: (r: TestResult | null) => void
+  /** start: a device test the visitor asked for; if the stored results are of the other scale, it starts them over */
+  addResult: (r: TestResult | null, o?: { start?: boolean }) => void
   snapshot: () => void
   clearResults: () => void
   runComponent: (id: ComponentId, input?: number | string | null) => Promise<TestResult | null>
-  runAll: () => Promise<void>
+  /** Test all: every scored component with its default input, recording power while it runs (C1). */
+  runAll: (ids?: ComponentId[]) => Promise<number>
   cancel: () => void
   // electricity
   powerLive: PowerSample[]
@@ -189,8 +199,6 @@ interface HW {
   pSpeed: number
   tdp: number
   aiInBrowser: boolean
-  recorded: boolean          // the journey on screen is a recording, not this machine
-  recordedPack: { info: any; bench: any } | null
   // journey
   journey: any | null
   journeyBusy: string | null
@@ -208,8 +216,6 @@ interface HW {
   startTelemetry: () => void
   runBench: () => Promise<void>
   runJourney: (repo: string, prompt: string) => Promise<void>
-  loadRecorded: () => Promise<boolean>
-  loadReferencePower: () => Promise<void>
   loadMicro: (repo: string, prompt: string, layer?: number, row?: number) => Promise<void>
   peaks: () => Peaks
   setPlayhead: (t: number) => void
@@ -239,7 +245,7 @@ const pDuration = (p: PowerRun | null) => (p && p.samples.length ? p.samples[p.s
 export const useHW = create<HW>((set, get) => ({
   source: null, info: null, infoErr: null, telemetry: [], latest: null, bench: {}, benchRunning: false, benchErr: null, benchStage: null, benchLive: null, benchNote: null,
   ...(() => { const st = loadStored(); return { results: st.results, history: st.history } })(), running: null, progress: null, testErrors: {}, caps: null,
-  powerLive: [], power: null, pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: true, recorded: false, recordedPack: null,
+  powerLive: [], power: null, pHead: 0, pMode: 'live', pPlaying: false, pSpeed: 1, tdp: 45, aiInBrowser: false,
   journey: null, journeyBusy: null, journeyErr: null, micro: null,
   tl: buildTimeline(30, false), playhead: 0, playing: false, speed: 1, follow: true, expanded: false, path: [], hover: null,
 
@@ -263,7 +269,13 @@ export const useHW = create<HW>((set, get) => ({
       const ws = new WebSocket(wsUrl('/ws/telemetry'))
       telemetryWs = ws
       // while a test records, its own (faster, stage-tagged) power stream drives the view
-      ws.onmessage = (ev) => { if (get().benchRunning) return; const s = JSON.parse(ev.data); set((st) => ({ latest: s, telemetry: [...st.telemetry.slice(-149), s] })) }
+      ws.onmessage = (ev) => {
+        const s = JSON.parse(ev.data)
+        if (s?.power?.pkg_w != null) s.power = fixSplit(s.power)
+        if (rec && rec.live && s?.power?.pkg_w != null) rec.push(s)      // Test all records the live sensors
+        if (get().benchRunning) return
+        set((st) => ({ latest: s, telemetry: [...st.telemetry.slice(-149), s] }))
+      }
       ws.onclose = () => { telemetryWs = null }
       ws.onerror = () => { telemetryWs = null }
     } catch { telemetryWs = null }
@@ -278,12 +290,12 @@ export const useHW = create<HW>((set, get) => ({
       if (m.type === 'progress' && performance.now() - lastProg > 250) { lastProg = performance.now(); set({ benchLive: { name: m.name, value: m.value, best: m.best, unit: m.unit, extra: m.extra } }) }
       if (m.type === 'power') {
         // every sample reaches the live 3D view; updates are grouped to at most 10 a second
-        pbuf.push(m as PowerSample)
+        pbuf.push(fixSplit(m as PowerSample))
         if (performance.now() - pflush > 100) { pflush = performance.now(); const add = pbuf.splice(0); set((s) => ({ powerLive: [...s.powerLive, ...add], pHead: m.t })) }
       }
       if (m.type === 'note') set({ benchNote: m.message })
       if (m.type === 'result') {
-        if (m.name === 'power') { pbuf.length = 0; set({ power: m.data }) }
+        if (m.name === 'power') { pbuf.length = 0; set({ power: m.data?.samples ? { ...m.data, samples: m.data.samples.map(fixSplit) } : m.data }) }
         else set((s) => ({ bench: { ...s.bench, [m.name]: m.data } }))
         try { get().addResult(fromBench(m.name, m.data, { scale: get().source === 'browser' ? 'browser' : 'native' })) } catch { /* the legacy bench view keeps working */ }
       }
@@ -322,9 +334,13 @@ export const useHW = create<HW>((set, get) => ({
   },
 
   setCaps(caps) { set({ caps }) },
-  addResult(r) {
+  addResult(r, o) {
     if (!r) return
-    set((s) => { const results = { ...s.results, [resultKey(r)]: r }; storeResults(results, s.history); return { results } })
+    // one score never mixes scales: a result of the other scale is not added, except a test the visitor started, which starts over
+    const scored = (x: TestResult) => x.component !== 'net' && x.component !== 'energy'
+    const clash = scored(r) && Object.values(get().results).some((x) => scored(x) && x.scale !== r.scale)
+    if (clash && !o?.start) return
+    set((s) => { const keep = clash ? Object.fromEntries(Object.entries(s.results).filter(([, x]) => !scored(x) || x.scale === r.scale)) : s.results; const results = { ...keep, [resultKey(r)]: r }; storeResults(results, s.history); return { results } })
   },
   snapshot() {
     set((s) => {
@@ -352,7 +368,7 @@ export const useHW = create<HW>((set, get) => ({
       // a custom input never overwrites the standard result: it is stored apart and never scored
       if (input != null && row.input && input !== row.input.default && r.input.kind !== 'custom')
         r = { ...r, input: { ...r.input, kind: 'custom' }, score: null, flags: r.flags.includes('custom') ? r.flags : [...r.flags, 'custom'] }
-      get().addResult(r)
+      get().addResult(r, { start: true })
       return r
     } catch (e: any) {
       if (!ctrl.signal.aborted) set((s) => ({ testErrors: { ...s.testErrors, [id]: e?.message ?? String(e) } }))
@@ -360,18 +376,55 @@ export const useHW = create<HW>((set, get) => ({
     } finally { current = null; set({ running: null, progress: null }) }
   },
 
-  /** Every scored component with its default input, in a fixed order. No downloads, never `net`. */
-  async runAll() {
-    if (current) return
+  /** Test all: every scored component with its default input, in a fixed order. No downloads, never `net`.
+   *  Power is recorded while it runs (the old separate energy run is folded in here): the live sensors with the
+   *  companion, a labelled estimate in a browser. Each test gets its energy; the run replays on the machine afterwards. */
+  async runAll(ids = RUN_ALL_ORDER) {
+    if (current || get().benchRunning) return 0
     cancelled = false
     let ran = 0
-    for (const id of RUN_ALL_ORDER) {
-      const r = await get().runComponent(id, null)
-      if (r) ran++
-      if (cancelled) break
+    const companion = get().source === 'companion'
+    // the estimate model loads alongside the first test; nothing waits for it before the tests start
+    let bb: typeof import('./browserBench') | null = null
+    const bbP = import('./browserBench').then((m) => (bb = m)).catch(() => null)
+    const t0 = performance.now(), samples: PowerSample[] = []
+    let stage = 'idle'
+    const push = (p: { pkg_w: number; core_w: number[]; mhz?: number | null; split?: 'core-scaled'; cr?: number }, util: number[] = [], estimated = false) =>
+      samples.push(fixSplit({ t: +((performance.now() - t0) / 1000).toFixed(3), stage, pkg_w: p.pkg_w, core_w: p.core_w, mhz: p.mhz ?? null, util, ...(estimated ? { estimated } : {}), ...(p.split ? { split: p.split, cr: p.cr } : {}) }))
+    rec = { live: companion, push: (s: any) => push({ ...s.power, mhz: s.power.eff_mhz ?? null }, ((s.cpu ?? []) as number[]).map((x) => x / 100)) }
+    const threads = get().caps?.cores ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 8) ?? 8
+    const est = companion ? null : setInterval(() => { if (!bb) return; const b = BUSY[stage] ?? [0, 0]; push(bb.estimatePower(get().tdp, b[0] < 0 ? threads : b[0], threads, b[1]), [], true) }, 100)
+    const flush = setInterval(() => set({ powerLive: samples.slice(), pHead: samples[samples.length - 1]?.t ?? 0 }), 250)
+    get().pPause(); get().pause()
+    set({ benchRunning: true, benchStage: 'idle', benchErr: null, powerLive: [], power: null, pHead: 0, pMode: 'live' })
+    const done: ComponentId[] = []
+    try {
+      for (const id of ids) {
+        stage = STAGE_OF[id] ?? id
+        set({ benchStage: stage })
+        const r = await get().runComponent(id, null)
+        if (r) { ran++; done.push(id) }
+        if (cancelled) break
+      }
+    } finally {
+      if (est) clearInterval(est)
+      clearInterval(flush)
+      rec = null
+      cancelled = false
+      const mod = bb ?? (await bbP) as typeof import('./browserBench') | null
+      const power: PowerRun | null = samples.length > 1 && mod ? {
+        samples, summary: mod.summarise(samples), estimated: !companion,
+        source: companion ? (get().info?.power?.source ?? 'CPU energy counters (RAPL)') : `estimated from a ${get().tdp} W power class (browsers cannot read power sensors)`,
+      } : null
+      // each test keeps its energy; the run as a whole is the Energy row (shown, never scored)
+      if (power) {
+        for (const id of done) { const S = power.summary[STAGE_OF[id] ?? id], r = get().results[id]; if (S && r) get().addResult({ ...r, energy: { joules: S.joules, estimated: !companion } }) }
+        try { get().addResult(fromBench('power', power, { scale: companion ? 'native' : 'browser' })) } catch { /* the Energy row is optional */ }
+      }
+      set({ benchRunning: false, benchStage: null, benchLive: null, power, powerLive: [], pMode: 'live', pHead: power ? pDuration(power) : 0 })
+      if (ran) get().snapshot()
     }
-    cancelled = false
-    if (ran) get().snapshot()
+    return ran
   },
 
   cancel() { if (current) { cancelled = true; current.abort() } },
@@ -379,7 +432,7 @@ export const useHW = create<HW>((set, get) => ({
   peaks() { return peaksOf(get()) },
 
   async runJourney(repo, prompt) {
-    if (get().source === 'browser') { await get().loadRecorded(); return }
+    if (get().source === 'browser') return                 // the journey needs PyTorch on this PC (the companion)
     set({ journeyErr: null, journeyBusy: 'Preparing…', playing: false })
     try {
       if (!get().bench.dram) { set({ journeyBusy: 'Measuring this machine first (about 30 s)…' }); await get().runBench(); get().pPause() }
@@ -388,38 +441,12 @@ export const useHW = create<HW>((set, get) => ({
       const r = await fetch(apiUrl('/api/hw/journey'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo, prompt, new_tokens: 24, peak_gflops: pk.gflops, peak_gbps: pk.gbps }) })
       const j = await r.json()
       if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`)
-      set({ journey: j, recorded: false, recordedPack: null, tl: buildTimeline(j.L, get().expanded), playhead: 0, path: [], micro: null, journeyBusy: null })
+      set({ journey: j, tl: buildTimeline(j.L, get().expanded), playhead: 0, path: [], micro: null, journeyBusy: null })
       get().play()
     } catch (e: any) { set({ journeyErr: e.message ?? String(e), journeyBusy: null }) }
   },
 
-  /** Browser-only mode: play a journey recorded on the test PC (clearly labelled as such). */
-  async loadRecorded() {
-    try {
-      set({ journeyBusy: 'Loading a recorded journey…', journeyErr: null })
-      const r = await fetch(`${import.meta.env.BASE_URL}examples/machine.json`)
-      if (!r.ok) throw new Error('No recorded journey is bundled with this build.')
-      const pack = await r.json()
-      set({ journey: pack.journey, micro: pack.micro, recorded: true, recordedPack: { info: pack.info, bench: pack.bench }, tl: buildTimeline(pack.journey.L, get().expanded), playhead: 0, path: [], journeyBusy: null })
-      get().play()
-      return true
-    } catch (e: any) { set({ journeyErr: e.message ?? String(e), journeyBusy: null }); return false }
-  },
-
-  /** Browser-only mode: replay the measured (RAPL) run recorded on the test PC, labelled as such. */
-  async loadReferencePower() {
-    try {
-      const r = await fetch(`${import.meta.env.BASE_URL}examples/machine.json`)
-      if (!r.ok) throw new Error('No recorded run is bundled with this build.')
-      const pack = await r.json()
-      get().pPause()
-      set({ power: { ...pack.power, source: `recorded on the test PC (${pack.info.cpu.name}), ${pack.power.source}`, reference: { recorded: pack.recorded, cpu: pack.info.cpu.name, bench: pack.bench } }, pHead: 0, pMode: 'replay' })
-      get().pPlay()
-    } catch (e: any) { set({ benchErr: e.message ?? String(e) }) }
-  },
-
   async loadMicro(repo, prompt, layer = 0, row = 0) {
-    if (get().recorded) return
     try {
       const r = await fetch(apiUrl('/api/hw/microscope'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo, prompt, layer, row }) })
       const m = await r.json()
@@ -444,7 +471,7 @@ export const useHW = create<HW>((set, get) => ({
     }
     loop()
   },
-  pause() { cancelAnimationFrame(raf); set({ playing: false }) },
+  pause() { if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(raf); set({ playing: false }) },
   toggle() { get().playing ? get().pause() : get().play() },
   step(dir) {
     const { tl, playhead } = get()
@@ -488,7 +515,7 @@ export const useHW = create<HW>((set, get) => ({
     }
     loop()
   },
-  pPause() { cancelAnimationFrame(praf); set({ pPlaying: false }) },
+  pPause() { if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(praf); set({ pPlaying: false }) },
   setPSpeed(pSpeed) { set({ pSpeed }) },
   setTdp(tdp) { set({ tdp }) },
   setAiInBrowser(aiInBrowser) { set({ aiInBrowser }) },
@@ -515,26 +542,60 @@ export function useHWThrottled<T>(select: (s: HW) => T, ms = 250, eq: (a: T, b: 
 
 export type PowerMode = 'recording' | 'replay' | 'live' | 'journey' | 'none'
 
+/* ------------------------------------------------------------------ power split (D19)
+ * Cores <= package, always. If the core sensors add up to more than the package (Zen mobile per-core RAPL is not a
+ * strict subset of the package counter), the cores are scaled by package / sum and the sample is flagged 'core-scaled'
+ * with the raw ratio `cr`. "Rest of chip" = package - cores is never clamped: after the scaling it cannot go negative.
+ * Every producer of a PowerSample (telemetry, recorded runs, powerAt, interp) passes through fixSplit. */
+export const SPLIT_MAX = 1.15   // raw core sum above 115 % of the package: the sensors disagree too much to show a split
+export function fixSplit<T extends { pkg_w: number | null; core_w?: (number | null)[] | null; split?: string; cr?: number }>(s: T): T {
+  if (!s || s.pkg_w == null || !Array.isArray(s.core_w) || !s.core_w.length) return s
+  let sum = 0
+  for (const c of s.core_w) sum += Math.max(0, c ?? 0)
+  if (sum <= s.pkg_w) return s
+  const k = s.pkg_w > 0 ? s.pkg_w / sum : 0
+  return { ...s, core_w: s.core_w.map((c) => (c == null ? c : Math.max(0, c) * k)), split: 'core-scaled', cr: Math.max(s.cr ?? 0, s.pkg_w > 0 ? sum / s.pkg_w : Infinity) }
+}
+export interface Split { pkg: number; cores: number | null; rest: number | null; share: number | null; state: 'ok' | 'scaled' | 'unavailable'; ratio: number | null }
+/** What the power card shows: package, cores and rest of chip; or only the package ("split unavailable") when the
+ *  core sensors disagree with it by more than SPLIT_MAX, or there are none. */
+export function splitOf(s: Pick<PowerSample, 'pkg_w' | 'core_w' | 'split' | 'cr'> | null): Split | null {
+  if (!s) return null
+  const f = fixSplit(s)
+  const pkg = f.pkg_w
+  const cores = f.core_w?.length ? f.core_w.reduce((a, b) => a + Math.max(0, b ?? 0), 0) : null
+  const ratio = f.cr ?? (cores != null && pkg > 0 ? cores / pkg : null)
+  if (cores == null || !(pkg > 0) || (f.split === 'core-scaled' && (f.cr == null || !(f.cr <= SPLIT_MAX)))) return { pkg, cores: null, rest: null, share: null, state: 'unavailable', ratio }
+  const c = Math.min(cores, pkg)
+  return { pkg, cores: c, rest: pkg - c, share: c / pkg, state: f.split === 'core-scaled' ? 'scaled' : 'ok', ratio }
+}
+/** split / cr of a window of samples: flagged if any sample was scaled, with the mean raw ratio of those. */
+function splitMeta(win: Pick<PowerSample, 'split' | 'cr'>[]): Pick<PowerSample, 'split' | 'cr'> {
+  const sc = win.filter((x) => x.split === 'core-scaled')
+  return sc.length ? { split: 'core-scaled', cr: sc.reduce((a, x) => a + (x.cr ?? 1), 0) / sc.length } : {}
+}
+
 /** Power from the live telemetry stream (companion, 10 Hz), averaged over the last 0.4 s. */
 export function telemetryPower(telemetry: any[]): PowerSample | null {
   const win = telemetry.slice(-4).map((x) => x?.power).filter((p) => p?.pkg_w != null)
   if (!win.length) return null
   const n = win.length, last = win[n - 1]
   const cores = (last.core_w ?? []) as number[]
-  return {
-    t: 0, stage: 'live', pkg_w: win.reduce((a, p) => a + p.pkg_w, 0) / n,
-    core_w: cores.map((_, k) => win.reduce((a, p) => a + (p.core_w?.[k] ?? 0), 0) / n),
-    mhz: last.eff_mhz ?? null, util: ((telemetry[telemetry.length - 1]?.cpu ?? []) as number[]).map((x) => x / 100),
-  }
+  const fixed = win.map((p) => fixSplit(p))
+  return fixSplit({
+    t: 0, stage: 'live', pkg_w: fixed.reduce((a, p) => a + p.pkg_w, 0) / n,
+    core_w: cores.map((_, k) => fixed.reduce((a, p) => a + (p.core_w?.[k] ?? 0), 0) / n),
+    mhz: last.eff_mhz ?? null, util: ((telemetry[telemetry.length - 1]?.cpu ?? []) as number[]).map((x) => x / 100), ...splitMeta(fixed),
+  })
 }
 
-/** Peak speeds of the machine a journey is judged against (the test PC for a recorded journey). */
-export function peaksOf(h: Pick<HW, 'recorded' | 'recordedPack' | 'bench' | 'info'>): Peaks {
-  const { bench, info } = h.recorded && h.recordedPack ? h.recordedPack : h
+/** Peak speeds of this machine, which a journey is judged against. */
+export function peaksOf(h: Pick<HW, 'bench' | 'info'>): Peaks {
+  const { bench, info } = h
   return { gflops: bench.matmul_n?.gflops ?? info?.cpu?.peak_gflops_est ?? 100, gbps: bench.dram?.copy_gbps ?? info?.ram?.peak_gbps_est ?? 20 }
 }
 
-type JourneyState = Pick<HW, 'journey' | 'tl' | 'info' | 'power' | 'recorded' | 'recordedPack' | 'bench'>
+type JourneyState = Pick<HW, 'journey' | 'tl' | 'info' | 'power' | 'bench'>
 /** Watts for the prompt's journey at visual time t. The journey is a recording of work, not of power, so the watts are
  *  modelled: each core idles near 0.2 W and rises to the per-core watts a full-load test measured here (or 6 W), and the
  *  rest of the chip (caches, memory controller) follows the cache activity. Labelled "modelled" wherever it is shown. */
@@ -566,24 +627,24 @@ export const SMOOTH_S = 0.4
 export function powerAt(samples: PowerSample[], t: number): PowerSample | null {
   if (!samples.length) return null
   const half = SMOOTH_S / 2
-  const win = samples.filter((s) => Math.abs(s.t - t) <= half)
+  const win = samples.filter((s) => Math.abs(s.t - t) <= half).map((s) => fixSplit(s))
   if (win.length < 2) return interp(samples, t)
   const n = win.length
   const avg = (f: (s: PowerSample) => number) => win.reduce((a, s) => a + f(s), 0) / n
   const nearest = win.reduce((a, s) => (Math.abs(s.t - t) < Math.abs(a.t - t) ? s : a), win[0])
-  return {
+  return fixSplit({
     t, stage: nearest.stage, pkg_w: avg((s) => s.pkg_w), core_w: nearest.core_w.map((_, k) => avg((s) => s.core_w[k] ?? 0)),
-    mhz: nearest.mhz ? avg((s) => s.mhz ?? nearest.mhz!) : null, util: nearest.util.map((_, k) => avg((s) => s.util[k] ?? 0)), estimated: nearest.estimated,
-  }
+    mhz: nearest.mhz ? avg((s) => s.mhz ?? nearest.mhz!) : null, util: nearest.util.map((_, k) => avg((s) => s.util[k] ?? 0)), estimated: nearest.estimated, ...splitMeta(win),
+  })
 }
 
 function interp(samples: PowerSample[], t: number): PowerSample | null {
   if (!samples.length) return null
   let lo = 0, hi = samples.length - 1
-  if (t <= samples[0].t) return samples[0]
-  if (t >= samples[hi].t) return samples[hi]
+  if (t <= samples[0].t) return fixSplit(samples[0])
+  if (t >= samples[hi].t) return fixSplit(samples[hi])
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (samples[m].t <= t) lo = m; else hi = m }
-  const a = samples[lo], b = samples[hi], u = (t - a.t) / Math.max(1e-6, b.t - a.t)
+  const a = fixSplit(samples[lo]), b = fixSplit(samples[hi]), u = (t - a.t) / Math.max(1e-6, b.t - a.t)
   const mix = (x: number, y: number) => x + (y - x) * u
-  return { t, stage: a.stage, pkg_w: mix(a.pkg_w, b.pkg_w), core_w: a.core_w.map((x, k) => mix(x ?? 0, b.core_w[k] ?? x ?? 0)), mhz: a.mhz && b.mhz ? mix(a.mhz, b.mhz) : a.mhz, util: a.util.map((x, k) => mix(x, b.util[k] ?? x)), estimated: a.estimated }
+  return { t, stage: a.stage, pkg_w: mix(a.pkg_w, b.pkg_w), core_w: a.core_w.map((x, k) => mix(x ?? 0, b.core_w[k] ?? x ?? 0)), mhz: a.mhz && b.mhz ? mix(a.mhz, b.mhz) : a.mhz, util: a.util.map((x, k) => mix(x, b.util[k] ?? x)), estimated: a.estimated, ...splitMeta([a, b]) }
 }

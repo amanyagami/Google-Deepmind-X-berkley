@@ -12,6 +12,9 @@ const p95 = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length * 0.95)] ?? 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const startModel = async (pg, ex = 'distilgpt2') => { await pg.evaluate((e) => window.__studio?.getState().loadExample?.(e), ex); await pg.waitForTimeout(1500); await pg.locator('[data-start]').first().click(); await pg.waitForTimeout(700)
   const d = pg.locator('[data-start]:has-text("Download")'); if (await d.count()) await d.first().click({ timeout: 2000 }).catch(() => {}) }
+/** A complete set of default results at the reference values (C11 shows the score, and enables Share, only when complete). */
+const FULL = () => { const h = window.__hw?.getState(); if (!h) return; const v = { cpu1: 28, cpun: 113, cache: 160, ram: 53, storage: 250, gpu: 500 }
+  for (const [id, x] of Object.entries(v)) h.addResult({ v: 1, component: id, scale: 'browser', workload: { id: 'w', v: 1 }, input: { kind: 'default', summary: 'd' }, samples: [x], value: x, unit: 'u', ci95: [x, x], cv: 1, score: null, flags: [], env: { where: 'wasm' }, at: '' }) }
 const SCORE = 'b[data-score]'   // the device score; ZooUI also puts data-score on a <p> (collision, see README)
 const THEMES = ['dark', 'light']
 const idle = (p, ms) => p.page.waitForTimeout(ms)
@@ -175,12 +178,17 @@ export const checks = [
     await q.page.touchscreen.tap(4, 4); await q.page.waitForTimeout(300); const tClosed = (await tb.getAttribute('aria-expanded')) !== 'true'
     return ok(open && inView && ms <= 300 && tOpen && tClosed, `opens ${open}; in viewport ${inView}; closes in ${ms} ms; touch opens ${tOpen}, outside tap closes ${tClosed}`) } },
 
-  { id: 'A18', title: 'glyphs ▲/○ and +/− present', run: async (env) => {
-    const p = await env.open({ query: '?mockTensor' }); await p.goto(); const t = await p.page.evaluate(() => document.body.innerText), f = await p.features()
-    const gl = t.includes('▲') && t.includes('○')
+  { id: 'A18', title: "glyphs: ▲ only on the device score (C9, round 3), no ○ in the machine section; +/− in heatmap", run: async (env) => {
+    const p = await env.open({ query: '?mockTensor' }); await p.goto(); const f = await p.features()
+    // a complete set of results, so the score (and its ▲) shows (C11 hides it until every test ran)
+    await p.page.evaluate(FULL)
+    await p.page.waitForTimeout(600)
+    const g = await p.page.evaluate(() => { const sec = document.querySelector('#sec-power') ?? document.body, out = { tri: 0, triElse: [], circ: [] }, inInspector = (e) => !!e.closest('[data-inspector]')
+      for (const { t, e } of __h.texts()) { if (t.includes('▲')) { if (e.closest('[data-score],.t5-score,.t5-ssc,[data-hero] .t5-big')) out.tri++; else if (!inInspector(e) && (sec.contains(e) || e.closest('[data-score-strip]'))) out.triElse.push(t.slice(0, 24)) }
+        if (t.includes('○') && !inInspector(e) && (sec.contains(e) || e.closest('[data-score-strip]'))) out.circ.push(t.slice(0, 24)) } return out })
     let pm = 'n/a (needs S7)'; if (f.S7) { await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' })); await openFor(p.page, '[data-inspector]'); await p.page.waitForTimeout(800)
       pm = /[+−]\d/.test(await p.page.locator('[data-inspector]').innerText().catch(() => '')) }
-    return ok(gl && pm !== false, `▲ ${t.includes('▲')}, ○ ${t.includes('○')}, +/− in heatmap ${pm}`) } },
+    return ok(g.tri > 0 && !g.triElse.length && !g.circ.length && pm !== false, `▲ on the score ${g.tri}×, elsewhere on the machine side ${g.triElse.length} (${g.triElse[0] ?? '-'}); ○ on the machine side ${g.circ.length} (${g.circ[0] ?? '-'}); +/− in heatmap ${pm}`) } },
 
   { id: 'A19', title: 'card text diet: <= 1 sentence of <= 120 chars', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500)
@@ -213,7 +221,7 @@ export const checks = [
     return ok(r.worst <= 1 && cam !== false, `longest transition/animation ${r.worst} ms (${r.who || '-'}); camera tween ${cam === true ? 'none' : cam}`) } },
 
   { id: 'A23', title: 'share PNG 1200×630, no hostname or UA', needs: ['S5'], run: async (env) => {
-    const p = await env.open(); await p.goto(); await openFor(p.page, '[data-share]'); const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 15000 }), p.page.locator('[data-share]').first().click()])
+    const p = await env.open(); await p.goto(); await p.page.evaluate(FULL); await p.page.waitForTimeout(400); await openFor(p.page, '[data-share]'); const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 15000 }), p.page.locator('[data-share]').first().click()])
     const file = path.join(OUT, 'share.png'); await d.saveAs(file); const b = fs.readFileSync(file), w = b.readUInt32BE(16), h = b.readUInt32BE(20), s = b.toString('latin1')
     const leaks = ['127.0.0.1', 'localhost', 'Mozilla', 'Chrome', 'Edg/', 'HeadlessChrome'].filter((x) => s.includes(x))
     return ok(w === 1200 && h === 630 && !leaks.length, `${w}x${h}; leaked strings in file: ${leaks.join(',') || 'none'}`) } },
@@ -426,6 +434,31 @@ export const checks = [
     const late = m.lt.filter(([s, d]) => s > m.ff && d > 50).length, kb = (n) => (n / 1024).toFixed(0)
     const mark = m.ff > 0 ? '' : ' (no performance.mark("ns:first-frame") yet: 3D frame and repeat not asserted)'
     return ok(first <= 90 * 1024 && three <= 280 * 1024 && m.fcp > 0 && m.fcp <= 1000 && (m.ff < 0 || (m.ff <= 2500 && rep <= 1000)) && heap <= 400 && late <= 3, `first JS ${kb(first)} kB, three ${kb(three)} kB gz; first paint ${Math.round(m.fcp)} ms; first 3D frame ${Math.round(m.ff)} ms; repeat ${Math.round(rep)} ms; ${late} long tasks > 50 ms after first frame; heap ${heap.toFixed(0)} MB${mark}`) } },
+  { id: 'A41', title: 'power card: cores <= package and rest >= 0 over 200 live samples with cores 50-150 % of the package (the recorded pack is covered by vitest)', run: async (env) => {
+    const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
+    const read = () => pg.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => { const e = document.querySelector('.phud'); res(e ? { ...e.dataset } : null) }))))
+    const bad = [], seen = { ok: 0, scaled: 0, unavailable: 0 }
+    const check = (r, where, expect) => {
+      if (!r || r.pkg == null) return bad.push(`${where}: no reading`)
+      seen[r.split] = (seen[r.split] ?? 0) + 1; const pkg = +r.pkg
+      if (expect && r.split !== expect) bad.push(`${where}: split ${r.split}, expected ${expect}`)
+      if (r.split === 'unavailable') { if (r.cores || r.rest) bad.push(`${where}: unavailable but shows a split`); return }
+      const c = +r.cores, rest = +r.rest
+      if (!(c <= pkg + 0.005) || !(rest >= 0) || Math.abs(c + rest - pkg) > 0.02) bad.push(`${where}: pkg ${pkg} cores ${c} rest ${rest}`) }
+    // no recorded run anywhere on the machine side (owner: live data only)
+    if (await pg.locator('[data-recorded],[data-replay]').count()) return F('a recorded-run button is still on the page')
+    const pack = { ok: 0, scaled: 0, unavailable: 0 }
+    // 2) a synthetic live stream (as from the companion) whose cores add up to 50-150 % of the package
+    let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+    await pg.evaluate(() => { const s = window.__hw.getState(); s.pause(); s.pPause(); window.__hw.setState({ power: null, journey: null, pMode: 'live', telemetry: [] }) })
+    for (let i = 0; i < 200; i++) {
+      const pkg = 8 + rnd() * 60, f = 0.5 + rnd(), k = i % 4 === 3 ? 1.4 : i % 4 === 2 ? 1.05 : f   // every 4th sample: grossly over; every 4th+2: mildly over
+      const core = Array.from({ length: 8 }, () => (pkg * k) / 8)
+      await pg.evaluate((x) => { const tel = Array.from({ length: 4 }, (_, j) => ({ t: x.i + j * 0.1, cpu: [], power: { pkg_w: x.pkg, core_w: x.core } })); window.__hw.setState({ telemetry: tel }) }, { i, pkg, core })
+      await pg.waitForTimeout(270)   // the card re-renders at most 4 times a second
+      check(await read(), `live #${i} (cores ${(k * 100).toFixed(0)}% of pkg)`, k > 1.15 ? 'unavailable' : k > 1 ? 'scaled' : 'ok')
+    }
+    return ok(!bad.length, `${seen.ok} ok, ${seen.scaled} scaled, ${seen.unavailable} unavailable; ${bad.length} violations${bad[0] ? ' e.g. ' + bad.slice(0, 2).join('; ') : ''}`) } },
   { id: 'L1', title: '3D canvas is drawing in the model, zoo and machine views', run: async (env) => {
     const p = await env.open(); await p.goto('', 2500); const res = []
     for (const sec of ['model', 'zoo', 'power', 'machine']) { const c = p.page.locator(`#sec-${sec} canvas, [data-sec=${sec}] canvas`).first(); if (!(await c.count())) continue
@@ -436,17 +469,21 @@ export const checks = [
     for (const h of ['#zoo', '#machine', '#model']) { await p.page.evaluate((x) => { location.hash = x }, h); await p.page.waitForTimeout(800) }
     if (await p.page.evaluate(() => !!window.__zoo)) for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n); await p.page.waitForTimeout(500) }
     const e = await p.errCount(); return ok(e === 0, `${e} page errors`) } },
-  { id: 'L3', title: 'power replay: same playhead gives the same readout', run: async (env) => {
-    const p = await env.open(); await p.goto('#machine', 2500); const b = p.page.locator('#sec-power button:has-text("Play a recorded run"), [data-replay]').first()
-    if (!(await b.count())) return S('no replay button'); await b.click(); await p.page.waitForTimeout(1500)
-    const read = async (t) => { await p.page.evaluate((x) => { const s = window.__hw.getState(); s.pPause(); s.setPHead(x) }, t); await p.page.waitForTimeout(400); return p.page.locator('#sec-power .phud .pbig').first().innerText() }
-    const a = await read(3.3), m = await read(9.9), c = await read(3.3); return ok(a === c, `${a} / ${m} / ${c}`) } },
-  { id: 'L4', title: 'recorded journey loads; one component Test gives a numeric device score', run: async (env) => {
+  { id: 'L3', title: 'live power readout: the same sensor samples give the same readout (no replay mode any more)', run: async (env) => {
     const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
-    const jb = pg.locator('#sec-power button:has-text("Play a recorded journey")').first(); if (!(await jb.count())) return S('no recorded-journey button')
-    await jb.click(); const j = await pg.waitForFunction(() => window.__hw.getState().journey?.stages?.length ?? !!window.__hw.getState().journey, null, { timeout: 30000 }).then(() => 1, () => 0)
-    await openFor(pg, '[data-test=cpu1]'); await pg.locator('[data-test=cpu1]').first().click(); const got = await pg.waitForFunction(() => document.querySelector('b[data-score]')?.getAttribute('data-score'), null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null)
-    return ok(j && +got > 0, `journey ${j ? 'loaded' : 'MISSING'}; score after one Test ${got ?? 'none'}`) } },
+    const tel = (w) => Array.from({ length: 4 }, (_, j) => ({ t: j * 0.1, cpu: [], power: { pkg_w: w, core_w: Array(8).fill(w / 16) } }))
+    const read = async (w) => { await pg.evaluate((t) => window.__hw.setState({ power: null, journey: null, pMode: 'live', telemetry: t }), tel(w)); await pg.waitForTimeout(450); return pg.locator('#sec-power .phud .pbig').first().innerText() }
+    const a = await read(21.1), m = await read(40), c = await read(21.1)
+    const gone = !(await pg.locator('[data-recorded],[data-replay]').count())
+    return ok(a === c && a !== m && gone, `${a} / ${m} / ${c}; recorded-run buttons gone ${gone}`) } },
+  { id: 'L4', title: 'no recorded-run or journey button in browser mode; one component Test gives a numeric result and the strip says 1 / 6 with no number yet (C11)', run: async (env) => {
+    const p = await env.open(); await p.goto('#machine', 2500); const pg = p.page
+    const rec = await pg.evaluate(() => /recorded (run|journey)|Replay the test/i.test(document.body.innerText) || !!document.querySelector('[data-recorded],[data-replay]'))
+    await openFor(pg, '[data-test=cpu1]'); await pg.locator('[data-test=cpu1]').first().click()
+    const got = await pg.waitForFunction(() => window.__hw.getState().results.cpu1?.value, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null)
+    await pg.waitForTimeout(400)
+    const strip = await pg.evaluate(() => ({ t: document.querySelector('[data-score-strip] .nspeek-txt')?.textContent ?? '', num: !!document.querySelector('b[data-score]') }))
+    return ok(!rec && +got > 0 && /1 \/ 6/.test(strip.t) && !strip.num, `recorded buttons ${rec ? 'STILL THERE' : 'gone'}; cpu1 ${got ?? 'none'}; strip "${strip.t}"; number shown ${strip.num}`) } },
   { id: 'L5', title: 'five networks each produce an output', run: async (env) => {
     const p = await env.open(); await p.goto('#zoo', 2500); if (!(await p.page.evaluate(() => !!window.__zoo))) return S('no window.__zoo'); const res = []
     for (const n of ['mlp', 'cnn', 'rnn', 'vit', 'vlm']) { await p.page.evaluate((x) => window.__zoo.getState().setNet(x), n)

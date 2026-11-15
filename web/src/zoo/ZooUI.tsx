@@ -7,7 +7,8 @@ import { locateZ, NETS, STAGES, totalZ, useZoo, type CatRow, type DigitNet, type
 import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
 import { useStore } from '../store'
-import { CalcPanel, EditPanel, LayerPanel, RunScoreCard } from '../ui/panels'
+import { CalcPanel, EditPanel, LayerPanel } from '../ui/panels'
+import { ModelRunFacts } from '../hw/modelRun'
 import { Explainer, Hint, Inspector, Peek, TopBars, showTok } from '../ui/charts'
 
 const f = (v: number, d = 3) => (Number.isFinite(v) ? v.toFixed(d) : String(v))
@@ -868,9 +869,7 @@ function Result() {
       {lastStats && !running && (
         <>
           <p className="s6line" data-runscore>Ran on <b>{lastStats.where === 'webgpu' ? 'the GPU, in your browser' : lastStats.where === 'wasm' ? 'the CPU, in your browser' : 'the companion'}</b>{fit?.reason ? `. ${fit.reason}` : '.'}<Hint>The page picks the GPU when it can. It falls back to the CPU if the GPU cannot hold the model.</Hint></p>
-          <RunScoreCard stats={lastStats} fit={fit} params={spec?.params ?? null} info={null} />
-          <p className="s6line">Speed and energy here are <b>estimated</b>. The score uses speed, wait and memory.{lastStats.joules != null && <> Energy: about <b className="mono">{lastStats.joules.toFixed(1)} J</b> (estimated).</>}</p>
-          {fit && <p className="s6fit">Fit: <b className={`s6v-${fit.verdict}`}>{VERDICT_WORD[fit.verdict]}</b>. Needs about {fmtBytes(fit.needBytes)}{fit.haveBytes ? `, this device has ${fmtBytes(fit.haveBytes)}` : ''}.</p>}
+          <ModelRunFacts stats={lastStats} fit={fit} />
         </>
       )}
       {!final && !running && !lastStats && <p className="hint">Press Run. The result shows here.</p>}

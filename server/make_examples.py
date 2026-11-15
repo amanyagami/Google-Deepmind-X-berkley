@@ -103,7 +103,7 @@ def record_machine(repo="HuggingFaceTB/SmolLM2-135M", prompt="The capital of Fra
     info = dict(hw.info())
     pack = {"recorded": time.strftime("%Y-%m-%d"), "note": "Recorded on the test PC by server/make_examples.py machine",
             "info": info, "bench": bench, "power": power, "journey": journey, "micro": micro}
-    out = OUT / "machine.json"
+    out = OUT.parents[1] / "tests" / "fixtures" / "machine.json"   # a unit-test fixture; the page no longer plays recorded runs
     out.write_text(json.dumps(pack, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {out} ({out.stat().st_size / 1e6:.2f} MB) · decode {journey['decode']['tps']} tok/s · micro err {micro['match_err']:.2e}")
 
