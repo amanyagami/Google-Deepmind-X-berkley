@@ -2,7 +2,7 @@
 import { expect, test } from 'vitest'
 import {
   buildChase, cacheSizes, calibrateReps, chase, ci95, ciRel, clampInt, collectSamples, cvPct, findKnees, geomean, median, minSampleMs,
-  planTriad, RunScope, sampleFlags, shouldStopEarly, triad, withHalving, chooseProfile, loadKernel, MAX_N,
+  planTriad, RunScope, fillSliced, repsFromRate, SWEEP_SIZES, sampleFlags, shouldStopEarly, triad, withHalving, chooseProfile, loadKernel, MAX_N,
 } from '../src/hw/browserBench'
 
 test('wasm kernel computes C += A x B exactly enough, for every supported size', async () => {
@@ -79,7 +79,7 @@ test('caps: clamping, RAM plan <= 12 % of memory, cache sizes per profile', () =
   expect(phone.halved).toBe(true)
   expect(phone.arrayBytes * 3 * 4).toBeLessThanOrEqual(2 * 2 ** 30 * 0.12)
   expect(planTriad({ deviceMemoryGB: null, threads: 4, kneeBytes: null, requestedMB: 500 }).memoryUnknown).toBe(true)
-  expect(cacheSizes('standard', 8)).toHaveLength(13)
+  expect(cacheSizes('standard', 8)).toEqual(SWEEP_SIZES)
   expect(Math.max(...cacheSizes('lite', 2))).toBeLessThanOrEqual(32 * MB)
   expect(chooseProfile({ deviceMemoryGB: 2, cores: 8, mobile: false, gpuOk: true })).toBe('lite')
   expect(chooseProfile({ deviceMemoryGB: 8, cores: 16, mobile: false, gpuOk: true })).toBe('full')
@@ -135,4 +135,23 @@ test('calibrateReps doubles until a run is long enough', () => {
   let t = 0
   const reps = calibrateReps((r) => { t += r * 0.5 }, 50, { now: () => t })
   expect(reps * 0.5).toBeGreaterThanOrEqual(50); expect(reps).toBeLessThan(400)
+})
+
+test('fillSliced yields every <= 8 ms of work and fills everything', async () => {
+  let t = 0
+  const arr = new Float32Array(20000)
+  const y = await fillSliced(arr, (i) => { t += 0.01; return i }, 8, { now: () => t }, async () => {})
+  expect(arr[19999]).toBe(19999)
+  expect(y).toBeGreaterThanOrEqual(15) // 200 ms of work -> about 25 slices
+})
+
+test('repsFromRate sizes the next run from the last rate; the sweep reuses one chain buffer', () => {
+  expect(repsFromRate(50, 1000, 100)).toBe(Math.ceil((50 * 1.1 * 1000) / 100))
+  expect(repsFromRate(50, 0.0001, 100)).toBe(1)
+  const buf = new Uint32Array(64 * 1024 / 4)
+  const a = buildChase(4096, Math.random, buf)
+  expect(a.buffer).toBe(buf.buffer); expect(a.length).toBe(1024)
+  let p = 0; const seen = new Set<number>(); for (let i = 0; i < 64; i++) { seen.add(p); p = a[p] }
+  expect(seen.size).toBe(64)
+  expect(SWEEP_SIZES.length).toBe(12)
 })

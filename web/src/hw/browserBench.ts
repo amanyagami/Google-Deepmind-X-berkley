@@ -483,11 +483,10 @@ export function planTriad(o: { deviceMemoryGB: number | null; threads: number; k
   const arr = Math.max(MB, Math.min(want, maxArr))
   return { arrayBytes: arr, halved: arr < want, memoryUnknown: o.deviceMemoryGB == null }
 }
-/** Cache sweep sizes: 13 doublings, 16 KB to 64 MB; the largest is capped (lite: 32 MB; else 25 % of the memory budget). */
+/** Cache sweep sizes: 12 sizes, 16 KB to 64 MB; the largest is capped (lite: 32 MB; else 25 % of the memory budget). */
 export function cacheSizes(profile: Capabilities['profile'], deviceMemoryGB: number | null): number[] {
-  const all = Array.from({ length: 13 }, (_, i) => 16384 * 2 ** i)
   const cap = profile === 'lite' ? 32 * 2 ** 20 : Math.max(2 ** 20, memoryBudget(deviceMemoryGB, 1) * 0.25 * 0.5)
-  return all.filter((s) => s <= cap)
+  return SWEEP_SIZES.filter((s) => s <= cap)
 }
 /** Run fn(size); on RangeError halve the size (down to `min`) and try again. */
 export async function withHalving<T>(fn: (size: number) => Promise<T>, size: number, min: number): Promise<{ result: T; size: number; halved: boolean }> {
@@ -579,10 +578,31 @@ export function calibrateReps(fn: (reps: number) => void, minMs: number, clock: 
   }
 }
 
+/* ------------------------------------------------------------------ keeping the main thread free */
+/** Give the browser a turn (rendering, input). scheduler.yield() when present, else a macrotask. */
+export const yieldMain = (): Promise<void> => {
+  const sch = (globalThis as any).scheduler
+  return typeof sch?.yield === 'function' ? sch.yield() : new Promise<void>((r) => setTimeout(r, 0))
+}
+/** Fill arr[i] = f(i) in slices of <= sliceMs, yielding between slices (large host-side buffers for the GPU test). */
+export async function fillSliced(arr: Float32Array, f: (i: number) => number, sliceMs = 8, clock: Clock = performance, yielder: () => Promise<void> = yieldMain): Promise<number> {
+  let yields = 0, t = clock.now()
+  for (let i = 0; i < arr.length; i++) {
+    arr[i] = f(i)
+    if ((i & 1023) === 1023 && clock.now() - t >= sliceMs) { await yielder(); yields++; t = clock.now() }
+  }
+  return yields
+}
+/** Repeat count for the next size from the measured rate of the previous one (work units per ms), so no calibration pass is needed. */
+export const repsFromRate = (minMs: number, ratePerMs: number, workPerRep: number, max = 1 << 24) =>
+  Math.max(1, Math.min(max, Math.ceil((minMs * 1.1 * ratePerMs) / workPerRep)))
+/** Cache sweep sizes with the interior of the plateaus thinned out: 16/32/64 KB (L1), 256K..2 MB (L2), 4..32 MB (L3), 64 MB (DRAM). */
+export const SWEEP_SIZES = [16, 32, 64, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536].map((k) => k * 1024)
+
 /* ---------------------------------------------------------------------------------- kernels (pure JS) */
 /** Random single-cycle pointer chain, one pointer per 64-byte line (Sattolo), so the footprint is exactly `bytes`. */
-export function buildChase(bytes: number, rng: () => number = Math.random): Uint32Array {
-  const lines = Math.max(2, bytes >> 6), a = new Uint32Array(lines * 16), ord = new Uint32Array(lines)
+export function buildChase(bytes: number, rng: () => number = Math.random, into?: Uint32Array): Uint32Array {
+  const lines = Math.max(2, bytes >> 6), a = into ? into.subarray(0, lines * 16) : new Uint32Array(lines * 16), ord = new Uint32Array(lines)
   for (let i = 0; i < lines; i++) ord[i] = i
   for (let i = lines - 1; i > 0; i--) { const j = Math.floor(rng() * i), t = ord[i]; ord[i] = ord[j]; ord[j] = t }
   for (let i = 0; i < lines; i++) a[ord[i] * 16] = ord[(i + 1) % lines] * 16
@@ -771,9 +791,11 @@ function callW(w: Worker, id: number, cmd: string, args: any, scope: RunScope | 
     call(w, id, cmd, args, onTick).then(resolve, reject)
   })
 }
-function pool(n: number, scope: RunScope): Worker[] {
-  const ws = Array.from({ length: n }, spawn)
+/** Workers are created one per turn so spawning 8 of them never holds the main thread. */
+async function pool(n: number, scope: RunScope): Promise<Worker[]> {
+  const ws: Worker[] = []
   scope.add(() => ws.forEach((w) => w.terminate()))
+  for (let i = 0; i < n && !scope.aborted; i++) { ws.push(spawn()); if (i + 1 < n) await yieldMain() }
   return ws
 }
 const isAbort = (e: any) => e?.name === 'AbortError'
@@ -789,7 +811,7 @@ export async function run_cpu1(input: number | null, signal: AbortSignal, onProg
   const n = clampInt(input ?? 256, 128, 1024, 16).value
   let samples: number[] = [], cancelled = false
   try {
-    const [w] = pool(1, scope)
+    const [w] = await pool(1, scope)
     await callW(w, 1, 'prep', { kind: 'mm', n, minMs: minSampleMs(timerOf(caps)) }, scope)
     const r = await callW(w, 2, 'run', { startAt: 0, budgetMs: 2500, minSamples: 5, maxSamples: 40 }, scope, (m) => onProgress({ value: m.value, unit: 'GFLOP/s', fraction: Math.min(0.95, (m.elapsed ?? 0) / 2500) }))
     samples = r.samples
@@ -811,7 +833,7 @@ export async function run_cpun(input: number | null, signal: AbortSignal, onProg
   const n = 256
   let agg: number[] = [], cancelled = false, sustained = 0
   try {
-    const ws = pool(threads, scope)
+    const ws = await pool(threads, scope)
     await Promise.all(ws.map((w, i) => callW(w, 10 * i + 1, 'prep', { kind: 'mm', n, minMs: minSampleMs(timerOf(caps)) }, scope)))
     const per = new Array(threads).fill(0)
     const startAt = epochIn(100)
@@ -846,7 +868,7 @@ export async function run_cache(input: number | null, signal: AbortSignal, onPro
   if (input != null) { const cap = Math.max(2 ** 20, input * 2 ** 20); sizes = sizes.filter((s) => s <= cap) }
   let rows: { bytes: number; lat: number[]; bw: number[] }[] = [], cancelled = false
   try {
-    const [w] = pool(1, scope)
+    const [w] = await pool(1, scope)
     const r = await callW(w, 1, 'sweep', { sizes, minMs: minSampleMs(timerOf(caps)) }, scope, (m) => onProgress({ fraction: m.fraction, unit: 'GB/s', value: m.bw, note: m.note }))
     rows = r.rows
   } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
@@ -876,7 +898,7 @@ export async function run_ram(input: number | null, signal: AbortSignal, onProgr
   const custom = input != null
   let arrayBytes = plan.arrayBytes, halved = plan.halved, agg: number[] = [], cancelled = false
   try {
-    const ws = pool(threads, scope)
+    const ws = await pool(threads, scope)
     const prep = await withHalving(async (bytes) => {
       await Promise.all(ws.map((w, i) => callW(w, i + 1, 'prep', { kind: 'triad', bytes, minMs: minSampleMs(timerOf(caps)) }, scope)))
       return bytes
@@ -914,7 +936,7 @@ export async function run_storage(input: number | null, signal: AbortSignal, onP
   if (caps.opfs.quotaBytes) { const cap = Math.max(16, Math.floor((caps.opfs.quotaBytes * 0.1) / 2 ** 20 / 16) * 16); if (mb > cap) { mb = cap; halved = true } }
   let rounds: any[] = [], cancelled = false
   try {
-    const [w] = pool(1, scope)
+    const [w] = await pool(1, scope)
     const r = await withHalving((size) => callW(w, 1, 'store', { mb: size, rounds: 3, randomMs: 330 }, scope, (m) => onProgress({ fraction: m.fraction, unit: 'MB/s', value: m.value, note: m.note })), mb, 16)
     rounds = r.result.rounds; if (r.halved) { halved = true; mb = r.size }
   } catch (e) { if (!isAbort(e)) throw e; cancelled = true } finally { scope.dispose(); hid.stop() }
@@ -990,7 +1012,7 @@ export async function run_gpu(input: number | null, signal: AbortSignal, onProgr
       device.pushErrorScope('out-of-memory')
       const bytes = n * n * 4
       const hostA = new Float32Array(n * n), hostB = new Float32Array(n * n)
-      for (let i = 0; i < n * n; i++) { hostA[i] = hashVal(i, 1); hostB[i] = hashVal(i, 2) }
+      await fillSliced(hostA, (i) => hashVal(i, 1)); await fillSliced(hostB, (i) => hashVal(i, 2))
       const mk = (src: Float32Array | null) => {
         const b = device.createBuffer({ size: bytes, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST, mappedAtCreation: !!src })
         if (src) { new Float32Array(b.getMappedRange()).set(src); b.unmap() }
@@ -1030,6 +1052,7 @@ export async function run_gpu(input: number | null, signal: AbortSignal, onProgr
         for (let q = 0; q < 24; q++) {
           const i = Math.floor((hashVal(q, 7) + 0.5) * n) % n, j = Math.floor((hashVal(q, 8) + 0.5) * n) % n
           let s = 0; for (let k = 0; k < n; k++) s += hostA[i * n + k] * hostB[k * n + j]
+          if (q % 4 === 3) await yieldMain()
           worst = Math.max(worst, Math.abs(s - got[i * n + j]))
         }
         rd.unmap()
