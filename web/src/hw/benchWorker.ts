@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 // One benchmark worker = one busy thread. The page starts several at once for the multi-core tests.
-import { buildChase, calibrateReps, chase, collectSamples, loadKernel, median, triad, type Kernel } from './browserBench'
+import { buildChase, calibrateReps, chase, collectSamples, loadKernel, median, repsFromRate, triad, type Kernel } from './browserBench'
 
 let kernel: Kernel | null = null
 const post = (m: any) => (self as any).postMessage(m)
@@ -122,18 +122,33 @@ function run(a: { startAt: number; budgetMs: number; minSamples?: number; maxSam
   }).then((r) => ({ samples: r.samples, stopped: r.stopped }))
 }
 
-/** Latency (pointer chase) and read bandwidth for each size; >= 5 samples of >= minMs each. */
+/** Latency (pointer chase) and copy bandwidth for each size; >= 5 samples of ~minMs each. One chain buffer and one src/dst pair
+ *  are allocated for the largest size and reused; repeat counts come from the previous size's rate (no calibration pass). */
 async function sweep(a: { sizes: number[]; minMs: number }, id: number) {
   const rows: { bytes: number; lat: number[]; bw: number[] }[] = []
+  const maxB = Math.max(...a.sizes)
+  const chainBuf = new Uint32Array(maxB / 4), srcBuf = new Float64Array(maxB / 16).fill(1), dstBuf = new Float64Array(maxB / 16)
+  let latRate = 0 /* steps per ms */, bwRate = 0 /* bytes per ms */
   for (let si = 0; si < a.sizes.length; si++) {
     const bytes = a.sizes[si]
-    const chain = buildChase(bytes)
-    const steps = calibrateReps((r) => { chase(chain, r * 1024) }, a.minMs) * 1024
-    const lat = (await collectSamples(() => { const t = performance.now(); chase(chain, steps); return ((performance.now() - t) * 1e6) / steps }, { warmups: 0, budgetMs: 400, minSamples: 5, maxSamples: 7, tol: 0.02 })).samples
-    // bandwidth = memcpy (native, so not limited by JS loop speed); the working set is src + dst = `bytes`
-    const half = Math.max(8, bytes / 2 / 8), src = new Float64Array(half).fill(1), dst = new Float64Array(half)
-    const reps = calibrateReps((r) => { for (let i = 0; i < r; i++) dst.set(src) }, a.minMs)
-    const bw = (await collectSamples(() => { const t = performance.now(); for (let i = 0; i < reps; i++) dst.set(src); return (half * 16 * reps) / ((performance.now() - t) / 1e3) / 1e9 }, { warmups: 0, budgetMs: 400, minSamples: 5, maxSamples: 7, tol: 0.02 })).samples
+    const chain = buildChase(bytes, Math.random, chainBuf)
+    let steps = latRate ? Math.ceil(repsFromRate(a.minMs, latRate, 4) * 4) : calibrateReps((r) => { chase(chain, r * 1024) }, a.minMs) * 1024
+    const lat = (await collectSamples(() => {
+      const done = steps
+      const t = performance.now(); chase(chain, done); const dt = performance.now() - t
+      latRate = done / Math.max(dt, 0.01)
+      if (dt < a.minMs * 0.9 || dt > a.minMs * 2) steps = Math.max(4, Math.ceil(steps * a.minMs * 1.1 / Math.max(dt, 0.01) / 4) * 4)
+      return (dt * 1e6) / done
+    }, { warmups: 0, budgetMs: 400, minSamples: 5, maxSamples: 6, tol: 0.02 })).samples
+    const half = Math.max(8, bytes / 2 / 8), src = srcBuf.subarray(0, half), dst = dstBuf.subarray(0, half)
+    let reps = bwRate ? repsFromRate(a.minMs, bwRate, half * 16) : calibrateReps((r) => { for (let i = 0; i < r; i++) dst.set(src) }, a.minMs)
+    const bw = (await collectSamples(() => {
+      const t = performance.now(); for (let i = 0; i < reps; i++) dst.set(src); const dt = performance.now() - t
+      const done = reps
+      if (dt < a.minMs * 0.9 || dt > a.minMs * 2) reps = repsFromRate(a.minMs, (half * 16 * done) / Math.max(dt, 0.01), half * 16)
+      bwRate = (half * 16 * done) / Math.max(dt, 0.01)
+      return (half * 16 * done) / (dt / 1e3) / 1e9
+    }, { warmups: 0, budgetMs: 400, minSamples: 5, maxSamples: 6, tol: 0.02 })).samples
     rows.push({ bytes, lat, bw })
     post({ type: 'tick', id, fraction: (si + 1) / a.sizes.length, bw: median(bw), note: `${bytes >= 2 ** 20 ? bytes / 2 ** 20 + ' MB' : bytes / 1024 + ' KB'}: ${median(lat).toFixed(1)} ns` })
   }
