@@ -54,12 +54,23 @@ button { font: inherit; color: inherit; }
 sub { font-size: 0.75em; }
 
 .app { min-height: 100dvh; display: flex; flex-direction: column; }
-/* the page scrolls; the top bar and the dock are sticky. Each section fills the window between them. */
-.flow { flex: 1; }
-.sect { container: sect / inline-size; min-height: calc(100dvh - var(--dock)); padding-top: var(--bar); display: flex; flex-direction: column; position: relative; }
+/* The page scrolls; top bar and dock are sticky. Wide (>= 1000 px): .pair puts Model | Machine side by side, 8 px gap and margin,
+ * the canvas is the card. Narrow: the sections stack and each fills the window between bar and dock. */
+.flow { flex: 1; display: flex; flex-direction: column; }
+#score-strip-slot { position: sticky; top: var(--bar); z-index: 30; }
+#score-strip-slot:empty { display: none; }
+.pair { flex: 1; display: block; }
+.sect { container: sect / inline-size; min-height: calc(100dvh - var(--dock)); padding-top: var(--bar); display: flex; flex-direction: column; position: relative; animation: rise var(--d3) var(--ease) both; }
 .sect:first-child { margin-top: calc(var(--bar) * -1); }
-.sect + .sect { border-top: 1px solid var(--line); }
+.sect + .sect { border-top: 1px solid var(--line); animation-delay: 120ms; }
 .sect > .main { flex: 1; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+@media (min-width: 1000px) {
+  .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); padding: var(--gap); min-height: min(calc(100dvh - var(--bar) - var(--dock)), 1000px); }
+  .sect, .sect:first-child { margin-top: 0; padding-top: 0; min-height: 0; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--stage-bg); }
+  .sect + .sect { border-top: 1px solid var(--line); }
+  .topbar .seg { display: none; }
+}
 
 /* top bar */
 .topbar { overflow-x: clip; position: sticky; top: 0; z-index: 40; height: var(--bar); display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s4); border-bottom: 1px solid var(--line); background: var(--bg); }
@@ -118,7 +129,7 @@ sub { font-size: 0.75em; }
 .status.offline i { background: var(--pos); }
 
 /* layout: stage + rail. Wide: rail on the right. Narrow: the rail is a bottom sheet. */
-.main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 32cqw, 440px); min-height: 0; }
+.main { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; }
 .stage { position: relative; min-height: 0; }
 .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--s4); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); }
@@ -224,17 +235,24 @@ textarea:disabled { opacity: 0.7; }
 .movers td { padding: 3px 6px; border-bottom: 1px solid var(--line); }
 .movers .up { color: var(--pos-ink); } .movers .down { color: var(--neg-ink); }
 
-/* narrow: stage on top, rail as a bottom sheet (peek 25 dvh) that sticks above the dock */
-@container sect (max-width: 959px) {
+/* Drawer: the rail is closed by default and slides over the stage (transform only). Details tab on the stage edge. */
+.rail, .inspector { display: flex; flex-direction: column; position: absolute; top: 0; right: 0; bottom: 0; width: min(340px, 100%); z-index: 15; border-left: 1px solid var(--line); background: var(--panel); box-shadow: -12px 0 32px #0006; transform: translateX(105%); visibility: hidden; transition: transform var(--d2) var(--ease), visibility 0s linear var(--d2); }
+.sect[data-rail='open'] .rail, .sect[data-rail='open'] .inspector { transform: none; visibility: visible; transition: transform var(--d2) var(--ease); }
+.drawer-tab { position: absolute; z-index: 16; right: 0; top: 50%; translate: 0 -50%; display: inline-flex; align-items: center; gap: 6px; min-height: 96px; min-width: 32px; padding: 8px 6px; writing-mode: vertical-rl; font: 600 12px var(--body); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-right: 0; border-radius: var(--r-md) 0 0 var(--r-md); cursor: pointer; transition: transform var(--d2) var(--ease); }
+.drawer-tab:hover { border-color: var(--pos); }
+.sect[data-rail='open'] .drawer-tab { transform: translateX(calc(-1 * min(340px, 100%))); }
+.stage { height: 100%; }
+.abcols { grid-template-columns: 1fr; }
+@media (max-width: 999px) {
+  /* narrow: the stage fills the window; the rail is a bottom sheet (peek 25 dvh), closed by default */
   .main { display: block; }
-  .stage { height: calc(100dvh - var(--bar) - var(--dock) - 25dvh); min-height: 340px; }
-  .rail, .inspector { --sheet: 25dvh; position: sticky; bottom: var(--dock); z-index: 20; height: var(--sheet); border-left: 0; border-top: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: 0 -10px 24px #0008; view-transition-name: none; }
+  .stage { height: calc(100dvh - var(--bar) - var(--dock) - 44px); min-height: 380px; }
+  .main.machine:not(.zoo) .stage { min-height: 640px; }
+  .rail, .inspector { --sheet: 25dvh; position: sticky; top: auto; right: auto; bottom: calc(var(--dock) + 44px); width: auto; height: 0; overflow: hidden; transform: none; z-index: 20; border-left: 0; border-top: 0; border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: 0 -10px 24px #0008; transition: none; visibility: visible; }
+  .sect[data-rail='open'] .rail, .sect[data-rail='open'] .inspector { height: var(--sheet); border-top: 1px solid var(--line); }
   .rail::before, .inspector::before { content: ''; display: block; flex: none; width: 44px; height: 5px; margin: 10px auto 6px; border-radius: 3px; background: var(--faint); box-sizing: content-box; border-block: 12px solid transparent; background-clip: content-box; touch-action: none; cursor: grab; }
-  .abcols { grid-template-columns: 1fr; }
-  /* the Machine stage is tall and full of labels: its rail is a plain card below it, not a sheet over it */
-  .main.machine:not(.zoo) .stage { height: 86vh; min-height: 640px; }
-  .main.machine:not(.zoo) > .rail, .main.machine:not(.zoo) > .inspector { position: static; height: auto; border-radius: 0; box-shadow: none; }
-  .main.machine:not(.zoo) > .rail::before, .main.machine:not(.zoo) > .inspector::before { content: none; }
+  .drawer-tab { position: sticky; z-index: 25; right: auto; top: auto; translate: none; bottom: var(--dock); width: 100%; writing-mode: horizontal-tb; justify-content: center; min-height: 44px; padding: 0 14px; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+  .sect[data-rail='open'] .drawer-tab { transform: none; }
 }
 @media (max-width: 900px) {
   canvas { touch-action: pan-y !important; }
@@ -500,3 +518,14 @@ h3 .hintwrap, h4 .hintwrap { margin-left: 6px; }
 .btn.primary:disabled { background: var(--surface2); color: var(--muted); }
 @media (max-width: 900px) { .themelbl { display: none; } }
 @media (max-width: 440px) { .themebtn { padding: 0 8px; } }
+
+#dock-slot { flex-wrap: nowrap; } #dock-slot > * { min-width: 0; }
+
+/* name card, name chip */
+.namewall { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 82%, transparent); }
+.namecard { width: min(360px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: var(--s3); padding: var(--s5); border-radius: var(--r-lg); box-shadow: 0 20px 60px #0007; background: var(--panel); animation: rise var(--d3) var(--ease) both; }
+.namerow { display: flex; align-items: center; gap: var(--s4); }
+.t5link, .namerow .t5link { background: none; border: 0; color: var(--pos-ink); text-decoration: underline; cursor: pointer; min-height: var(--hit); padding: 0 var(--s2); }
+.namechip { position: relative; } .namechip .btn2 { max-width: 110px; }
+.namepop { left: auto; right: 0; width: 240px; flex-direction: row; }
+@media (max-width: 640px) { .namechip { display: none; } }

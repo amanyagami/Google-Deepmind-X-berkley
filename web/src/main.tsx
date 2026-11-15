@@ -3,16 +3,14 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import './styles.css'
 import { useStore } from './store'
-import { useHW } from './hw/hwStore'
-import { useZoo } from './zoo/zooStore'
 
 // Apply the saved theme before the first paint so there is no flash.
 try { const t = localStorage.getItem('ns.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t } catch { /* private mode */ }
 
 // Exposed so browser tests and the devtools console can drive the app.
 ;(window as any).__studio = useStore
-;(window as any).__hw = useHW
-;(window as any).__zoo = useZoo
+import('./hw/hwStore').then((m) => { ;(window as any).__hw = m.useHW })
+import('./zoo/zooStore').then((m) => { ;(window as any).__zoo = m.useZoo })
 
 // Run the ONNX engine from our own files (/ort/), not a CDN. Set before the first model loads.
 import('@huggingface/transformers').then((tf: any) => {

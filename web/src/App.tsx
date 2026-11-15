@@ -1,7 +1,9 @@
 import { Component, lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Hint } from './ui/charts'
 import { canRun, jumpLocked, jumpTo, useStore, type AppView } from './store'
 // Each view loads its own code on first use, so the first page needs only what it shows.
+// the hint bubble lives in a lazy chunk so the first page does not pay for it
+const HintLazy = lazy(() => import('./ui/charts').then((m) => ({ default: m.Hint })))
+const Hint = (p: { label?: string; children: React.ReactNode }) => <Suspense fallback={null}><HintLazy {...p} /></Suspense>
 const MachineView = lazy(() => import('./hw/MachineUI').then((m) => ({ default: m.MachineView })))
 const ZooView = lazy(() => import('./zoo/ZooUI').then((m) => ({ default: m.ZooView })))
 const SECTIONS: { id: AppView; label: string; tip: string }[] = [
@@ -76,7 +78,40 @@ function ThemeToggle() {
   const theme = useStore((s) => s.theme), set = useStore((s) => s.setTheme)
   const next = theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'
   const label = theme === 'system' ? 'System' : theme === 'light' ? 'Light' : 'Dark'
-  return <button className="btn2 themebtn" onClick={() => set(next)} aria-label={`Theme: ${label}. Switch to ${next}.`} title={`Theme: ${label}`}><Ico d={theme === 'light' ? SUN : theme === 'dark' ? MOON : SCREEN} /><span className="themelbl">{label}</span></button>
+  return <button className="btn2 themebtn" data-theme-toggle onClick={() => set(next)} aria-label={`Theme: ${label}. Switch to ${next}.`} title={`Theme: ${label}`}><Ico d={theme === 'light' ? SUN : theme === 'dark' ? MOON : SCREEN} /><span className="themelbl">{label}</span></button>
+}
+
+/** First visit: ask for a name (stays on this device). Enter continues; "Use Guest" skips. */
+function NameCard() {
+  const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
+  const [v, setV] = useState('')
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => { ref.current?.focus() }, [name])
+  if (name) return null
+  return (
+    <div className="namewall" data-namecard>
+      <form className="namecard card" role="dialog" aria-modal="true" aria-labelledby="nm-t" onSubmit={(e) => { e.preventDefault(); if (v.trim()) setName(v) }}>
+        <h3 id="nm-t">What is your name?<Hint label="About your name">It stays on this device. It goes on your score card.</Hint></h3>
+        <input ref={ref} className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} autoComplete="given-name" aria-label="Your name" placeholder="Your name" />
+        <div className="namerow"><button className="btn primary" type="submit" disabled={!v.trim()}>Continue</button><button type="button" className="t5link" onClick={() => setName('Guest')}>Use Guest</button></div>
+      </form>
+    </div>
+  )
+}
+/** The name in the top bar, with a small menu to change it. */
+function NameChip() {
+  const name = useStore((s) => s.name), setName = useStore((s) => s.setName)
+  const [open, setOpen] = useState(false)
+  const [v, setV] = useState('')
+  if (!name) return null
+  return (
+    <span className="namechip">
+      <button className="btn2" aria-expanded={open} onClick={() => { setV(name); setOpen((o) => !o) }} title="Change your name"><span className="pickname">{name}</span></button>
+      {open && <form className="pop namepop" onSubmit={(e) => { e.preventDefault(); if (v.trim()) { setName(v); setOpen(false) } }}>
+        <input className="dockprompt" value={v} onChange={(e) => setV(e.target.value)} maxLength={40} aria-label="Your name" autoFocus />
+        <button className="btn" type="submit">Save</button></form>}
+    </span>
+  )
 }
 
 function TopBar({ view }: { view: AppView }) {
@@ -95,6 +130,7 @@ function TopBar({ view }: { view: AppView }) {
       <span className="grow" />
       <span className="tag devchip">{device}</span>
       <ThemeToggle />
+      <NameChip />
       <span className="tag privchip"><Ico d={SHIELD} /><span className="privtxt">Runs on your device · nothing uploaded</span>
         <Hint label="About privacy">Your prompts and files stay in this tab. Only model files are downloaded.</Hint></span>
     </header>
@@ -193,9 +229,33 @@ function useSections(flow: React.RefObject<HTMLDivElement | null>) {
   return seen
 }
 
-const Sect = ({ id, label, children }: { id: AppView; label: string; children: React.ReactNode }) => (
-  <div id={`sec-${id}`} data-sec={id} className="sect" role="region" aria-label={label}>{children}</div>
-)
+const RAIL = { model: 'model', power: 'machine' } as const
+const Sect = ({ id, label, children }: { id: 'model' | 'power'; label: string; children: React.ReactNode }) => {
+  const open = useStore((s) => s.railOpen[RAIL[id]])
+  const setRail = useStore((s) => s.setRail)
+  return (
+    <div id={`sec-${id}`} data-sec={id} data-rail={open ? 'open' : 'closed'} className="sect" role="region" aria-label={label}>
+      {children}
+      <button className="drawer-tab" data-drawer-toggle aria-expanded={open} onClick={() => setRail(RAIL[id], !open)}>{open ? 'Close' : 'Details'}</button>
+    </div>
+  )
+}
+
+/** Esc, or a click outside the drawer, closes the open drawers. Machine details follow the drawer. */
+function useDrawers() {
+  useEffect(() => { try { if (localStorage.getItem('ns.machine.details') === null) useStore.getState().setDetails(false) } catch { /* private mode */ } }, [])
+  useEffect(() => {
+    const close = () => { const s = useStore.getState(); (['model', 'machine'] as const).forEach((k) => s.railOpen[k] && s.setRail(k, false)) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('.rail, .inspector, .drawer-tab, .hintpop, .pop')) close() }
+    addEventListener('keydown', key); document.addEventListener('pointerdown', down)
+    return () => { removeEventListener('keydown', key); document.removeEventListener('pointerdown', down) }
+  }, [])
+  // the Machine view has its own details switch: keep it and the drawer in step
+  const open = useStore((s) => s.railOpen.machine), details = useStore((s) => s.details)
+  useEffect(() => { if (useStore.getState().details !== open) useStore.getState().setDetails(open) }, [open])
+  useEffect(() => { if (useStore.getState().railOpen.machine !== details) useStore.getState().setRail('machine', details) }, [details])
+}
 
 export default function App() {
   const init = useStore((s) => s.init)
@@ -206,9 +266,10 @@ export default function App() {
   const seen = useSections(flow)
   useSheet()
   useThemeApply()
+  useDrawers()
   // stage and rail are the side-by-side panels: mark them so tests and styles can find them
   useEffect(() => {
-    const mark = () => document.querySelectorAll('.main > .stage, .main > .rail, .main > .inspector').forEach((e) => e.setAttribute('data-panel', ''))
+    const mark = () => document.querySelectorAll('.main > .stage, .main > .rail, .main > .inspector').forEach((e) => { e.setAttribute('data-panel', ''); if (!e.matches('.stage')) e.setAttribute('data-drawer', '') })
     mark()
     const mo = new MutationObserver(mark)
     mo.observe(flow.current!, { childList: true, subtree: true })
@@ -226,12 +287,14 @@ export default function App() {
       <TopBar view={view} />
       <OfflineStrip />
       <div className="flow" ref={flow}>
-        <Guard>
+        <div id="score-strip-slot" data-score-strip />
+        <Guard><div className="pair">
           <Sect id="model" label="The model on your prompt">{seen.model ? <Suspense fallback={<Loading />}><ZooView /></Suspense> : <Loading />}</Sect>
           <Sect id="power" label="The machine: live electricity and the journey of a prompt">{seen.power ? <Suspense fallback={<Loading />}><MachineView /></Suspense> : <Loading />}</Sect>
-        </Guard>
+        </div></Guard>
       </div>
       <Dock />
+      <NameCard />
     </div>
   )
 }
