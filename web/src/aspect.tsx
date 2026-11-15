@@ -57,3 +57,15 @@ export function useTheme(): ThemeName {
   }, [])
   return t
 }
+
+/** The Kundali mark on a 2D canvas (share card): square, both diagonals, inner diamond, in the brand gradient. */
+export function drawKundali(g: CanvasRenderingContext2D, x: number, y: number, size: number) {
+  const gr = g.createLinearGradient(x, y, x + size, y + size)
+  gr.addColorStop(0, '#9a82ff'); gr.addColorStop(0.55, '#3ddcf5'); gr.addColorStop(1, '#ff8fc4')
+  const h = size / 2
+  g.save(); g.strokeStyle = gr; g.lineWidth = Math.max(2, size / 12); g.lineJoin = 'round'; g.lineCap = 'round'; g.beginPath()
+  g.rect(x, y, size, size)
+  g.moveTo(x, y); g.lineTo(x + size, y + size); g.moveTo(x + size, y); g.lineTo(x, y + size)
+  g.moveTo(x + h, y); g.lineTo(x + size, y + h); g.lineTo(x + h, y + size); g.lineTo(x, y + h); g.closePath()
+  g.stroke(); g.restore()
+}

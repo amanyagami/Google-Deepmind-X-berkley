@@ -69,7 +69,7 @@ sub { font-size: 0.75em; }
   .pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); padding: var(--gap); min-height: min(calc(100dvh - var(--bar) - var(--dock-h) - var(--strip, 0px)), 1000px); }
   .sect, .sect:first-child { margin-top: 0; padding-top: 0; min-height: 0; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--stage-bg); }
   .sect + .sect { border-top: 1px solid var(--line); }
-  .topbar .seg { display: none; }
+  .topbar .phonetabs { display: none; }
 }
 
 /* top bar */
@@ -628,3 +628,42 @@ h1, h2, h3, .hero { letter-spacing: -0.015em; }
   .howicon { width: 38px; height: 38px; }
 }
 @media (prefers-reduced-motion: reduce) { .howto li { animation: none; } }
+
+/* ---- R3 minimal top bar: logo + brand · Leaderboard · profile menu; phones get a slim Model|Machine row under it */
+svg.logo { width: 20px; height: 20px; flex: none; background: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--brand-1) 45%, transparent)); }
+.brandname { font-weight: 750; }
+#model-picker-slot { position: absolute; left: var(--s3); top: var(--bar); width: 0; height: 0; overflow: visible; z-index: 45; }
+#model-picker-slot .s6pickbtn, #model-picker-slot [data-picker] > button:first-child { display: none; }
+.boardbtn { padding: 0 var(--s3); }
+.profile { position: relative; }
+.profbtn { display: inline-flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) 0 4px; max-width: 200px; }
+.avatar { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; font: 700 13px/1 var(--body); color: #0a0e19; background: var(--brand-fill); }
+.profname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.profpop { left: auto; right: 0; width: min(320px, calc(100vw - 16px)); gap: var(--s3); }
+.profrow { display: flex; align-items: center; gap: var(--s2); }
+.profrow .lbl { min-width: 52px; }
+.profrow input { flex: 1; min-width: 0; }
+.profline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin: 0; }
+.profline .ico { width: 15px; height: 15px; color: var(--ok); }
+.savedline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.phonetabs { display: none; }
+@media (max-width: 999px) {
+  .topbar .phonetabs { display: inline-flex; flex: 0 1 auto; }
+  .topbar .phonetabs button { min-height: var(--hit); padding: 0 12px; }
+  .brand { display: flex !important; }
+}
+@media (max-width: 640px) {
+  .profname, .boardtxt { display: none; }
+  .boardbtn { padding: 0 10px; }
+  .topbar .phonetabs button { padding: 0 9px; }
+}
+@media (max-width: 480px) { .profname { max-width: 72px; } .boardbtn { padding: 0 var(--s2); } }
+.themeseg { flex: 1; } .themeseg button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: var(--hit); font-size: 12.5px; }
+.themeseg .ico { width: 15px; height: 15px; }
+.namenote { margin: 0; font-size: 13px; color: var(--muted); }
+.namecard .btn.primary:disabled { background: var(--surface2); color: var(--muted); box-shadow: none; cursor: not-allowed; }
+/* one Details control per section (the edge tab, or the bar at phone width): the Machine view's own button is not shown */
+.detbtn { display: none !important; }
+.boardbtn { display: inline-flex; align-items: center; gap: 6px; }
+.boardbtn .ico { width: 17px; height: 17px; }
+.profpop { position: fixed; top: calc(var(--bar) + 4px); right: 8px; left: auto; }
