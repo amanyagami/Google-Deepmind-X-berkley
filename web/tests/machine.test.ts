@@ -132,7 +132,7 @@ test('resolveModel: uses a converted ONNX copy, and explains gated, missing and 
 })
 
 // ---- S3: registry, results store, component scores and the final score ----
-import { BENCH_KEYS, NOISY_CV, componentScore, exportResults, finalScore, fromBench, isNoisy, scoreRun, summarize } from '../src/hw/score'
+import { BENCH_KEYS, NOISY_CV, componentScore, finalNow, tierKey, exportResults, finalScore, fromBench, isNoisy, scoreRun, summarize } from '../src/hw/score'
 import { REF_V1, REGISTRY, RESULTS_KEY, RUN_ALL_ORDER, loadStored, rowFor, useHW, validateInput, inputLimits } from '../src/hw/hwStore'
 import type { ComponentId, Scale, TestResult } from '../src/hw/hwStore'
 import type { Capabilities } from '../src/hw/browserBench'
@@ -190,7 +190,7 @@ test('worked example on the test PC: about 1196, limited by the GPU, and no omis
 test('not available counts as 50 and is labelled; not tested is listed and the score is provisional', () => {
   const all = atRef('native')
   const noGpu = finalScore({ ...all, gpu: fromBench('gpu', { unavailable: true, reason: 'no WebGPU' }, { scale: 'native' })! })
-  expect(noGpu.unavailable).toEqual(['gpu']); expect(noGpu.pillars.gpu.status).toBe('unavailable'); expect(noGpu.provisional).toBe(false)
+  expect(noGpu.unavailable).toEqual(['gpu']); expect(noGpu.pillars.find((p) => p.id === 'gpu')!.status).toBe('unavailable'); expect(noGpu.provisional).toBe(false)
   expect(noGpu.score).toBeCloseTo(Math.exp(0.85 * Math.log(1000) + 0.15 * Math.log(50)), 3)
   const some = finalScore({ cpu1: all.cpu1, ram: all.ram })
   expect(some.provisional).toBe(true); expect(some.coverage.ran).toBe(2); expect(some.imputed).toContain('gpu'); expect(some.measured).toBeCloseTo(1000, 3)
@@ -332,4 +332,39 @@ test('scoreRun: speed and response only, fit apart, gate, whisper window, prefil
   expect(s5.parts[0].score).toBe(s30.parts[0].score)
   const img = { ...base, task: 'image-classification', unit: 'items', items: 1, perSec: 10 }
   expect(scoreRun(img, null, { params: 86e6, info: null, itemTokens: 50 }).parts[0].score!).toBeLessThan(scoreRun(img, null, { params: 86e6, info: null, itemTokens: 197 }).parts[0].score!)
+})
+
+test('final score rows: dashboard-ready pillars, status, delta against the previous entry, tier key', () => {
+  const all = atRef('native')
+  const f = finalScore(all)
+  expect(f.pillars.map((p) => p.id)).toEqual(['compute', 'memory', 'gpu', 'storage', 'model'])
+  expect(f.pillars.every((p) => p.status === 'measured' && p.delta === null && Math.abs(p.score! - 1000) < 1e-6)).toBe(true)
+  expect(f.pillars[0].components).toEqual(['cpu1', 'cpun']); expect(f.tierKey).toBe('strong'); expect(tierKey(null)).toBe('none'); expect(tierKey(1800)).toBe('exceptional')
+  const faster = { ...all, gpu: mk('gpu', 2 * ref('gpu', 'native')) }
+  const g = finalScore(faster, all)
+  expect(g.pillars.find((p) => p.id === 'gpu')!.delta).toBeCloseTo(1000, 6); expect(g.pillars.find((p) => p.id === 'compute')!.delta).toBeCloseTo(0, 6)
+  const part = finalScore({ cpu1: all.cpu1, ram: all.ram, cache: all.cache })
+  expect(part.pillars.find((p) => p.id === 'compute')!.status).toBe('imputed')
+  expect(part.pillars.find((p) => p.id === 'memory')!.status).toBe('measured')
+  expect(part.pillars.find((p) => p.id === 'gpu')).toMatchObject({ status: 'untested', score: null })
+  // finalNow compares with the entry before the one just saved
+  const hist = [{ at: 'a', scale: 'native' as const, results: all }, { at: 'b', scale: 'native' as const, results: faster }]
+  expect(finalNow(faster, hist).pillars.find((p) => p.id === 'gpu')!.delta).toBeCloseTo(1000, 6)
+  expect(finalNow(all, []).pillars[0].delta).toBeNull()
+})
+
+test('export carries the name only when allowed, never the theme; history entries keep the name', () => {
+  const all = worked()
+  const withName = JSON.parse(exportResults({ includeDevice: false }, all, null, 'Ada'))
+  expect(withName.name).toBe('Ada')
+  expect(JSON.parse(exportResults({ includeDevice: false, includeName: false }, all, null, 'Ada')).name).toBeUndefined()
+  expect(JSON.parse(exportResults({ includeDevice: false }, all, null, '')).name).toBeUndefined()
+  expect(JSON.stringify(withName).toLowerCase()).not.toContain('theme')
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} })
+  useHW.getState().clearResults(); useHW.getState().addResult(all.cpu1); useHW.getState().snapshot()
+  expect(useHW.getState().history).toHaveLength(1)
+  const mem: Record<string, string> = {}
+  vi.stubGlobal('localStorage', { getItem: (k: string) => mem[k] ?? null, setItem: (k: string, v: string) => { mem[k] = v }, removeItem: () => {} })
+  mem[RESULTS_KEY] = JSON.stringify({ v: 1, results: {}, history: [{ at: 't', scale: 'native', results: {}, name: 'Ada' }] })
+  expect(loadStored().history[0].name).toBe('Ada')
 })

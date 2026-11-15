@@ -79,8 +79,11 @@ function helpers() {
 }
 
 // Feature probes: which streams' hooks exist in this build (see README for the contract).
-const feats = () => ({ S1: !!document.querySelector('[data-dock]'), S3: !!window.__score, S4: !!document.querySelector('[data-start]'), S5: !!document.querySelector('[data-test]'),
-  S6: !!document.querySelector('[data-picker]'), S7: !!window.__inspector, S8: !!window.__scene })
+const feats = async () => { const q = (s) => !!document.querySelector(s), st = window.__studio?.getState?.(), hw = window.__hw?.getState?.()
+  const sw = await fetch('/sw.js').then((r) => r.ok && /javascript/.test(r.headers.get('content-type') || ''), () => false)
+  return { S1: q('[data-dock]'), S3: !!window.__score, S4: q('[data-start]'), S5: q('[data-test]'), S6: q('[data-picker]'), S7: !!window.__inspector, S8: !!window.__scene,
+    auto: typeof st?.autoStart === 'function', sw, pair: q('.pair'), drawer: q('[data-drawer]'), bulb: q('[data-explainer-bulb]'), strip: q('[data-score-strip]'), name: q('[data-namecard]'),
+    pad: q('[data-pad]'), lang: q('[data-lang-picker],[data-lang]'), theme: q('[data-theme-toggle]'), runAll: typeof hw?.runAll === 'function', pillar: q('[data-pillar]') } }
 
 export async function startHostile() { // another local origin serving a blank page, for A25
   const srv = http.createServer((q, r) => { r.setHeader('content-type', 'text/html'); r.end('<!doctype html><title>hostile</title>') })
@@ -90,15 +93,17 @@ export async function startHostile() { // another local origin serving a blank p
 
 export function makeEnv(browser, base, widths, query) {
   const live = []
-  const env = { base, widths, browser, OUT, query,
+  const env = { base, widths, browser, OUT, query, dist: process.env.NS_DIST || path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '../../dist'),
     async open(o = {}) {
       const ctx = await browser.newContext({ viewport: { width: o.w ?? 1480, height: o.h ?? (o.w && o.w < 600 ? 844 : 900) }, deviceScaleFactor: o.dpr ?? 1, hasTouch: !!o.touch, isMobile: !!o.touch,
-        reducedMotion: o.reduced ? 'reduce' : 'no-preference', acceptDownloads: true, serviceWorkers: 'block' })
+        reducedMotion: o.reduced ? 'reduce' : 'no-preference', acceptDownloads: true, serviceWorkers: o.sw ? 'allow' : 'block', colorScheme: o.theme ?? 'dark' })
       const P = { ctx, errors: [], reqs: [], hub: { delay: o.hubDelay ?? 0, hits: [] } }
       await ctx.addInitScript(`window.__errs=[];addEventListener('error',e=>__errs.push('error: '+e.message));addEventListener('unhandledrejection',e=>__errs.push('rejection: '+(e.reason&&e.reason.message||e.reason)))`)
       await ctx.addInitScript(`(${helpers})()`)
       if (o.profile) await ctx.addInitScript(mockScript(o.profile))
-      ctx.on('request', (r) => P.reqs.push({ url: r.url(), t: Date.now(), type: r.resourceType() }))
+      ctx.on('request', (r) => P.reqs.push({ url: r.url(), t: Date.now(), type: r.resourceType(), post: r.postData()?.slice(0, 2000) ?? '' }))
+      ctx.on('requestfailed', (r) => (P.failed ??= []).push(r.url()))
+      if (o.theme) await ctx.addInitScript(`try{localStorage.setItem('ns.theme','${o.theme}')}catch{};const s=()=>document.documentElement&&(document.documentElement.dataset.theme='${o.theme}');s();addEventListener('DOMContentLoaded',s)`)
       if (o.hub !== false) await ctx.route((u) => HOST.test(u.hostname), async (route) => { // Hub + CDN stub (HTTP Range supported)
         const u = new URL(route.request().url()); P.hub.hits.push(u.pathname)
         if (P.hub.delay) await new Promise((r) => setTimeout(r, P.hub.delay))
