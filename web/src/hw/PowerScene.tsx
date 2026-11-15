@@ -18,7 +18,7 @@ import { Backdrop, Chip, FirstFrame, ResetView, SCENE, fitBox, KitProvider, Lite
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
-export type LiveKey = 'cpu' | 'ram' | 'ssd' | 'nic' | `core${number}`
+export type LiveKey = 'cpu' | 'ram' | 'ssd' | 'nic' | 'psu' | 'kbd' | 'screen' | `core${number}`
 
 const rate = (bps: number) => (bps >= 1e9 ? `${(bps / 1e9).toFixed(1)} GB/s` : bps >= 1e6 ? `${(bps / 1e6).toFixed(1)} MB/s` : `${Math.round(bps / 1e3)} KB/s`)
 
@@ -38,16 +38,52 @@ export function liveText(k: LiveKey, l: any): string {
   return `${Math.round(load)}%${w != null ? ` · ${w.toFixed(1)} W` : ''}`
 }
 
+/** A number to show live under a label, from whatever this device can really read right now. Nothing when it cannot:
+ *  a label never explains what is missing. Companion: the OS counters (10 Hz). Browser: what the running test reports,
+ *  the page's own memory, and "idle" for storage when no test is using it. */
+export function liveOf(k: LiveKey, s: any): string {
+  const companion = s.source === 'companion'
+  const prog = s.running ? s.progress : null
+  const bw = (id: string) => (s.running === id && prog?.value != null ? `${prog.value >= 100 ? Math.round(prog.value) : prog.value.toFixed(1)} ${prog.unit ?? ''}`.trim() : '')
+  if (k === 'psu') { const w = powerNow(s).s?.pkg_w; return w != null && w > 0 ? `${w.toFixed(1)} W` : '' }
+  if (k === 'kbd' || k === 'screen') {
+    if (s.pMode !== 'journey' || !s.journey) return ''
+    const id = s.tl?.segs?.[locate(s.tl, s.playhead).i]?.id
+    return k === 'kbd' ? (id === 'input' ? 'typing' : '') : (id === 'output' || id === 'decode' ? 'writing' : '')
+  }
+  if (companion) {
+    const t = liveText(k, s.latest)
+    if (k === 'ram') { const b = bw('ram'); return t && b ? `${t} · ${b}` : t }
+    return t
+  }
+  if (k === 'cpu') {
+    if (!s.benchRunning) return ''
+    const w = powerNow(s).s?.pkg_w
+    const threads = s.caps?.cores ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 8) ?? 8
+    const stage = s.benchStage as string
+    const pct = stage === 'matmul_n' || stage === 'dram' ? 100 : stage === 'idle' ? 0 : Math.round(100 / threads)
+    return [`≈${pct}% busy`, w != null ? `≈${w.toFixed(1)} W` : ''].filter(Boolean).join(' · ')
+  }
+  if (k === 'ram') {
+    const heap = typeof performance !== 'undefined' ? (performance as any).memory?.usedJSHeapSize : null
+    const b = bw('ram')
+    return [heap ? `${(heap / 2 ** 30).toFixed(2)} GB in use` : '', b].filter(Boolean).join(' · ')
+  }
+  if (k === 'ssd') return bw('storage') || (s.running === 'storage' ? '' : 'idle')
+  if (k === 'nic') { const v = s.running === 'net' && prog?.value != null ? prog.value * 125 : null; return v != null ? `${Math.round(v)} KB/s` : '' }
+  return ''
+}
+
 /** One live line under a 3D label. It re-renders only when its text changes. */
 export function LiveLine({ k }: { k: LiveKey }) {
-  const t = useHW((s) => liveText(k, s.latest))
+  const t = useHW((s) => liveOf(k, s))
   if (!t) return null
   return <i className="lv"><span className="livedot" aria-hidden />{t}</i>
 }
 
 /** The same live readout without its own wrapper, for use inside a label chip. */
 function LiveBare({ k }: { k: LiveKey }) {
-  const t = useHWThrottled((s) => liveText(k, s.latest), 250)
+  const t = useHWThrottled((s) => liveOf(k, s), 250)
   return t ? <><span className="livedot" aria-hidden />{t}</> : null
 }
 
@@ -253,7 +289,7 @@ function DcIn() {
       <Slab size={[1.4, 0.8, 1.2]} pos={[0, 0.4, 0]} color="#151c33" />
       <mesh position={[-0.71, 0.45, 0]} rotation={[0, 0, Math.PI / 2]}><cylinderGeometry args={[0.28, 0.28, 0.06, 32]} /><meshStandardMaterial color="#0a0f1e" metalness={0.9} roughness={0.2} /></mesh>
       <mesh position={[-0.75, 0.45, 0]} rotation={[0, Math.PI / 2, 0]}><torusGeometry args={[0.2, 0.035, 12, 40]} /><meshBasicMaterial ref={ring} toneMapped={false} /></mesh>
-      <Tag pos={[0, 1.4, 0]} name="Power in" sub="DC from the adapter" group="vrm" />
+      <Tag pos={[0, 1.4, 0]} name="Power in" sub="DC from the adapter" live="psu" group="vrm" />
     </group>
   )
 }
@@ -411,7 +447,7 @@ function Ram() {
           <meshPhysicalMaterial ref={(m) => { if (m) mats.current[i] = m }} color="#16204a" emissive={BLUE} emissiveIntensity={0.05} metalness={0.5} roughness={0.35} />
         </RoundedBox>
       ))}
-      <Tag pos={[0, 1.9, 0]} name="RAM" sub="power not metered" live="ram" group="ram" />
+      <Tag pos={[0, 1.9, 0]} name="RAM" live="ram" group="ram" />
     </Hot>
   )
 }
@@ -471,7 +507,7 @@ function Keyboard() {
     <Hot pos={KEYP} id="keyboard">
       <Slab size={[3.2, 0.14, 1.5]} color="#182041" />
       <instancedMesh ref={keys} args={[undefined as any, undefined as any, 56]}><boxGeometry args={[0.17, 0.07, 0.19]} /><meshBasicMaterial toneMapped={false} /></instancedMesh>
-      <Tag pos={[0, 0.9, 0.2]} name="Keyboard" sub="you type" group="keyboard" />
+      <Tag pos={[0, 0.9, 0.2]} name="Keyboard" live="kbd" group="keyboard" />
     </Hot>
   )
 }
@@ -485,7 +521,7 @@ function Screen() {
       <Slab size={[3.4, 2.0, 0.12]} pos={[0, 1.05, 0]} color="#10172e" radius={0.08} />
       <mesh position={[0, 1.05, 0.07]}><planeGeometry args={[3.15, 1.78]} /><meshBasicMaterial ref={mat} toneMapped={false} /></mesh>
       <Slab size={[0.3, 0.7, 0.2]} pos={[0, 0.35, -0.05]} color="#10172e" />
-      <Tag pos={[0, 2.5, 0]} name="Screen" sub="the answer" group="display" />
+      <Tag pos={[0, 2.5, 0]} name="Screen" live="screen" group="display" />
     </Hot>
   )
 }
@@ -627,7 +663,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
   const st = useStage(active)
   const light = useTheme() === 'light'
   PT.light = light
-  const summary = useHWThrottled((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveText('cpu', s.latest) || 'not measured'}. Memory ${liveText('ram', s.latest) || 'not measured'}. Storage ${liveText('ssd', s.latest) || 'not measured'}. Network ${liveText('nic', s.latest) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`, 1000)
+  const summary = useHWThrottled((s) => `Machine view: the parts of this computer with their live readings. CPU ${liveOf('cpu', s) || 'not measured'}. Memory ${liveOf('ram', s) || 'not measured'}. Storage ${liveOf('ssd', s) || 'not measured'}. Network ${liveOf('nic', s) || 'not measured'}.${s.path.length ? ` Selected: ${s.path.join(' ')}.` : ''}`, 1000)
   const reset = () => { const h = useHW.getState(); if (h.path.length) { let n = h.path.length; while (n-- > 0) useHW.getState().back() } else SCENE.cams.machine?.home() }
   useStageKeys(st.wrap, () => { const h = useHW.getState(); if (!h.path.length) return false; h.back(); return true }, reset)
   return (
@@ -650,8 +686,8 @@ export function PowerScene({ active = true }: { active?: boolean }) {
             </Environment>
             <Pcb />
             <DcIn /><Vrm /><CpuChip /><Ram /><Keyboard /><Screen />
-            <Small pos={SSDP} id="ssd" name="Storage" sub="power not metered" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
-            <Small pos={NICP} id="nic" name="Network" sub="power not metered" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
+            <Small pos={SSDP} id="ssd" name="Storage" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
+            <Small pos={NICP} id="nic" name="Network" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
             <LanesHost />
             <Rails />
             <Rig />

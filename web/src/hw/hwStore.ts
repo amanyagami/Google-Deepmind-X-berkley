@@ -363,7 +363,9 @@ export const useHW = create<HW>((set, get) => ({
     current = ctrl
     set((s) => ({ running: id, progress: null, testErrors: Object.fromEntries(Object.entries(s.testErrors).filter(([k]) => k !== id)) }))
     try {
-      let r = await row.run(input == null ? null : v.value, ctrl.signal, (p) => { if (current === ctrl) set({ progress: p }) })
+      // runners report many times a second; every subscriber re-renders on each set(), so UI updates are limited to 8 a second
+      let lastP = 0
+      let r = await row.run(input == null ? null : v.value, ctrl.signal, (p) => { const now = performance.now(); if (current === ctrl && (now - lastP > 120 || (p.fraction ?? 0) >= 1)) { lastP = now; set({ progress: p }) } })
       if (ctrl.signal.aborted) return null
       // a custom input never overwrites the standard result: it is stored apart and never scored
       if (input != null && row.input && input !== row.input.default && r.input.kind !== 'custom')

@@ -229,7 +229,8 @@ export function ResetView({ scene, onReset }: { scene: 'model' | 'machine'; onRe
     const tick = () => {
       const g = SCENE.cams[scene], b = ref.current, w = b?.parentElement
       setShow(!!g && !g.atHome())
-      if (!b || !w) return
+      // hidden at home: the placement scan below (dozens of elementFromPoint hit tests) cost 100+ ms every 250 ms while a test ran
+      if (!b || !w || !g || g.atHome()) return
       // sit above whatever covers the bottom-right corner of the stage (timeline, cards, bulbs): walk up from the bottom
       // until both ends of the button's column are free (only the scene itself, or this button, under them)
       // (and left of an open drawer): first free spot scanning right-to-left, bottom-to-top

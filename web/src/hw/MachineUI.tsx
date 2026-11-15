@@ -1001,6 +1001,9 @@ function useSelectToCard() {
 }
 
 /** The one machine section: the electricity scene, live always, with the prompt's journey played on it. */
+// the machine explainer is bulb-only: it never opens by itself over the scene (same key the shared Explainer uses)
+try { localStorage.setItem('ns.expl.seen.machine', '1') } catch { /* private mode */ }
+
 export function MachineView() {
   useMachineBoot()
   // the empty leaderboard offers Test all

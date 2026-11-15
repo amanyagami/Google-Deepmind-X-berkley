@@ -96,12 +96,12 @@ export const checks = [
       const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth ? 'yes' : `no (top ${Math.round(r.top)}, bottom ${Math.round(r.bottom)} of ${innerHeight})` }, PRIMARY))
     return ok(rows.every(([, v]) => v === 'yes'), rows.map(([w, v]) => `${w}:${v}`).join(' ')) } },
 
-  { id: 'A7', title: 'first paint <= 2.5 s; first score <= 10 s (20 Mbit)', needs: ['S5'], run: async (env) => {
+  { id: 'A7', title: 'first paint <= 2.5 s; first test result <= 10 s (20 Mbit; the score number needs all six tests, C11)', needs: ['S5'], run: async (env) => {
     const p = await env.open({ throttle: 20 }); const t0 = Date.now(); await p.page.goto(env.base + env.query, { waitUntil: 'load' })
     const fcp = await p.page.waitForFunction(() => performance.getEntriesByType('paint').find((e) => e.name === 'first-contentful-paint')?.startTime, null, { timeout: 8000 }).then((h) => h.jsonValue(), () => -1)
-    await openFor(p.page, '[data-test=cpu1]'); const t1 = Date.now(); await p.page.locator('[data-test=cpu1]').first().click(); await p.page.waitForSelector(SCORE, { timeout: 30000 })
+    await openFor(p.page, '[data-test=cpu1]'); const t1 = Date.now(); await p.page.locator('[data-test=cpu1]').first().click(); await p.page.waitForFunction(() => window.__hw.getState().results.cpu1?.value > 0, null, { timeout: 30000 })   // the first result; the score number waits for all six tests (C11)
     const s = (Date.now() - t1) / 1000
-    return ok(fcp > 0 && fcp <= 2500 && s <= 10, `first paint ${Math.round(fcp)} ms; first score ${s.toFixed(1)} s (load ${((t1 - t0) / 1000).toFixed(1)} s)`) } },
+    return ok(fcp > 0 && fcp <= 2500 && s <= 10, `first paint ${Math.round(fcp)} ms; first result ${s.toFixed(1)} s (load ${((t1 - t0) / 1000).toFixed(1)} s)`) } },
   { id: 'A7b', tier: 3, title: 'real Hub at 20 Mbit, no click: default model downloads, runs, run score within download time + 25 s', needs: ['auto'], run: async (env) => {
     const r = await autoRun(env, { throttle: 20 }); const planned = r.info.plan?.bytes ?? 0
     const limit = planned / 2.5e6 + 25; return ok(r.done && r.tRun <= limit, `limit ${limit.toFixed(0)} s (download at 2.5 MB/s + 25 s to load and run); ${r.done ? 'run score' : 'NO run score in 240 s'} after ${r.tRun.toFixed(1)} s on ${r.info.where ?? '?'}; model ${r.info.plan?.repo} planned ${(planned / 1048576).toFixed(0)} MB, downloaded ${(r.got / 1048576).toFixed(0)} MB; ${r.info.err ?? 'no error'}`) } },
@@ -295,7 +295,7 @@ export const checks = [
     // the net card (rest and opened) never touches the tab row, at every width, for a small and a long card
     for (const w of [1600, 1480, 1100, 820, 700, 390]) for (const net of ['cnn', 'vlm']) {
       const o = await env.open({ w, touch: w < 600 }); await o.goto('#zoo', 1200); await o.page.evaluate((n) => window.__zoo?.getState().setNet(n), net); await o.page.waitForTimeout(900); await o.page.evaluate(() => window.__zoo?.getState().pause?.())
-      const hit = await o.page.evaluate(() => { const tb = document.querySelector('[data-zoo-tabs]'), pk = document.querySelector('[data-peek]'); if (!tb || !pk || !__h.vis(pk)) return 'missing'
+      const hit = await o.page.evaluate(() => { const tb = document.querySelector('[data-zoo-tabs]'), pk = tb?.closest('.stage')?.querySelector('[data-peek]'); if (!tb || !pk || !__h.vis(pk)) return 'missing'   // the net card of the Model stage (the machine HUD and the score strip have Peeks too)
         const x = tb.getBoundingClientRect(), st = pk.closest('.stage').getBoundingClientRect(), box = () => [pk, pk.querySelector('[data-peek-details]')].filter((e) => e && __h.vis(e)).map((e) => e.getBoundingClientRect())
         const bad = (rs) => rs.some((r) => r.left < x.right && r.right > x.left && r.top < x.bottom && r.bottom > x.top)
         const clip = (rs) => rs.some((r) => r.left < st.left - 0.5 || r.right > st.right + 0.5 || r.bottom > st.bottom + 0.5), rest = bad(box()), restClip = clip(box()); pk.querySelector('.nspeek-tog').focus(); return new Promise((res) => setTimeout(() => res(rest ? 'rest overlaps tabs' : restClip ? 'rest clipped by the stage edge' : bad(box()) ? 'open panel overlaps tabs' : clip(box()) ? 'open panel clipped by the stage edge' : ''), 300)) })
