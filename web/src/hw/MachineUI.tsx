@@ -463,7 +463,7 @@ function ScoreStrip() {
   const secs = batch ? Math.round((now - batch.t0) / 1000) : 0
   const r = relPct(f), rec = useRecordedScore(), shown = f.score ?? rec
   return (
-    <div className="t5-strip" data-score-strip data-card="strip" role="group" aria-label="Device score">
+    <div className="card t5-strip" data-score-strip data-card="strip" role="group" aria-label="Device score">
       <b className="t5-ssc" {...(shown != null ? { 'data-score': shown } : {})}>▲ {shown != null ? shown.toLocaleString('en-US') : '—'}</b>
       {f.score != null && <span className="t5-stier">{f.tier}</span>}
       <span className="t5-sinfo"><span aria-hidden="true" style={{ color: "var(--neg-ink)" }}>○</span> {f.tested} of {f.total} tested{r != null ? ` · ±${r} %` : ''}</span>
@@ -525,6 +525,7 @@ const T5_CSS = `
 .t5-ptest-sp{width:var(--hit,40px);flex:none}
 .t5-pbody{display:grid;gap:8px;padding:4px 0 12px}
 .t5-more{border-top:1px solid var(--line)}.t5-moreb{display:flex;gap:6px;align-items:center;text-decoration:none;color:var(--fg)}
+.t5-strip.card{border:0;border-radius:0;background:transparent}
 .t5-strip{display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;padding:6px 12px;min-width:0}
 .t5-ssc{font:700 var(--t2,20px) var(--display);background:var(--brand,linear-gradient(135deg,var(--pos),var(--neg)));-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
 .t5-stier{font:600 13px var(--display)}.t5-sinfo,.t5-sweak{font-size:13px;color:var(--muted)}
