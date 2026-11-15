@@ -148,7 +148,7 @@ export const checks = [
     await p.page.evaluate(() => window.__zoo.getState().setInspect({ kind: 'tensor', name: 'w' }))
     const auto = await p.page.waitForSelector('[data-inspector]', { state: 'visible', timeout: 1500 }).then(() => true, () => false); const ms = Date.now() - t0; if (!auto) await openFor(p.page, '[data-inspector]')
     const z = await p.page.evaluate(() => window.__inspector.zoomMax()), exp = valueAt(z.r, z.c)
-    await p.page.keyboard.press('Escape'); await p.page.waitForTimeout(300); const gone = (await p.page.locator('[data-inspector]').count()) === 0
+    await p.page.keyboard.press('Escape'); const gone = (await p.page.locator('[data-inspector]').count()) === 0
     return ok(auto && ms <= 500 && gone && Math.abs(z.value - exp) < 1e-6, `card ${auto ? 'opened by itself' : 'did NOT open its drawer by itself'} in ${ms} ms; Esc closes ${gone}; w[${z.r},${z.c}] shown ${z.value} vs tensor ${exp}`) } },
 
   { id: 'A16', title: 'keyboard reaches every Test button and block; focus ring >= 2px, 3:1', run: async (env) => {
@@ -198,11 +198,11 @@ export const checks = [
   { id: 'A21', title: 'no-WebGPU / out-of-memory / offline / mic-denied: message + button <= 2 s', needs: ['S5', 'S6'], run: async (env) => {
     const cases = [['nogpu', { profile: { nogpu: 1 } }, '[data-test=gpu],[data-start]'], ['oom', { profile: { oom: 1, mem: 2 } }, '[data-start]', false, 'distilgpt2'],
       ['offline', {}, '[data-start]', true, 'distilgpt2'], ['mic', { profile: { mic: 1 } }, '[data-test=mic]', false, 'whisper']], out = []
-    for (const [name, o, sel, off, ex] of cases) { const p = await env.open({ ...o, hub: off ? false : undefined }); await p.goto(); if (ex) { await p.page.evaluate((e) => window.__studio.getState().loadExample(e), ex); await p.page.waitForTimeout(1500) } if (off) await p.ctx.setOffline(true)
+    for (const [name, o, sel, off, ex] of cases) { const p = await env.open({ ...o, hub: off ? false : undefined }); await p.goto(); if (ex) { await p.page.evaluate((e) => window.__studio.getState().loadExample(e), ex); await p.page.waitForTimeout(1500); if (name === 'oom') await p.page.waitForFunction(() => { const s = window.__studio.getState(); return !!s.fit && !s.probing }, null, { timeout: 20000 }).catch(() => {}); await p.page.waitForTimeout(300) } if (off) await p.ctx.setOffline(true)
       const b = p.page.locator(sel).first(); if (!(await b.count())) { out.push(`${name}: no trigger ${sel}`); continue }
       const t = Date.now(); await b.click({ timeout: 4000 }).catch(() => {}); const e = p.page.locator('[data-error]').first(); await e.waitFor({ timeout: 2000 }).catch(() => {})
       const ms = Date.now() - t, has = (await e.count()) && (await e.innerText()).trim().length > 3 && (await e.locator('button').count()) > 0, errs = await p.errCount()
-      if (!has || errs) out.push(`${name}: ${has ? '' : 'no message+button in 2 s '}${errs ? errs + ' page errors: ' + String(p.errors[0] ?? '').slice(0, 70) : ''}`.trim()); else out.push(`${name} ok ${ms}ms`) }
+      const dbg = has ? '' : JSON.stringify(await p.page.evaluate(() => { const s = window.__studio.getState(); return { v: s.fit?.verdict, w: s.fit?.where, err: s.runErr, run: s.running, dl: !!s.download, st: s.runStatus } })); if (!has || errs) out.push(`${name}: ${has ? '' : 'no message+button in 2 s ' + dbg + ' '}${errs ? errs + ' page errors: ' + String(p.errors[0] ?? '').slice(0, 70) : ''}`.trim()); else out.push(`${name} ok ${ms}ms`) }
     return ok(out.every((x) => / ok \d+ms$/.test(x)), out.join('; ')) } },
 
   { id: 'A22', title: 'reduced motion: no transition > 1 ms, no camera tween', run: async (env) => {
