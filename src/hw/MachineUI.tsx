@@ -74,8 +74,8 @@ export function onFinalScore(f: Final): void {
   try {
     const fs = finalScore(res)
     if (!(fs.score > 0)) return
-    const where = res.gpu?.env?.where ?? Object.values(res)[0]?.env?.where ?? ''
-    void submitScore({ score: fs.score, pillars: Object.fromEntries(fs.pillars.map((p) => [p.id, p.score])), tested: fs.coverage.ran / fs.coverage.of, backend: where }, useStore.getState().name)
+    const backend = useHW.getState().source === 'companion' ? 'companion' : res.gpu && !isUnavailable(res.gpu) ? 'webgpu' : 'wasm'
+    void submitScore({ score: fs.score, pillars: Object.fromEntries(fs.pillars.map((p) => [p.id, p.score])), tested: fs.coverage.ran / fs.coverage.of, backend }, useStore.getState().name)
   } catch { /* results of two scales: no single score to send */ }
 }
 
@@ -177,10 +177,11 @@ const note = (id: string) => (useHW.getState().source === 'companion' ? '' : id 
 
 function TestCard({ id }: { id: ComponentId }) {
   const info = infoOf(id)
-  const res = useResults()
-  const r = res[id]
-  const rc = res[`${id}#custom`] ?? (r?.input.kind === 'custom' ? r : undefined)
+  const r = useHW((s) => s.results[id])
+  const rcOwn = useHW((s) => s.results[`${id}#custom`])
+  const rc = rcOwn ?? (r?.input.kind === 'custom' ? r : undefined)
   const std = r?.input.kind === 'custom' ? undefined : r
+  const energy = useHW((s) => (id === 'energy' ? Object.values(s.results).reduce((a, x) => a + (x.component !== 'energy' ? x.energy?.joules ?? 0 : 0), 0) : 0))
   const running = useRunning(), batch = useUI((s) => !!s.batch)
   const rawErr = useErr(id)
   const na = !!std && isUnavailable(std)
@@ -209,7 +210,6 @@ function TestCard({ id }: { id: ComponentId }) {
   const defLine = id === 'energy' ? 'Recorded when you test your system.' : `~${info.secs} s`
   const pct = Math.round((prog?.fraction ?? 0) * 100)
   const tick = Math.round(pct / 10) * 10
-  const energy = id === 'energy' ? Object.values(res).reduce((a, x) => a + (x.component !== 'energy' ? x.energy?.joules ?? 0 : 0), 0) : 0
   const line = state === 'running' ? `Running. ${tick} % done.` : state === 'error' ? err : state === 'result' ? (std ? 'Done.' : 'Done. Custom run.') : id === 'energy' && energy > 0 ? `${num(energy, 1)} J across your tests.` : defLine
   const memErr = !!err && /memory|too big|size/i.test(err)
   const naErr = na || (!!err && /not available|no webgpu|not supported|unsupported|no opfs/i.test(err))
@@ -264,10 +264,18 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   const c = document.createElement('canvas'); c.width = 1200; c.height = 630
   const g = c.getContext('2d')!
   const sans = '"Segoe UI", Inter, system-ui, sans-serif'
-  g.fillStyle = '#0a0e19'; g.fillRect(0, 0, 1200, 630)
-  g.fillStyle = '#ffa94d'; g.fillRect(0, 0, 400, 8)
+  g.fillStyle = '#090d18'; g.fillRect(0, 0, 1200, 630)
+  const g1 = g.createRadialGradient(220, 120, 0, 220, 120, 480)
+  g1.addColorStop(0, 'rgba(124, 92, 255, 0.20)'); g1.addColorStop(1, 'rgba(124, 92, 255, 0)')
+  g.fillStyle = g1; g.fillRect(0, 0, 1200, 630)
+  const g2 = g.createRadialGradient(1020, 480, 0, 1020, 480, 440)
+  g2.addColorStop(0, 'rgba(34, 211, 238, 0.14)'); g2.addColorStop(1, 'rgba(34, 211, 238, 0)')
+  g.fillStyle = g2; g.fillRect(0, 0, 1200, 630)
+  const barGrad = g.createLinearGradient(0, 0, 1200, 0)
+  barGrad.addColorStop(0, '#9a82ff'); barGrad.addColorStop(0.52, '#3ddcf5'); barGrad.addColorStop(1, '#ff8fc4')
+  g.fillStyle = barGrad; g.fillRect(0, 0, 1200, 6)
   g.textBaseline = 'alphabetic'
-  drawKundali(g, 1084, 40, 52)
+  drawKundali(g, 1084, 38, 54)
   g.fillStyle = '#9aa5c7'; g.font = `600 26px ${sans}`; g.fillText(who ? `${who} · device score` : 'Kundali · device score', 64, 90)
   g.fillStyle = '#ffa94d'; g.font = `700 150px ${sans}`; g.fillText(f.score != null ? `▲ ${f.score.toLocaleString('en-US')}` : 'Not tested', 56, 270)
   g.fillStyle = '#e8ecf8'; g.font = `600 44px ${sans}`; g.fillText(f.tier, 64, 336)
@@ -279,11 +287,11 @@ function drawShare(f: Final, dev: string, name: string | null, who = ''): HTMLCa
   f.rows.slice(0, 7).forEach((r, i) => {
     const y = 120 + i * 56
     g.fillStyle = '#e8ecf8'; g.font = `400 24px ${sans}`; g.fillText(r.label, 700, y + 24)
-    g.fillStyle = '#27314f'; g.fillRect(920, y + 8, 150, 14)
-    g.fillStyle = '#ffa94d'; g.fillRect(920, y + 8, Math.max(4, Math.min(150, (r.score / 2000) * 150)), 14)
+    g.fillStyle = '#1b2542'; g.beginPath(); g.roundRect(920, y + 8, 150, 14, 7); g.fill()
+    g.fillStyle = '#ffa94d'; g.beginPath(); g.roundRect(920, y + 8, Math.max(8, Math.min(150, (r.score / 2000) * 150)), 14, 7); g.fill()
     g.fillStyle = '#e8ecf8'; g.font = `600 24px ${sans}`; g.textAlign = 'right'; g.fillText(r.score.toLocaleString('en-US'), 1140, y + 24); g.textAlign = 'left'
   })
-  g.fillStyle = '#27314f'; g.fillRect(64, 548, 1072, 2)
+  g.fillStyle = '#25304e'; g.fillRect(64, 548, 1072, 2)
   g.fillStyle = '#9aa5c7'; g.font = `400 26px ${sans}`
   g.fillText(`${dev}${name ? ' · ' + name : ''}`, 64, 592)
   g.textAlign = 'right'; g.fillText(new Date().toISOString().slice(0, 10), 1136, 592); g.textAlign = 'left'
@@ -484,8 +492,9 @@ function StripHost() {
 
 const T5_CSS = `
 .t5-list{display:grid;gap:10px;align-content:start}
-.t5-hero,.t5-card{border:1px solid var(--line);background:var(--surface,#141c32);border-radius:var(--r-md,12px);padding:12px;display:grid;gap:8px;scroll-margin:8px;min-width:0}
-.t5-hero{background:var(--surface2,#1b2542)}
+.t5-hero,.t5-card{border:1px solid var(--line);background:color-mix(in srgb,var(--surface,#141c32) 88%,var(--panel));border-radius:var(--r-md,12px);padding:12px;display:grid;gap:8px;scroll-margin:8px;min-width:0;box-shadow:var(--sh-1);transition:border-color var(--d1,120ms) var(--ease,ease),box-shadow var(--d2,220ms) var(--ease,ease)}
+.t5-card:hover{border-color:color-mix(in srgb,var(--brand-1) 34%,var(--line))}
+.t5-hero{background:color-mix(in srgb,var(--surface2,#1b2542) 86%,var(--panel));border-color:color-mix(in srgb,var(--brand-1) 24%,var(--line))}
 .t5-card.sel{border-color:var(--pos);box-shadow:0 0 0 2px color-mix(in srgb,var(--pos) 30%,transparent)}
 @media (pointer:coarse),(max-width:600px){.main.machine .mtl button,.main.machine .mtl select,.main.machine .tabs button,.main.machine .crumbs button,.main.machine .startj,.main.machine .ib,.main.machine .btn,.main.machine .btn2{min-height:44px;min-width:44px}}
 @media (max-width:900px){
@@ -556,7 +565,7 @@ const T5_CSS = `
 .t5-chk{display:flex;align-items:center;gap:8px;min-height:var(--hit,40px);font-size:13px;color:var(--fg)}
 .t5-chk input{width:20px;height:20px}
 .t5-share{display:grid;gap:8px}.t5-prev{width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}
-.t5-inline{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--dock,64px) + 8px);width:min(640px,calc(100vw - 16px));z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px;box-shadow:0 8px 24px #0008}
+.t5-inline{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--dock,64px) + 8px);width:min(640px,calc(100vw - 16px));z-index:60;background:var(--glass-heavy);backdrop-filter:blur(18px) saturate(135%);border:1px solid color-mix(in srgb,var(--brand-1) 24%,var(--line));border-radius:14px;padding:8px;box-shadow:var(--sh-2)}
 @media (pointer:coarse),(max-width:600px){.t5-btn,.t5-link{min-height:44px}.t5-in,.t5-chk{min-height:44px}}
 @media (prefers-reduced-motion:reduce){.t5-bar i{transition:none}}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}

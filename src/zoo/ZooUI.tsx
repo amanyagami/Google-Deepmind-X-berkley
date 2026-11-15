@@ -27,14 +27,16 @@ function MiniInput() {
     const c = cv.current?.getContext('2d')
     if (!c) return
     const data = c.createImageData(8, 8)   // reused for every redraw
+    let ink = [230, 235, 255]
+    const readInk = () => { ink = getComputedStyle(cv.current!).color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [230, 235, 255] }
     const draw = (img: number[]) => {
-      const ink = getComputedStyle(cv.current!).color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [230, 235, 255]
       for (let i = 0; i < 64; i++) { data.data[i * 4] = ink[0]; data.data[i * 4 + 1] = ink[1]; data.data[i * 4 + 2] = ink[2]; data.data[i * 4 + 3] = Math.round(Math.min(1, Math.max(0, img[i] ?? 0)) * 255) }
       c.putImageData(data, 0, 0)
     }
+    readInk()
     draw(useZoo.getState().img)
     const off = useZoo.subscribe((s, p) => { if (s.img !== p.img) draw(s.img) })
-    const mo = new MutationObserver(() => draw(useZoo.getState().img))   // theme switch changes the ink
+    const mo = new MutationObserver(() => { readInk(); draw(useZoo.getState().img) })   // theme switch changes the ink
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     return () => { off(); mo.disconnect() }
   }, [])
@@ -49,6 +51,7 @@ function DrawPad() {
   const live = useRef<Pt[] | null>(null)
   const sample = useRef<number[] | null>(useZoo.getState().label !== null ? useZoo.getState().base : null)
   const raf = useRef(0)
+  const inkRef = useRef('#e8ecf8')
   const [inked, setInked] = useState(!!sample.current)
   const [nStrokes, setN] = useState(0)
   const ctx = () => cv.current!.getContext('2d', { willReadFrequently: true })!
@@ -59,7 +62,7 @@ function DrawPad() {
     c.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y); c.stroke()
   }
   const redraw = () => {
-    const c = ctx(), ink = getComputedStyle(cv.current!).color
+    const c = ctx(), ink = inkRef.current
     c.clearRect(0, 0, PAD, PAD); c.fillStyle = ink; c.strokeStyle = ink; c.lineWidth = BRUSH * 2; c.lineCap = 'round'; c.lineJoin = 'round'
     if (sample.current) { const k = PAD / 8; sample.current.forEach((v, i) => { c.globalAlpha = Math.min(1, v); c.fillRect((i % 8) * k, Math.floor(i / 8) * k, k + 0.5, k + 0.5) }); c.globalAlpha = 1 }
     for (const st of strokes.current) line(c, st)
@@ -76,11 +79,14 @@ function DrawPad() {
   }
   const later = () => { redraw(); if (!raf.current) raf.current = requestAnimationFrame(commit) }
   useEffect(() => {
-    redraw()
+    const syncInk = () => { if (cv.current) inkRef.current = getComputedStyle(cv.current).color; redraw() }
+    syncInk()
+    const mo = new MutationObserver(syncInk)
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
     PAD_API.pick = (d) => pick(d)
     // on a phone the rail is a bottom sheet: open it so the whole pad shows
     if (matchMedia('(max-width: 959px)').matches) document.querySelector<HTMLElement>('.inspector')?.style.setProperty('--sheet', '84dvh')
-    return () => { cancelAnimationFrame(raf.current); PAD_API.pick = null }
+    return () => { cancelAnimationFrame(raf.current); mo.disconnect(); PAD_API.pick = null }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const at = (e: { clientX: number; clientY: number }): Pt => { const r = cv.current!.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * PAD, y: ((e.clientY - r.top) / r.height) * PAD } }
   const clear = () => { strokes.current = []; live.current = null; sample.current = null; later() }
@@ -357,13 +363,13 @@ export function CompareCard() {
 
 /* ================================================================================ S6 model UI */
 const CSS = `
-.s6strip{position:absolute;left:12px;right:12px;top:56px;z-index:12;display:flex;flex-direction:column;gap:6px;padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.s6strip{position:absolute;left:12px;right:12px;top:56px;z-index:12;display:flex;flex-direction:column;gap:6px;padding:9px 13px;background:var(--glass-heavy);backdrop-filter:blur(16px) saturate(135%);border:1px solid color-mix(in srgb,var(--brand-1) 24%,var(--line));border-radius:14px;box-shadow:var(--sh-1)}
 @media (max-width:900px){.s6strip{top:56px}}
 .s6lang{min-height:44px;max-width:130px;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:4px 8px;font-size:13px}
 .s6note2{justify-content:space-between}
 .s6tok{display:inline-block;padding:2px 7px;margin:2px;border:1px solid var(--line);border-radius:7px;font:13px var(--mono),'Noto Sans','Noto Sans Devanagari','Noto Sans SC','Noto Sans Arabic','Segoe UI',system-ui,sans-serif;white-space:pre}
 .s6padwrap{display:flex;flex-direction:column;gap:10px}
-.s6pad{position:relative;width:100%;max-width:420px;aspect-ratio:1;min-width:280px;margin:0 auto;border-radius:16px;background:var(--surface);border:1px solid var(--line);overflow:hidden}
+.s6pad{position:relative;width:100%;max-width:420px;aspect-ratio:1;min-width:280px;margin:0 auto;border-radius:16px;background:color-mix(in srgb,var(--surface) 92%,var(--bg));background-image:linear-gradient(to right,color-mix(in srgb,var(--line) 42%,transparent) 1px,transparent 1px),linear-gradient(to bottom,color-mix(in srgb,var(--line) 42%,transparent) 1px,transparent 1px);background-size:12.5% 12.5%;border:1px solid color-mix(in srgb,var(--brand-1) 24%,var(--line));box-shadow:inset 0 1px 0 var(--rim),0 8px 24px -14px rgba(0,0,0,.45);overflow:hidden}
 .s6pad canvas{position:absolute;inset:0;width:100%;height:100%;color:var(--fg);cursor:crosshair;touch-action:none}
 .s6guide{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;color:var(--muted)}
 .s6guide i{position:absolute;inset:18%;border:2px dashed color-mix(in srgb,var(--muted) 45%,transparent);border-radius:14px}
@@ -376,32 +382,32 @@ const CSS = `
 .s6pill{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border:1.5px solid;border-radius:999px;font-size:12.5px}
 #dock-slot:has([data-s6dock])>:not([data-s6dock]){display:none}
 #model-picker-slot:has([data-picker])>:not([data-picker]){display:none}
-.s6card{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;width:min(440px,calc(100% - 28px));display:flex;flex-direction:column;gap:10px;padding:18px 20px;background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(10px);box-shadow:0 12px 40px #0008}
+.s6card{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:12;width:min(440px,calc(100% - 28px));display:flex;flex-direction:column;gap:10px;padding:18px 20px;background:var(--glass-heavy);border:1px solid color-mix(in srgb,var(--brand-1) 28%,var(--line));border-radius:18px;backdrop-filter:blur(18px) saturate(140%);box-shadow:var(--sh-2)}
 .s6card h2{margin:0;font-size:20px;line-height:1.2}
 .s6card p{margin:0}
 .s6line{font-size:13px;color:var(--muted)} .s6line b{color:var(--fg);font-weight:600}
 .s6go{font-size:15px;font-weight:600;padding:11px 16px;min-height:44px;border-radius:12px;border:0;cursor:pointer;background:var(--pos);color:#06101c}
 .s6go:disabled{background:var(--surface2);color:var(--fg);cursor:default;border:1px solid var(--line)}
 .s6link{background:none;border:0;color:var(--pos-ink);cursor:pointer;font-size:13px;padding:6px 0;text-align:left;text-decoration:underline}
-.s6bar{height:8px;border-radius:5px;background:var(--line);overflow:hidden} .s6bar i{display:block;height:100%;background:var(--pos);transition:width .3s}
+.s6bar{height:8px;border-radius:5px;background:var(--line);overflow:hidden} .s6bar i{display:block;height:100%;background:var(--brand-fill,var(--pos));transition:width .3s}
 .s6bar.ind i{width:35%;animation:s6slide 1.2s ease-in-out infinite alternate} @keyframes s6slide{from{margin-left:0}to{margin-left:65%}}
 .s6row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .s6pick{position:relative;display:inline-block}
 .s6pick.fallback{position:absolute;left:14px;top:12px;z-index:14}
 .s6pickbtn{display:flex;align-items:center;gap:8px;min-height:40px;max-width:100%;padding:6px 12px;background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:12px;cursor:pointer;font-size:13.5px}
 .s6pickbtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46vw}
-.s6pop{position:absolute;left:0;top:calc(100% + 6px);z-index:70;width:min(420px,92vw);max-height:70vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px;box-shadow:0 14px 40px #000a}
+.s6pop{position:absolute;left:0;top:calc(100% + 6px);z-index:70;width:min(420px,92vw);max-height:70vh;overflow:auto;background:var(--glass-heavy);backdrop-filter:blur(22px) saturate(140%);border:1px solid color-mix(in srgb,var(--brand-1) 24%,var(--line));border-radius:16px;padding:8px;box-shadow:var(--sh-2)}
 .s6grp{margin:8px 6px 4px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
-.s6rowb{display:grid;grid-template-columns:1fr auto;gap:2px 10px;width:100%;text-align:left;background:none;color:var(--fg);border:1px solid transparent;border-radius:10px;padding:8px 10px;min-height:44px;cursor:pointer}
-.s6rowb:hover{background:var(--surface)} .s6rowb[aria-current=true]{border-color:var(--pos)}
+.s6rowb{display:grid;grid-template-columns:1fr auto;gap:2px 10px;width:100%;text-align:left;background:none;color:var(--fg);border:1px solid transparent;border-radius:10px;padding:8px 10px;min-height:44px;cursor:pointer;transition:background-color .14s,border-color .14s}
+.s6rowb:hover{background:color-mix(in srgb,var(--surface) 85%,transparent)} .s6rowb[aria-current=true]{border-color:var(--pos);background:color-mix(in srgb,var(--pos) 10%,transparent)}
 .s6rowb small{color:var(--muted);font-size:12px;grid-column:1} .s6rowb em{font-style:normal;font-size:12px;grid-column:2;grid-row:1;align-self:center}
 .s6v-fits{color:var(--pos-ink)} .s6v-tight{color:#e0b341} .s6v-too-big{color:var(--bad)}
-.s6dock{display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:14px}
+.s6dock{display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--glass-heavy);border:1px solid var(--line);border-radius:14px}
 .s6dock.fallback{margin:10px 12px 0}
 .s6dock.compact{position:relative;flex-direction:row;padding:0;border:0;background:none;width:100%}
 .s6dock.compact .s6go{align-self:flex-start;white-space:nowrap}
 .s6dock.compact>div:first-child{width:100%}
-.s6float{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.s6float{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:30;background:var(--glass-heavy);backdrop-filter:blur(16px);border:1px solid var(--line);border-radius:12px;padding:8px 10px;box-shadow:var(--sh-1)}
 /* wide: the bulbs sit at the bottom-left corner of each stage; the floating notes keep clear of them (left of the machine stage's bulb, right of the model stage's) */
 @media (min-width:1000px){.s6float{left:56px;right:auto;width:min(calc(100% - 56px),calc(50vw - 100px))}}
 .s6float:empty{display:none}.s6small{font-size:12px;padding:5px 10px}
@@ -411,7 +417,7 @@ const CSS = `
 .s6drop{border:1px dashed var(--line);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px} .s6drop.over{border-color:var(--pos);background:color-mix(in srgb,var(--pos) 8%,transparent)}
 .s6drop img{max-height:90px;max-width:100%;align-self:flex-start;border-radius:8px}
 .s6dock button.btn2{min-height:40px}
-.s6crumb{position:absolute;left:14px;bottom:96px;z-index:9;display:flex;gap:6px;align-items:center;font-size:13px;padding:4px 10px;border-radius:999px;background:color-mix(in srgb,var(--bg) 80%,transparent);border:1px solid var(--line)}
+.s6crumb{position:absolute;left:14px;bottom:96px;z-index:9;display:flex;gap:6px;align-items:center;font-size:13px;padding:4px 10px;border-radius:999px;background:var(--glass);border:1px solid var(--line)}
 .s6crumb b{font-weight:600} .s6crumb span{color:var(--muted)}
 .s6legend{position:absolute;right:14px;bottom:96px;z-index:9}
 .s6legend .hintpop{top:auto;bottom:calc(100% + 8px);left:auto;right:0;transform:translateX(var(--shift));text-align:left}
@@ -433,7 +439,7 @@ const CSS = `
 @media (max-width:600px){.zoonets .sfx{display:none}.zoonets button{padding-inline:9px}}
 .zoo .tlseg span{font:500 12px var(--body);opacity:0;transition:opacity .15s}
 .zoo .tlseg.on span,.zoo .tlseg:hover span{opacity:1}
-@media (prefers-reduced-motion:reduce){.zoo .tlseg span{transition:none}}
+@media (prefers-reduced-motion:reduce){.zoo .tlseg span,.s6bar i,.s6rowb{transition:none}.s6bar.ind i{animation:none}}
 .zoohud .eyebrow,.zoo .cmph span,.s6grp{text-transform:none;letter-spacing:0;font-family:var(--body)}
 .zoo .cmph span{font-size:12px}
 .s6grp{font-size:12.5px;font-weight:600}
@@ -585,23 +591,25 @@ const Say = ({ id }: { id: NetId | 'pad' }) => <>{EXPLAIN[id].map((l, i) => <p k
 /* --------------------------------------------------------------------- progress strip (R2-2) */
 /** With automatic downloads the first-visit card is gone: one slim line says what is coming, how big it is and how far along. */
 function AutoStrip() {
+  const net = useZoo((s) => s.net)
   const { spec, repo, examples, running, lastStats, download, pending, runErr, cancel } = useStore(useShallow((s) => ({ spec: s.spec, repo: s.repo, examples: s.examples, running: s.running, lastStats: s.lastStats, download: s.download, pending: s.pendingDownload, runErr: s.runErr, cancel: s.cancelDownload })))
   const plan = useCurrentPlan()
-  // the engine starts the default model by itself; ask once, after the catalog is known
+  // only start the Hugging Face model when the user opens the More… model view
   const asked = useRef(false)
   useEffect(() => {
+    if (net !== 'llm') return
     const st: any = useStore.getState()
     if (asked.current || !examples.length || typeof st.autoStart !== 'function') return
     asked.current = true
     void st.autoStart()
-  }, [examples.length])
+  }, [examples.length, net])
   const title = examples.find((e) => e.repo.toLowerCase() === repo.toLowerCase())?.title ?? (repo.split('/').pop() || 'the model')
   const total = download?.total ?? pending?.bytes ?? plan?.bytes ?? null
   const pct = download && download.total ? Math.min(100, Math.round((download.done / download.total) * 100)) : null
   const conn: any = (navigator as any).connection
   const mobile = !!conn && (conn.saveData || conn.type === 'cellular')
   const busy = !!download || !!pending || (running && !lastStats && !!spec && isBrowserFit(useStore.getState().fit))
-  if (!busy || runErr) return null
+  if (net !== 'llm' || !busy || runErr) return null
   return (
     <div className="s6strip" role="status" data-strip>
       <div className="s6row" style={{ flexWrap: 'nowrap' }}>
@@ -916,15 +924,6 @@ function Result() {
 
 /* ------------------------------------------------------------------------------------- view */
 
-function Empty() {
-  const { net } = useZoo(useShallow((s) => ({ net: s.net })))
-  const { layers, running, mode, lastStats } = useStore(useShallow((s) => ({ layers: s.layers.length, running: s.running, mode: s.mode, lastStats: s.lastStats })))
-  const blank = lastStats != null && !layers && !running && mode !== 'replay'
-  // a run with no inside view leaves the model scene empty: show a small network instead, once per run, and say so
-  if (!blank || net !== 'llm') return null
-  return <p className="s6line s6note">This model has no inside view in the browser.<Hint>The result is on the right. The small networks above show how a network works inside.</Hint></p>
-}
-
 function Legend() {
   return (
     <div className="s6legend">
@@ -940,8 +939,6 @@ export function ZooView() {
   const [loaded, setLoaded] = useState(false)
   useEffect(() => { useZoo.getState().init().then(() => setLoaded(true)) }, [])
   const p = net === 'llm' ? undefined : packs[net]
-  const repo = useStore((s) => s.repo)
-  const short = repo ? repo.split('/').pop()! : 'This model'
   const stageRef = useRef<HTMLElement>(null), tabsRef = useRef<HTMLDivElement>(null)
   // the net card sits under the tab row: measure the row (it can wrap) instead of guessing its height
   useEffect(() => {
@@ -958,10 +955,9 @@ export function ZooView() {
         <ZooScene />
         <Picker />
         <div ref={tabsRef} className="vswitch seg zoonets" data-zoo-tabs role="group" aria-label="Network">
-          <button className={`real ${net === 'llm' ? 'on' : ''}`} onClick={() => useZoo.getState().setNet('llm')} title={`${short}: a real language model, on your prompt`}>{short.replace(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i, '')}<span className="sfx">{short.match(/[-_](\d+(\.\d+)?[MBK]|instruct).*$/i)?.[0] ?? ''}</span></button>
           {/* the pad stays one tap away (Draw in the dock): an open drawer would cover this tab row and half the scene */}
           {NETS.map((n) => <button key={n.id} className={net === n.id ? 'on' : ''} data-net-tab={n.id} onClick={() => void useZoo.getState().setNet(n.id as NetId)} title={n.id === 'vlm' ? 'A tiny network that looks at a digit and finishes your words about it' : 'A tiny network that reads 8×8 handwritten digits'}>{n.short}</button>)}
-          <button className="more" data-more-models onClick={() => window.dispatchEvent(new CustomEvent('ns-open-picker', { detail: { link: true } }))} title="Load another model from a Hugging Face link">More…</button>
+          <button className={`more ${net === 'llm' ? 'on' : ''}`} data-more-models onClick={() => window.dispatchEvent(new CustomEvent('ns-open-picker', { detail: { link: true } }))} title="Load another model from a Hugging Face link">More…</button>
         </div>
         {p && (
           <Peek className="phud zoohud" data-hud="net" label={`More about the ${p.title}`}
@@ -974,10 +970,9 @@ export function ZooView() {
             </>} />
         )}
         <Explainer key={net} id={net === 'llm' ? 'model' : `net-${net}`} placement="bottom-left"><Say id={net} /></Explainer>
-        <Empty />
         <Legend />
         <div className="stagebottom"><ZooTimeline /></div>
-        {typeof (useStore.getState() as any).autoStart === 'function' ? <AutoStrip /> : <FirstVisit />}
+        {typeof (useStore.getState() as any).autoStart === 'function' ? <AutoStrip /> : net === 'llm' ? <FirstVisit /> : null}
         {err && <div className="err">{err}</div>}
       </section>
       <RunDock />

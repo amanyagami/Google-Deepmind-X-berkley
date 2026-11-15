@@ -14,3 +14,5 @@ examples/
 !public/**/*.png
 # editor settings
 .vscode/
+# local leaderboard persistence
+.kundali-scores.json*

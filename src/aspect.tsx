@@ -58,14 +58,41 @@ export function useTheme(): ThemeName {
   return t
 }
 
-/** The Kundali mark on a 2D canvas (share card): square, both diagonals, inner diamond, in the brand gradient. */
+/** The Kundali mark on a 2D canvas (share card): chamfered square, diagonals, inner diamond, vertex dots & central bindu star. */
 export function drawKundali(g: CanvasRenderingContext2D, x: number, y: number, size: number) {
   const gr = g.createLinearGradient(x, y, x + size, y + size)
-  gr.addColorStop(0, '#9a82ff'); gr.addColorStop(0.55, '#3ddcf5'); gr.addColorStop(1, '#ff8fc4')
+  gr.addColorStop(0, '#9a82ff'); gr.addColorStop(0.52, '#3ddcf5'); gr.addColorStop(1, '#ff8fc4')
   const h = size / 2
-  g.save(); g.strokeStyle = gr; g.lineWidth = Math.max(2, size / 12); g.lineJoin = 'round'; g.lineCap = 'round'; g.beginPath()
-  g.rect(x, y, size, size)
-  g.moveTo(x, y); g.lineTo(x + size, y + size); g.moveTo(x + size, y); g.lineTo(x, y + size)
+  const r = size * 0.14
+  g.save()
+  const aura = g.createRadialGradient(x + h, y + h, 0, x + h, y + h, size * 0.65)
+  aura.addColorStop(0, 'rgba(61, 220, 245, 0.24)'); aura.addColorStop(0.6, 'rgba(154, 130, 255, 0.10)'); aura.addColorStop(1, 'rgba(255, 143, 196, 0)')
+  g.fillStyle = aura
+  g.beginPath(); g.roundRect(x, y, size, size, r); g.fill()
+
+  g.strokeStyle = gr; g.lineWidth = Math.max(1.8, size / 13); g.lineJoin = 'round'; g.lineCap = 'round'
+  g.beginPath(); g.roundRect(x, y, size, size, r); g.stroke()
+
+  g.save(); g.globalAlpha = 0.82; g.lineWidth = Math.max(1.4, size / 16)
+  g.beginPath(); g.moveTo(x + r * 0.4, y + r * 0.4); g.lineTo(x + size - r * 0.4, y + size - r * 0.4)
+  g.moveTo(x + size - r * 0.4, y + r * 0.4); g.lineTo(x + r * 0.4, y + size - r * 0.4); g.stroke(); g.restore()
+
+  g.beginPath()
   g.moveTo(x + h, y); g.lineTo(x + size, y + h); g.lineTo(x + h, y + size); g.lineTo(x, y + h); g.closePath()
-  g.stroke(); g.restore()
+  g.stroke()
+
+  const dotR = Math.max(1.6, size / 18)
+  for (const [dx, dy, col] of [[h, 0, '#9a82ff'], [size, h, '#3ddcf5'], [h, size, '#ff8fc4'], [0, h, '#3ddcf5']] as const) {
+    g.fillStyle = col; g.beginPath(); g.arc(x + dx, y + dy, dotR, 0, Math.PI * 2); g.fill()
+  }
+
+  const s = size * 0.15, si = s * 0.32
+  const sg = g.createLinearGradient(x + h - s, y + h - s, x + h + s, y + h + s)
+  sg.addColorStop(0, '#fff4e0'); sg.addColorStop(0.5, '#ffa94d'); sg.addColorStop(1, '#ff7ab6')
+  g.fillStyle = sg
+  g.beginPath()
+  g.moveTo(x + h, y + h - s); g.lineTo(x + h + si, y + h - si); g.lineTo(x + h + s, y + h); g.lineTo(x + h + si, y + h + si)
+  g.lineTo(x + h, y + h + s); g.lineTo(x + h - si, y + h + si); g.lineTo(x + h - s, y + h); g.lineTo(x + h - si, y + h - si)
+  g.closePath(); g.fill()
+  g.restore()
 }

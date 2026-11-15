@@ -1,10 +1,11 @@
 // The model zoo in 3D. One layout per kind of network; every value drawn is computed live in the browser
 // (nets.ts) and everything that moves is a pure function of the playhead, so the flow scrubs and rewinds.
 // Amber = positive, blue = negative, brightness = size. Double-click any unit to see how its number was computed.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { useTheme, WheelScrollsPage } from '../aspect'
-import { CameraControls, Environment, Html, Lightformer, RoundedBox } from '@react-three/drei'
+import { CameraControls, Environment, Lightformer, RoundedBox } from '@react-three/drei'
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { create } from 'zustand'
@@ -47,7 +48,7 @@ function makeHalo() {
 export function Backdrop({ light, size = [30, 20] }: { light: boolean; size?: [number, number] }) {
   const bg = useMemo(() => makeBackdrop(light), [light])
   const halo = useMemo(() => makeHalo(), [])
-  useEffect(() => () => { bg.dispose() }, [bg])
+  useEffect(() => () => { bg.dispose(); halo.dispose() }, [bg, halo])
   return (
     <>
       <primitive attach="background" object={bg} />
@@ -66,6 +67,7 @@ function FloorGrid({ light }: { light: boolean }) {
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); return g
   }, [])
   const rim = useMemo(() => new THREE.EdgesGeometry(new THREE.PlaneGeometry(22, 15)), [])
+  useEffect(() => () => { geo.dispose(); rim.dispose() }, [geo, rim])
   return (
     <group position-y={-0.235}>
       <lineSegments geometry={geo}><lineBasicMaterial color={light ? '#c7cdea' : '#2a3570'} transparent opacity={light ? 0.5 : 0.28} toneMapped={false} /></lineSegments>
@@ -106,7 +108,7 @@ const CSS = `
 @keyframes ns-pop{from{opacity:0;transform:scale(.94) translateY(3px)}to{opacity:1;transform:none}}
 @keyframes ns-rise{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
 .nsstage{animation:ns-rise .6s var(--ease,cubic-bezier(.2,.8,.2,1)) both}
-@media (prefers-reduced-motion:reduce){.nsstage,.nsc .box{animation:none;transition:none}}
+@media (prefers-reduced-motion:reduce){.nsstage,.nsc .box,.nsreset{animation:none;transition:none}}
 .nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:12px}
 .nsc:hover .sub,.nsc:focus-visible .sub,.nsc.on .sub{display:block}
 .nsc .lv{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
@@ -119,7 +121,7 @@ const CSS = `
 .nsc .lead{position:absolute;left:50%;top:50%;height:0;border-top:1px dashed rgba(154,165,199,.7);transform-origin:0 0;pointer-events:none;display:none;z-index:-1}
 .nsc .lead::after{content:"";position:absolute;right:-2px;top:-3px;width:5px;height:5px;border-radius:50%;background:#9aa5c7}
 .nsw{font:500 11.5px var(--mono,ui-monospace,monospace);color:var(--fg,#e8ecf8);background:color-mix(in srgb,var(--bg,#060913) 94%,transparent);border-radius:6px;padding:0 5px;white-space:nowrap;pointer-events:none}
-.nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:rgba(6,9,19,.92);border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 12px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
+.nstip{position:absolute;left:0;top:0;z-index:6;pointer-events:none;background:var(--glass-heavy,rgba(6,9,19,.92));border:1px solid var(--line,#27314f);border-radius:8px;padding:4px 9px;font:500 12px var(--body,system-ui,sans-serif);color:var(--fg,#e8ecf8);white-space:nowrap;display:none}
 .nsreset{position:absolute;right:12px;top:60px;animation:ns-pop .2s ease both;z-index:6;width:40px;height:40px;display:grid;place-items:center;border-radius:12px;border:1px solid var(--line,#27314f);background:color-mix(in srgb,var(--panel,#0f1526) 88%,transparent);color:var(--fg,#e8ecf8);font:600 18px/1 var(--body,system-ui);cursor:pointer;box-shadow:var(--sh-1,none);backdrop-filter:blur(6px)}
 .nsreset:hover{border-color:color-mix(in srgb,var(--brand-1,#7c5cff) 55%,var(--line,#27314f))}
 .nssr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
@@ -404,6 +406,94 @@ function rove(reg: Reg | null, from: HTMLElement, dir: 1 | -1) {
   next.focus()
 }
 
+const _pWorld = new THREE.Vector3(), _pCam = new THREE.Vector3(), _pFwd = new THREE.Vector3(), _pDelta = new THREE.Vector3()
+/** React-19-safe replacement for @react-three/drei <Html>: creates a DOM root cleanly outside R3F and defers
+ *  root.unmount() to a microtask so React 19 never sees a synchronous unmount while rendering/committing. */
+function StageHtml({ pos, zIndexRange = [5, 0], children }: { pos: [number, number, number]; zIndexRange?: [number, number]; children: ReactNode }) {
+  const groupRef = useRef<THREE.Group>(null)
+  const gl = useThree((s) => s.gl)
+  const events = useThree((s) => s.events)
+  const camera = useThree((s) => s.camera)
+  const size = useThree((s) => s.size)
+  const target = (events.connected as HTMLElement | null | undefined) ?? (gl.domElement.parentNode as HTMLElement | null)
+  const stateRef = useRef<{ el: HTMLDivElement; root: Root; x: number; y: number; z: number; show: boolean } | null>(null)
+  const latestChildren = useRef(children)
+  latestChildren.current = children
+  const zHi = zIndexRange[0], zLo = zIndexRange[1]
+
+  const sync = useCallback(() => {
+    const g = groupRef.current, st = stateRef.current
+    if (!g || !st || size.width <= 0 || size.height <= 0) return
+    g.updateWorldMatrix(true, false)
+    _pWorld.setFromMatrixPosition(g.matrixWorld)
+    _pCam.setFromMatrixPosition(camera.matrixWorld)
+    camera.getWorldDirection(_pFwd)
+    const behind = _pDelta.subVectors(_pWorld, _pCam).dot(_pFwd) <= 0
+    const show = !behind
+    if (show !== st.show) {
+      st.show = show
+      st.el.style.display = show ? 'block' : 'none'
+    }
+    if (!show) return
+    const dist = _pDelta.length()
+    _pWorld.project(camera)
+    const x = (_pWorld.x * 0.5 + 0.5) * size.width
+    const y = (_pWorld.y * -0.5 + 0.5) * size.height
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return
+    const z = Math.max(zLo, Math.min(zHi, Math.round(zHi - Math.min(1, Math.max(0, (dist - 1) / 40)) * (zHi - zLo))))
+    if (!Number.isFinite(st.x) || !Number.isFinite(st.y) || Math.abs(x - st.x) > 0.01 || Math.abs(y - st.y) > 0.01) {
+      st.x = x
+      st.y = y
+      st.el.style.transform = `translate3d(${x.toFixed(2)}px,${y.toFixed(2)}px,0)`
+    }
+    if (z !== st.z) {
+      st.z = z
+      st.el.style.zIndex = String(z)
+    }
+  }, [camera, size.height, size.width, zHi, zLo])
+
+  const syncRef = useRef(sync)
+  syncRef.current = sync
+  const skipNextRender = useRef(false)
+
+  useLayoutEffect(() => {
+    if (!target) return
+    const el = document.createElement('div')
+    el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;transform-origin:0 0;display:none;'
+    target.appendChild(el)
+    const root = createRoot(el)
+    stateRef.current = { el, root, x: NaN, y: NaN, z: -1, show: false }
+    skipNextRender.current = true
+    root.render(
+      <div style={{ position: 'absolute', transform: 'translate3d(-50%,-50%,0)', pointerEvents: 'none' }}>
+        {latestChildren.current}
+      </div>,
+    )
+    syncRef.current()
+    return () => {
+      if (stateRef.current?.el === el) stateRef.current = null
+      if (el.parentNode === target) target.removeChild(el)
+      queueMicrotask(() => root.unmount())
+    }
+  }, [target])
+
+  useLayoutEffect(() => {
+    const st = stateRef.current
+    if (!st) return
+    if (skipNextRender.current) { skipNextRender.current = false; return }
+    st.root.render(
+      <div style={{ position: 'absolute', transform: 'translate3d(-50%,-50%,0)', pointerEvents: 'none' }}>
+        {children}
+      </div>,
+    )
+    sync()
+  })
+
+  useFrame(sync)
+
+  return <group ref={groupRef} position={pos} />
+}
+
 export interface ChipProps {
   pos: [number, number, number]; name: string; glyph?: string; sub?: string
   live?: ReactNode; liveRef?: (el: HTMLElement | null) => void; score?: string
@@ -433,12 +523,12 @@ export function Chip(p: ChipProps) {
   )
   const style = { display: p.hidden ? 'none' : undefined } as const
   return (
-    <Html position={p.pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
+    <StageHtml pos={p.pos} zIndexRange={[5, 0]}>
       {p.onClick
         ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label data-block={p.name} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
             onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={(e) => { p.onKey?.(e); if (e.defaultPrevented) return; if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); rove(reg, e.currentTarget, 1) } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); rove(reg, e.currentTarget, -1) } }} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
         : <div ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label>{inner}</div>}
-    </Html>
+    </StageHtml>
   )
 }
 
@@ -455,9 +545,9 @@ export function Word({ pos, elRef, hidden, prio = 1, children }: { pos: [number,
     return () => { reg.delete(el); er.current?.(null) }
   }, [reg])
   return (
-    <Html position={pos} center zIndexRange={[4, 0]} style={{ pointerEvents: 'none' }}>
+    <StageHtml pos={pos} zIndexRange={[4, 0]}>
       <div ref={setRef} className="nsw" data-label data-prio={prio} style={{ display: hidden ? 'none' : undefined }}>{children}</div>
-    </Html>
+    </StageHtml>
   )
 }
 
@@ -548,6 +638,7 @@ function Plate({ g, def }: { g: Group; def?: SceneDef }) {
     if (!pts.length) return null
     const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); return gg
   }, [g.type, w, d])
+  useEffect(() => () => { edges.dispose(); extra?.dispose() }, [edges, extra])
   const pk = def ? {
     onClick: (e: ThreeEvent<MouseEvent>) => { if (Z().net !== me) return; const p = def.chip(g.id); if (p) { e.stopPropagation(); Z().setInspect(p.inspect) } },
     onPointerMove: (e: ThreeEvent<PointerEvent>) => { if (Z().net !== me) return; const p = def.chip(g.id); if (p) { e.stopPropagation(); hoverPick(p, e) } },
@@ -615,17 +706,20 @@ function Tiles({ get, count, place, size = 0.3, stage, maxAbs = 1, kind = 'tile'
   const m = useRef<THREE.InstancedMesh>(null!)
   const d = useMemo(() => new THREE.Object3D(), [])
   const c = useMemo(() => new THREE.Color(), [])
-  useFrame(() => {
+  const curH = useMemo(() => new Float32Array(count), [count])
+  useFrame((_, dt) => {
     if (Z().net !== me) return
     const vals = get(); const s = Z()
     const r = stage ? reach(s.net, s.t, stage) : 1
     const mx = typeof maxAbs === 'function' ? maxAbs() : maxAbs
     const sel = s.sel?.layer === layer ? s.sel.index : -1
+    const safeDt = Math.min(dt, 0.05)
     for (let i = 0; i < count; i++) {
       const v = vals?.[i] ?? 0
       const shown = scanReveal ? (i + 1) / count <= r + 1e-6 : r > 0
       const lit = shown ? (scanReveal ? 1 : r) : 0
-      const h = 0.04 + Math.min(1, Math.abs(v) / (mx || 1)) * lift * lit
+      const targetH = 0.04 + Math.min(1, Math.abs(v) / (mx || 1)) * lift * lit
+      const h = reduceMotion ? targetH : (curH[i] = THREE.MathUtils.damp(curH[i], targetH, 14, safeDt))
       const [x, y, z] = place(i)
       d.position.set(x, y + h / 2, z); d.scale.set(size, h, size); d.updateMatrix(); m.current.setMatrixAt(i, d.matrix)
       valueColor(v, mx, c, lit); if (i === sel) c.setRGB(1, 1, 1).multiplyScalar(2.5)
@@ -646,14 +740,19 @@ function Nodes({ get, count, place, stage, maxAbs, layer, r = 0.17 }: { get: () 
   const m = useRef<THREE.InstancedMesh>(null!)
   const d = useMemo(() => new THREE.Object3D(), [])
   const c = useMemo(() => new THREE.Color(), [])
-  useFrame(() => {
+  const curS = useMemo(() => new Float32Array(count), [count])
+  useFrame(({ clock }, dt) => {
     if (Z().net !== me) return
     const vals = get(); const s = Z(); const rr = reach(s.net, s.t, stage); const mx = maxAbs()
     const sel = s.sel?.layer === layer ? s.sel.index : -1
+    const safeDt = Math.min(dt, 0.05), time = clock.elapsedTime
     for (let i = 0; i < count; i++) {
       const v = vals?.[i] ?? 0
       const lit = Math.max(0, Math.min(1, rr * 1.6 - (i / count) * 0.6))
-      d.position.set(...place(i)); d.scale.setScalar(r * (0.75 + 0.6 * Math.min(1, Math.abs(v) / (mx || 1)) * lit)); d.updateMatrix(); m.current.setMatrixAt(i, d.matrix)
+      const targetS = r * (0.75 + 0.6 * Math.min(1, Math.abs(v) / (mx || 1)) * lit)
+      let sc = reduceMotion ? targetS : (curS[i] = THREE.MathUtils.damp(curS[i], targetS, 14, safeDt))
+      if (!reduceMotion && lit > 0.25) sc *= 1 + 0.045 * Math.sin(time * 3.2 + i * 0.37)
+      d.position.set(...place(i)); d.scale.setScalar(sc); d.updateMatrix(); m.current.setMatrixAt(i, d.matrix)
       valueColor(v, mx, c, lit); if (i === sel) c.setRGB(3, 3, 3)
       c.multiplyScalar(dimOf(layer, i)); m.current.setColorAt(i, c)
     }
@@ -668,12 +767,18 @@ function Nodes({ get, count, place, stage, maxAbs, layer, r = 0.17 }: { get: () 
 
 /** Weighted connections: for each target, its strongest incoming contributions (weight x activation). */
 function Links({ compute, stage, max = 2000 }: { compute: () => { a: THREE.Vector3; b: THREE.Vector3; v: number }[]; stage: string; max?: number }) {
-  const me = useMe()
+  const me = useMe(), lite = useContext(LiteCtx)
+  const PACKETS = 44
   const geo = useMemo(() => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(max * 6), 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(max * 6), 3)); return g }, [max])
+  useEffect(() => () => geo.dispose(), [geo])
   const c = useMemo(() => new THREE.Color(), [])
+  const pktMesh = useRef<THREE.InstancedMesh>(null!)
+  const pktD = useMemo(() => new THREE.Object3D(), [])
+  const pktP = useMemo(() => new THREE.Vector3(), [])
+  const pktC = useMemo(() => new THREE.Color(), [])
   const key = useRef('')
   const links = useRef<{ a: THREE.Vector3; b: THREE.Vector3; v: number }[]>([])
-  useFrame(() => {
+  useFrame(({ clock }) => {
     if (Z().net !== me) return
     const s = Z()
     const k = `${s.net}:${s.out ? (s.out.id ?? s.img.join(',')) : ''}`
@@ -694,8 +799,37 @@ function Links({ compute, stage, max = 2000 }: { compute: () => { a: THREE.Vecto
       } else { pos.setXYZ(i * 2, 0, -50, 0); pos.setXYZ(i * 2 + 1, 0, -50, 0) }
     }
     pos.needsUpdate = true; col.needsUpdate = true
+    if (pktMesh.current) {
+      const time = clock.elapsedTime
+      const showPkt = !lite && !reduceMotion && shown > 0 && r > 0.02
+      for (let j = 0; j < PACKETS; j++) {
+        if (!showPkt) { pktD.position.set(0, -50, 0); pktD.scale.setScalar(0.0001); pktD.updateMatrix(); pktMesh.current.setMatrixAt(j, pktD.matrix); continue }
+        const idx = Math.floor((j * 17) % shown)
+        const l = L[idx]
+        const u = (time * 0.85 + j / PACKETS) % 1
+        pktP.lerpVectors(l.a, l.b, u)
+        pktD.position.copy(pktP)
+        pktD.scale.setScalar((0.026 + 0.024 * (Math.abs(l.v) / mx)) * Math.sin(u * Math.PI))
+        pktD.updateMatrix()
+        pktMesh.current.setMatrixAt(j, pktD.matrix)
+        valueColor(l.v, mx, pktC, 1)
+        pktC.multiplyScalar(dm * (TH.light ? 1 : 1.7))
+        pktMesh.current.setColorAt(j, pktC)
+      }
+      pktMesh.current.instanceMatrix.needsUpdate = true
+      if (pktMesh.current.instanceColor) pktMesh.current.instanceColor.needsUpdate = true
+    }
   })
-  return <lineSegments geometry={geo} frustumCulled={false}><lineBasicMaterial vertexColors transparent opacity={0.85} toneMapped={false} /></lineSegments>
+  return (
+    <group>
+      <lineSegments geometry={geo} frustumCulled={false}><lineBasicMaterial vertexColors transparent opacity={0.85} toneMapped={false} /></lineSegments>
+      {!lite && (
+        <instancedMesh ref={pktMesh} args={[undefined as any, undefined as any, PACKETS]} frustumCulled={false}>
+          <sphereGeometry args={[1, 8, 8]} /><meshBasicMaterial toneMapped={false} />
+        </instancedMesh>
+      )}
+    </group>
+  )
 }
 
 /** Arcs between token positions, opacity by attention weight. */
@@ -703,7 +837,9 @@ function Arcs({ compute, stage, max = 600, bend = [0, 1, 0] }: { compute: () => 
   const me = useMe()
   const SEG = 12
   const geo = useMemo(() => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(max * SEG * 6), 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(max * SEG * 6), 3)); return g }, [max])
+  useEffect(() => () => geo.dispose(), [geo])
   const p = useMemo(() => new THREE.Vector3(), [])
+  const cc = useMemo(() => new THREE.Color(), [])
   useFrame(() => {
     if (Z().net !== me) return
     const s = Z(); const r = reach(s.net, s.t, stage); const dm = linkDim()
@@ -713,7 +849,7 @@ function Arcs({ compute, stage, max = 600, bend = [0, 1, 0] }: { compute: () => 
     for (const a of arcs.slice(0, max)) {
       const h = 0.6 + a.a.distanceTo(a.b) * 0.22
       const k = Math.min(1, a.w * 2.2) * r * dm
-      const cc = (a.head ? BLUE : AMBER).clone().multiplyScalar(0.25 + 2.6 * k)
+      cc.copy(a.head ? BLUE : AMBER).multiplyScalar(0.25 + 2.6 * k)
       for (let sgi = 0; sgi < SEG; sgi++) {
         for (const e of [sgi, sgi + 1]) {
           const u = (e / SEG) * Math.min(1, r * 1.3)
@@ -735,14 +871,18 @@ function Bars({ origin, stage, along = 'z', labels }: { origin: [number, number,
   const m = useRef<THREE.InstancedMesh>(null!)
   const d = useMemo(() => new THREE.Object3D(), [])
   const c = useMemo(() => new THREE.Color(), [])
+  const curH = useMemo(() => new Float32Array(10), [])
+  const zeroPr = useMemo(() => new Array(10).fill(0), [])
   const tags = useRef<(HTMLDivElement | null)[]>([])
   const on = useActive()
-  useFrame(() => {
+  useFrame((_, dt) => {
     if (Z().net !== me) return
-    const s = Z(); const pr: number[] = s.out?.probs ?? new Array(10).fill(0); const r = reach(s.net, s.t, stage)
+    const s = Z(); const pr: number[] = s.out?.probs ?? zeroPr; const r = reach(s.net, s.t, stage)
     const best = pr.indexOf(Math.max(...pr)), dm = dimOf('scores', 0)
+    const safeDt = Math.min(dt, 0.05)
     for (let i = 0; i < 10; i++) {
-      const h = 0.05 + pr[i] * 3.2 * r
+      const targetH = 0.05 + pr[i] * 3.2 * r
+      const h = reduceMotion ? targetH : (curH[i] = THREE.MathUtils.damp(curH[i], targetH, 12, safeDt))
       const off = (i - 4.5) * 0.62
       d.position.set(origin[0] + (along === 'x' ? off : 0), origin[1] + h / 2, origin[2] + (along === 'z' ? off : 0)); d.scale.set(0.42, h, 0.42); d.updateMatrix(); m.current.setMatrixAt(i, d.matrix)
       if (TH.light) c.copy(i === best && r > 0.5 ? L_AMBER : L_INK).multiplyScalar(dm < 1 ? 0.75 : 1); else c.copy(i === best && r > 0.5 ? AMBER : INK).multiplyScalar((i === best && r > 0.5 ? 2.4 : 1.6) * dm); m.current.setColorAt(i, c)
@@ -794,14 +934,28 @@ function Kernel({ stage, n, at, size }: { stage: string; n: number; at: (x: numb
   const me = useMe()
   const g = useRef<THREE.LineSegments>(null!)
   const geo = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(size * 3, 0.5, size * 3)), [size])
-  useFrame(() => {
+  const whiteColor = useMemo(() => new THREE.Color('#ffffff').multiplyScalar(2.5), [])
+  const curPos = useRef<[number, number, number] | null>(null)
+  useEffect(() => () => geo.dispose(), [geo])
+  useFrame((_, dt) => {
     if (Z().net !== me) return
     const s = Z(); const r = reach(s.net, s.t, stage)
-    g.current.visible = r > 0 && r < 1
+    const vis = r > 0 && r < 1
+    g.current.visible = vis
+    if (!vis) { curPos.current = null; return }
     const k = Math.min(n * n - 1, Math.floor(r * n * n))
-    const [x, y, z] = at(k % n, Math.floor(k / n)); g.current.position.set(x, y + 0.25, z)
+    const [tx, ty, tz] = at(k % n, Math.floor(k / n))
+    if (reduceMotion || !curPos.current) {
+      curPos.current = [tx, ty + 0.25, tz]
+    } else {
+      const safeDt = Math.min(dt, 0.05)
+      curPos.current[0] = THREE.MathUtils.damp(curPos.current[0], tx, 22, safeDt)
+      curPos.current[1] = THREE.MathUtils.damp(curPos.current[1], ty + 0.25, 22, safeDt)
+      curPos.current[2] = THREE.MathUtils.damp(curPos.current[2], tz, 22, safeDt)
+    }
+    g.current.position.set(curPos.current[0], curPos.current[1], curPos.current[2])
   })
-  return <lineSegments ref={g} geometry={geo}><lineBasicMaterial color={new THREE.Color('#ffffff').multiplyScalar(2.5)} toneMapped={false} /></lineSegments>
+  return <lineSegments ref={g} geometry={geo}><lineBasicMaterial color={whiteColor} toneMapped={false} /></lineSegments>
 }
 
 const grid = (n: number, x0: number, z0: number, sz: number, y = 0) => (i: number): [number, number, number] => [x0 + ((i % n) - (n - 1) / 2) * sz, y, z0 + (Math.floor(i / n) - (n - 1) / 2) * sz]
@@ -950,13 +1104,16 @@ function VlmScene() {
   const pills = useRef<THREE.InstancedMesh>(null!)
   const d = useMemo(() => new THREE.Object3D(), [])
   const c = useMemo(() => new THREE.Color(), [])
-  useFrame(() => {
+  const curPill = useMemo(() => new Float32Array(12), [])
+  useFrame((_, dt) => {
     if (Z().net !== 'vlm') return
     const s = Z(); const r = reach(s.net, s.t, 'write'); const ids: number[] = s.out?.ids ?? []
     const shown = Math.min(ids.length, Math.floor(r * ids.length + 1e-6) + (r > 0 ? 1 : 0))
+    const safeDt = Math.min(dt, 0.05)
     for (let k = 0; k < 12; k++) {
       const on = k < shown && k < ids.length
-      d.position.set(wordX(k), 0.08, 3.2); if (on) d.scale.set(0.78, 0.1, 0.34); else d.scale.setScalar(0.0001); d.updateMatrix(); pills.current.setMatrixAt(k, d.matrix)
+      const sc = reduceMotion ? (on ? 1 : 0) : (curPill[k] = THREE.MathUtils.damp(curPill[k], on ? 1 : 0, 14, safeDt))
+      d.position.set(wordX(k), 0.08, 3.2); if (sc > 0.01) d.scale.set(0.78 * sc, 0.1 * sc, 0.34 * sc); else d.scale.setScalar(0.0001); d.updateMatrix(); pills.current.setMatrixAt(k, d.matrix)
       // the user's own words (after <bos>) glow blue; the word being written glows amber
       const mine = k >= 1 && k <= (s.out?.given ?? 0)
       if (k === shown - 1) c.copy(AMBER).multiplyScalar(2.2); else if (mine) c.copy(TH.light ? L_BLUE : BLUE).multiplyScalar(TH.light ? 1 : 1.8); else c.copy(INK).lerp(BLUE, 0.45); pills.current.setColorAt(k, c)
@@ -1065,16 +1222,22 @@ function LlmLayout({ T, L, nh, draft }: { T: number; L: number; nh: number; draf
   const head = (i: number): [number, number, number] => [colX(Math.floor(i / nh)), 0, zHead - (i % nh) * 0.2]
   const words = useRef<(HTMLDivElement | null)[]>([])
   const marker = useRef<THREE.Mesh>(null!)
+  const markerColor = useMemo(() => AMBER.clone().multiplyScalar(1.6), [])
+  const wasMarkerVis = useRef(false)
   const blockTag = useRef<HTMLElement | null>(null)
   const blockAt = () => { const s = Z(); return Math.min(L - 1, Math.floor(reach('llm', s.t, 'blocks') * L)) }
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, dt) => {
     if (Z().net !== 'llm') return
     const s = Z(), r = reach('llm', s.t, 'blocks'), k = blockAt()
     if (!marker.current) return
     ;(marker.current.material as THREE.MeshBasicMaterial).opacity = reduceMotion ? 0.55 : 0.4 + 0.25 * Math.sin(clock.elapsedTime * 6)
-    marker.current.visible = r > 0 && r < 1
-    marker.current.position.x = colX(k)
-    setText(blockTag.current, s.out?.draft ? 'press Run to send it in' : s.out?.noInside ? 'no inside view in the browser' : r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
+    const vis = r > 0 && r < 1
+    marker.current.visible = vis
+    const tx = colX(k)
+    if (!vis || reduceMotion || !wasMarkerVis.current) marker.current.position.x = tx
+    else marker.current.position.x = THREE.MathUtils.damp(marker.current.position.x, tx, 16, Math.min(dt, 0.05))
+    wasMarkerVis.current = vis
+    setText(blockTag.current, s.out?.draft ? 'press Run to send it in' : s.out?.noInside ? 'summary flow (weights live)' : r <= 0 ? 'waiting for the prompt' : r >= 1 ? `all ${L} blocks done` : `block ${k + 1} of ${L}`)
     const toks: string[] = s.out?.tokens ?? []
     for (let t = 0; t < MAXT; t++) { const el = words.current[t]; if (el) { el.style.display = t < T ? '' : 'none'; if (t < T) { setText(el, (toks[t] ?? '').replace(/\n/g, '⏎') || '·'); const on = reach('llm', s.t, 'input') > (t + 0.5) / T; el.dataset.prio = on ? '1' : '0.5'; el.style.color = on ? '' : 'var(--muted,#aab4d2)' } } }
   })
@@ -1084,6 +1247,7 @@ function LlmLayout({ T, L, nh, draft }: { T: number; L: number; nh: number; draf
     for (let k = 0; k < L; k++) { const x = colX(k); pts.push(x - w, 0.03, z0, x + w, 0.03, z0, x + w, 0.03, z0, x + w, 0.03, z1, x + w, 0.03, z1, x - w, 0.03, z1, x - w, 0.03, z1, x - w, 0.03, z0) }
     const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); return g
   }, [T, L])
+  useEffect(() => () => norm.dispose(), [norm])
   const mid = Math.floor(L / 2)
   const blocksKey = (e: React.KeyboardEvent) => {
     const cur = Z().inspect, k = cur?.kind === 'block' ? cur.layer ?? mid : mid, part = (cur?.kind === 'block' ? cur.part : 'mlp') ?? 'mlp'
@@ -1112,7 +1276,7 @@ function LlmLayout({ T, L, nh, draft }: { T: number; L: number; nh: number; draf
         <Tiles get={() => Z().out?.heads ?? null} count={L * nh} place={head} size={Math.min(0.17, 4.5 / L)} stage="blocks" maxAbs={1} layer="heads" kind="head" lift={0.45} scanReveal shape="tooth" />
         {/* the block being played, and who the last token listens to inside it */}
         <mesh ref={marker} position={[colX(0), 0.35, (z(0) + z(T - 1)) / 2]} visible={false}>
-          <boxGeometry args={[0.06, 0.7, span]} /><meshBasicMaterial color={AMBER.clone().multiplyScalar(1.6)} transparent opacity={0.55} toneMapped={false} />
+          <boxGeometry args={[0.06, 0.7, span]} /><meshBasicMaterial color={markerColor} transparent opacity={0.55} toneMapped={false} />
         </mesh>
         <Arcs stage="blocks" max={T} bend={[0.8, 0.6, 0]} compute={() => {
           const o = Z().out, k = blockAt(), x = colX(k)
@@ -1254,9 +1418,20 @@ export function ZooScene() {
   const reset = () => { if (Z().inspect) Z().setInspect(null); else SCENE.cams.model?.home() }
   useStageKeys(st.wrap, () => { if (!Z().inspect) return false; Z().setInspect(null); return true }, reset)
   useEffect(() => { Z().setInspect(null); useUI.setState({ hover: null }); setCursor(false) }, [net])
+  const glClean = useRef<(() => void) | null>(null)
+  useEffect(() => () => { glClean.current?.() }, [])
   return (
     <div ref={st.wrap} data-stage className="nsstage" style={{ position: 'absolute', inset: 0, visibility: st.run ? undefined : 'hidden' }}>
-      <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false }}
+      <Canvas frameloop={st.run ? 'always' : 'never'} dpr={st.dpr} resize={{ debounce: { scroll: 0, resize: 100 }, scroll: false }} camera={{ position: [-0.6, 14.5, 17.5], fov: 38 }} gl={{ antialias: false, powerPreference: 'high-performance' }}
+        onCreated={({ gl }) => {
+          glClean.current?.()
+          const dom = gl.domElement
+          const onLost = (e: Event) => { e.preventDefault() }
+          const onRestored = () => { KIT_DIRTY.v = true }
+          dom.addEventListener('webglcontextlost', onLost)
+          dom.addEventListener('webglcontextrestored', onRestored)
+          glClean.current = () => { dom.removeEventListener('webglcontextlost', onLost); dom.removeEventListener('webglcontextrestored', onRestored) }
+        }}
         onPointerMissed={(e) => { if (e.type === 'dblclick') { Z().select(null); reset() } else if (e.type === 'click') Z().setInspect(null) }}>
         <LiteCtx.Provider value={st.lite}>
           <KitProvider>
@@ -1265,9 +1440,12 @@ export function ZooScene() {
             <fog attach="fog" args={[light ? '#eef0fb' : '#060a1a', 30, 56]} />
             <SlowWatch onStep={st.step} />
             <FirstFrame name="model" />
-            <ambientLight intensity={0.4} />
-            <Environment resolution={64} environmentIntensity={0.5}>
+            <ambientLight intensity={0.35} />
+            <directionalLight position={[6, 12, 8]} intensity={light ? 0.9 : 1.05} />
+            <directionalLight position={[-8, 9, -8]} intensity={light ? 0.45 : 0.7} color="#7ea6ff" />
+            <Environment resolution={64} environmentIntensity={0.55}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
+              <Lightformer form="rect" intensity={1.2} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />
             </Environment>
             {light && <RoundedBox args={[22.5, 0.2, 15.5]} radius={0.2} smoothness={3} position={[0, -0.4, 0.3]}><meshBasicMaterial color="#c3c9e4" /></RoundedBox>}
             <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}>{light ? <meshBasicMaterial color="#e9ecf8" /> : <meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} />}</RoundedBox>

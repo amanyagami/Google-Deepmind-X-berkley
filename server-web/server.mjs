@@ -272,6 +272,38 @@ export function memoryStore() {
   }
 }
 
+export function fileStore(filePath) {
+  const docs = new Map()
+  try {
+    if (fs.existsSync(filePath)) {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        for (const [id, d] of Object.entries(raw)) {
+          if (d && typeof d === 'object' && typeof d.best === 'number') docs.set(id, d)
+        }
+      }
+    }
+  } catch { /* corrupt or missing file starts fresh */ }
+  const persist = () => {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(docs), null, 2))
+      fs.renameSync(tmp, filePath)
+    } catch { /* ignore transient write errors */ }
+  }
+  return {
+    kind: 'file',
+    filePath,
+    docs,
+    async upsert(id, e, now) { const next = mergeRow(docs.get(id) ?? null, e, now); docs.set(id, next); persist(); return { ...next } },
+    async get(id) { const d = docs.get(id); return d ? { ...d } : null },
+    async top(limit) { return [...docs].map(([id, d]) => ({ id, ...d })).sort(byBest).slice(0, limit) },
+    async countAbove(best) { let n = 0; for (const d of docs.values()) if (d.best > best) n++; return n },
+    async count() { return docs.size },
+  }
+}
+
 export async function firestoreStore() {
   const { Firestore } = await import('@google-cloud/firestore')
   const db = new Firestore({
@@ -297,7 +329,7 @@ export async function pickStore(env = process.env) {
   const want = (env.KUNDALI_STORE || '').toLowerCase()
   if (want === 'memory') return memoryStore()
   if (want === 'firestore' || env.GOOGLE_CLOUD_PROJECT || env.K_SERVICE) return firestoreStore()
-  return memoryStore()
+  return fileStore(env.KUNDALI_DATA_FILE || path.join(HERE, '..', '.kundali-scores.json'))
 }
 
 /* ------------------------------------------------------------------ rate limits (per instance, in memory) */
@@ -348,13 +380,22 @@ export function createApi({ store, trustProxy = false, proxyHops = 1, origins = 
     const proto = trustProxy ? String(req.headers['x-forwarded-proto'] ?? 'http').split(',')[0].trim() : req.socket.encrypted ? 'https' : 'http'
     return `${proto}://${req.headers.host ?? ''}`
   }
-  /** Same origin only. Browsers send Origin on every POST; a same-origin GET may come without one. */
+  const sameHost = (origin, req) => {
+    if (!origin) return false
+    if (origin === ownOrigin(req) || origins.includes(origin)) return true
+    if (trustProxy && req.headers.host) {
+      try { return new URL(origin).host === req.headers.host } catch { return false }
+    }
+    return false
+  }
+  /** Same origin (including reverse-proxied / iframe hosts when Origin matches Host). Browsers send Origin on every POST. */
   const allowed = (req) => {
     const site = req.headers['sec-fetch-site']
     const origin = req.headers.origin
-    if (req.method === 'POST') return !!origin && (origin === ownOrigin(req) || origins.includes(origin)) && (!site || site === 'same-origin')
-    if (site && site !== 'same-origin' && site !== 'none') return false
-    return !origin || origin === ownOrigin(req) || origins.includes(origin)
+    if (req.method === 'POST') return !!origin && sameHost(origin, req) && (!site || site === 'same-origin' || site === 'same-site' || (trustProxy && site === 'cross-site'))
+    if (origin && !sameHost(origin, req)) return false
+    if (site && site !== 'same-origin' && site !== 'none' && !(trustProxy && (site === 'same-site' || (origin && sameHost(origin, req))))) return false
+    return true
   }
 
   async function top(limit) {
