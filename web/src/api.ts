@@ -689,21 +689,21 @@ export function classifyError(e: any, device = 'webgpu'): BrowserRunError {
 }
 
 /* one pipeline at a time: loading another disposes the previous one first */
-let current: { key: string; p: Promise<Loaded> } | null = null
+const pool = new Map<string, { key: string; p: Promise<Loaded> }>()   // one pipeline per task kind: the language model and a small image model can both stay warm
 let ortRoot = ''   // where the page serves the ONNX runtime from (/ort/); a worker is told by the page
-export const livePipelineKey = () => current?.key ?? null
+export const livePipelineKey = () => pool.get('text-generation')?.key ?? [...pool.values()][0]?.key ?? null
 export async function disposeAll(): Promise<void> {
   if (worker && !IN_WORKER) { try { await callWorker(worker, { type: 'dispose' }, {}) } catch { /* no worker to free */ } }
-  const c = current
-  current = null
-  if (!c) return
-  try { await (await c.p).pipe?.dispose?.() } catch { /* the load failed, nothing to free */ }
+  const all = [...pool.values()]
+  pool.clear()
+  for (const c of all) { try { await (await c.p).pipe?.dispose?.() } catch { /* the load failed, nothing to free */ } }
 }
 /** Load (or reuse) the single live pipeline. `cached` is true when it was already in memory. */
 export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 'wasm', dtype: string): Promise<{ l: Loaded; cached: boolean }> {
   const key = `${task}|${repo}|${device}|${dtype}`
-  if (current?.key === key) { try { return { l: await current.p, cached: true } } catch { /* fall through and retry */ } }
-  const prev = current
+  const have = pool.get(task)
+  if (have?.key === key) { try { return { l: await have.p, cached: true } } catch { /* fall through and retry */ } }
+  const prev = have
   const p: Promise<Loaded> = (async () => {
     if (prev) { try { await (await prev.p).pipe?.dispose?.() } catch { /* previous failed to load */ } }
     const tf: any = await import('@huggingface/transformers')
@@ -711,8 +711,8 @@ export async function loadPipeline(task: Task, repo: string, device: 'webgpu' | 
     if (IN_WORKER && ortRoot) { try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: ortRoot + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: ortRoot + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
     return { pipe: await tf.pipeline(task, repo, { device, dtype }), tf, repo }
   })()
-  current = { key, p }
-  p.catch(() => { if (current?.p === p) current = null })
+  pool.set(task, { key, p })
+  p.catch(() => { if (pool.get(task)?.p === p) pool.delete(task) })
   return { l: await p, cached: false }
 }
 
@@ -807,14 +807,20 @@ async function runOnce(spec: ModelSpec, task: Task, prep: Prepared, emit: (f: an
     const top = Array.from(ex.keys()).sort((a, b) => ex[b] - ex[a]).slice(0, 10)
     const topk = top.map((i) => ({ token: tok.decode([i]), p: ex[i] / z }))
     emit({ type: 'start', tokens: ids.map((id) => tok.decode([id])) })
-    hiddenSeen.set(spec.repo, layerFrames(out, emit))
+    const inside = layerFrames(out, emit)
+    hiddenSeen.set(spec.repo, inside)
+    emit({ type: 'inside', live: inside, note: inside ? null : 'Needs the companion app: this browser model file does not hand out its per-block numbers or attention.' })
     let gen = '', n = 0
     const streamer = new tf.TextStreamer(tok, {
       skip_prompt: true,
       callback_function: (s: string) => { if (s) { gen += s; emit({ type: 'token', text: s }) } },
       token_callback_function: () => { if (!n++) firstMs = performance.now() - start },
     })
-    await pipe(text, { max_new_tokens: 24, do_sample: false, streamer })
+    const stop = tf.InterruptableStoppingCriteria ? new tf.InterruptableStoppingCriteria() : null
+    const onAbort = () => stop?.interrupt()
+    opts.signal?.addEventListener('abort', onAbort, { once: true })
+    try { await pipe(text, { max_new_tokens: 24, do_sample: false, streamer, ...(stop ? { stopping_criteria: stop } : {}) }) } finally { opts.signal?.removeEventListener('abort', onAbort) }
+    if (opts.signal?.aborted) throw new BrowserRunError('aborted', 'The run was cancelled.')
     items = Math.max(1, n); unit = 'tokens'
     emit({ type: 'final', topk, text: gen, seconds: seconds() })
   } else if (task === 'fill-mask') {
@@ -1213,10 +1219,10 @@ export async function activation(q: { repo: string; input: TaskInput; layer: num
     } catch (e: any) { return { available: false, reason: `The companion could not run this model: ${e?.message ?? e}` } }
   }
   if (worker && !IN_WORKER) { try { return await callWorker<Activation>(worker, { type: 'activation', q }, {}) } catch (e: any) { return { available: false, reason: `The browser could not read this layer: ${e?.message ?? e}` } } }
-  const live = current
+  const live = pool.get('text-generation')
   if (!live) return { available: false, reason: 'Run the model in the browser first, then ask again.' }
-  if (hiddenSeen.get(q.repo) !== true) return { available: false, reason: 'This ONNX export does not expose hidden states, so only the weights can be shown in the browser. The local companion can show activations.' }
-  if (q.kind !== 'resid') return { available: false, reason: 'ONNX exports do not separate attention from the MLP: only the residual stream can be read in the browser.' }
+  if (hiddenSeen.get(q.repo) !== true) return { available: false, reason: 'Needs the companion app: this browser model file does not hand out its per-block numbers. The next-word scores and the weights are real and shown.' }
+  if (q.kind !== 'resid') return { available: false, reason: 'Needs the companion app: the browser model file does not separate attention from the MLP.' }
   try {
     const l = await live.p
     const enc = await l.pipe.tokenizer(q.input.text)
@@ -1299,13 +1305,67 @@ export type ModelWorkerIn =
   | { type: 'cancel'; id: number }
   | { type: 'dispose'; id: number }
   | { type: 'activation'; id: number; q: { repo: string; input: TaskInput; layer: number; pos: number; kind: 'resid' | 'attn' | 'mlp' } }
+  | { type: 'vlm'; id: number; q: { image: string; question: string; device: 'webgpu' | 'wasm' } }
 /** Worker -> page (frames carry transferable buffers) */
 export type ModelWorkerOut =
   | { type: 'progress'; id: number; done: number; total: number | null; file?: string }
   | { type: 'frame'; id: number; frame: any }
   | { type: 'done'; id: number; stats: BrowserRunStats }
   | { type: 'activation'; id: number; result: Activation }
+  | { type: 'vlm'; id: number; result: VlmResult }
   | { type: 'error'; id: number; code: 'oom' | 'unsupported' | 'degenerate' | 'offline' | 'gated' | 'quota' | 'cancelled' | 'input' | 'unknown'; message: string }
+
+/* ------------------------------------------------------------------ a real small vision-language model (SmolVLM 256M), run by the same worker */
+export const VLM_REPO = 'HuggingFaceTB/SmolVLM-256M-Instruct'
+export interface VlmResult { text: string; ms: number; device: 'webgpu' | 'wasm'; bytes: number }
+const VLM_DTYPE = (device: 'webgpu' | 'wasm') => ({ embed_tokens: device === 'webgpu' ? 'fp16' : 'q8', vision_encoder: 'q4', decoder_model_merged: 'q4' })
+let vlmLoaded: { key: string; p: Promise<{ processor: any; model: any; tf: any }> } | null = null
+async function vlmAnswer(q: { image: string; question: string; device: 'webgpu' | 'wasm' }, onProgress: (done: number, total: number | null) => void, onToken: (t: string) => void, signal: AbortSignal): Promise<VlmResult> {
+  const t0 = performance.now()
+  const files = new Map<string, { loaded: number; total: number }>()
+  const progress_callback = (e: any) => {
+    if (e?.status === 'progress' && e.file) {
+      files.set(e.file, { loaded: e.loaded ?? 0, total: e.total ?? 0 })
+      let l = 0, t = 0
+      for (const v of files.values()) { l += v.loaded; t += v.total }
+      onProgress(l, t || null)
+    }
+  }
+  const key = q.device
+  if (vlmLoaded?.key !== key) {
+    vlmLoaded = { key, p: (async () => {
+      const tf: any = await import('@huggingface/transformers')
+      try { tf.env.backends.onnx.logLevel = 'error' } catch { /* ignore */ }
+      if (IN_WORKER && ortRoot) { try { tf.env.backends.onnx.wasm.wasmPaths = { mjs: ortRoot + 'ort-wasm-simd-threaded.asyncify.mjs', wasm: ortRoot + 'ort-wasm-simd-threaded.asyncify.wasm' } } catch { /* default location */ } }
+      const processor = await tf.AutoProcessor.from_pretrained(VLM_REPO, { progress_callback })
+      const model = await tf.AutoModelForVision2Seq.from_pretrained(VLM_REPO, { dtype: VLM_DTYPE(q.device), device: q.device, progress_callback })
+      return { processor, model, tf }
+    })() }
+    vlmLoaded.p.catch(() => { vlmLoaded = null })
+  }
+  const { processor, model, tf } = await vlmLoaded.p
+  if (signal.aborted) throw new BrowserRunError('aborted', 'The run was cancelled.')
+  const start = performance.now()
+  const messages = [{ role: 'user', content: [{ type: 'image' }, { type: 'text', text: q.question }] }]
+  const prompt = processor.apply_chat_template(messages, { add_generation_prompt: true })
+  const image = await tf.load_image(q.image)
+  const inputs = await processor(prompt, [image], { do_image_splitting: false })
+  const stop = new tf.InterruptableStoppingCriteria()
+  signal.addEventListener('abort', () => stop.interrupt(), { once: true })
+  const streamer = new tf.TextStreamer(processor.tokenizer, { skip_prompt: true, skip_special_tokens: true, callback_function: (t: string) => { if (t) onToken(t) } })
+  const out = await model.generate({ ...inputs, do_sample: false, max_new_tokens: 40, streamer, stopping_criteria: stop })
+  if (signal.aborted) throw new BrowserRunError('aborted', 'The run was cancelled.')
+  const text = processor.batch_decode(out.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true })[0]
+  let bytes = 0
+  for (const v of files.values()) bytes += v.total
+  return { text: String(text).trim(), ms: performance.now() - start, device: q.device, bytes }
+}
+/** Ask the small vision-language model about a picture (a data or blob URL). Downloads about 200 MB the first time; the browser keeps it. */
+export function askVlm(q: { image: string; question: string; device: 'webgpu' | 'wasm' }, o: { signal?: AbortSignal; onProgress?: (d: number, t: number | null) => void; onToken?: (t: string) => void } = {}): Promise<VlmResult> {
+  const w = modelWorker()
+  if (!w) return Promise.reject(new BrowserRunError('unsupported', 'The browser could not start a background thread for this model.'))
+  return callWorker<VlmResult>(w, { type: 'vlm', q }, { onProgress: o.onProgress, onFrame: (f) => { if (f?.type === 'token') o.onToken?.(f.text) } }, o.signal)
+}
 
 /* ------------------------------------------------------------------ the worker: this same file is its entry point */
 function serveWorker() {
@@ -1315,14 +1375,31 @@ function serveWorker() {
     const err = classifyError(e)
     post({ type: 'error', id, code: err.code === 'aborted' ? 'cancelled' : err.code, message: err.message })
   }
-  ;(self as any).onmessage = async (ev: MessageEvent<ModelWorkerIn>) => {
+  // One job at a time (a second click must not run a second forward pass on the same session); cancel is handled at once, even for a job that still waits.
+  // Jobs on the same kind of model queue; a small image model never waits for the language model.
+  const queues = new Map<string, Promise<void>>()
+  const laneOf = (m: ModelWorkerIn) => (m.type === 'run' || m.type === 'load' ? m.spec.task ?? 'x' : m.type === 'vlm' ? 'vlm' : m.type === 'activation' ? 'text-generation' : 'all')
+  ;(self as any).onmessage = (ev: MessageEvent<ModelWorkerIn>) => {
     const m = ev.data
     if ((m as any).ort) ortRoot = (m as any).ort
     if (m.type === 'cancel') { ctl.get(m.id)?.abort(); return }
-    if (m.type === 'dispose') { await disposeAll(); post({ type: 'done', id: m.id, stats: {} as any }); return }
-    if (m.type === 'activation') { post({ type: 'activation', id: m.id, result: await activation(m.q) }); return }
     const ac = new AbortController()
     ctl.set(m.id, ac)
+    const lane = laneOf(m)
+    queues.set(lane, (queues.get(lane) ?? Promise.resolve()).then(() => job(m, ac)).catch(() => {}))
+  }
+  const job = async (m: ModelWorkerIn, ac: AbortController) => {
+    if (m.type === 'cancel') return
+    if (ac.signal.aborted) { post({ type: 'error', id: m.id, code: 'cancelled', message: 'The run was cancelled.' }); ctl.delete(m.id); return }
+    if (m.type === 'dispose') { await disposeAll(); post({ type: 'done', id: m.id, stats: {} as any }); ctl.delete(m.id); return }
+    if (m.type === 'activation') { post({ type: 'activation', id: m.id, result: await activation(m.q) }); ctl.delete(m.id); return }
+    if (m.type === 'vlm') {
+      try {
+        const result = await vlmAnswer(m.q, (done, total) => post({ type: 'progress', id: m.id, done, total }), (text) => post({ type: 'frame', id: m.id, frame: { type: 'token', text } }), ac.signal)
+        post({ type: 'vlm', id: m.id, result })
+      } catch (e: any) { fail(m.id, e) } finally { ctl.delete(m.id) }
+      return
+    }
     let lastP = 0
     const onProgress = (done: number, total: number | null) => {
       const now = performance.now()
@@ -1370,7 +1447,7 @@ const modelWorker = (): Worker | null => {
       if (!p) return
       if (m.type === 'progress') p.onProgress?.(m.done, m.total)
       else if (m.type === 'frame') p.onFrame?.(m.frame)
-      else { pending.delete(m.id); if (m.type === 'error') p.reject(new BrowserRunError(m.code === 'cancelled' ? 'aborted' : m.code, m.message)); else p.resolve(m.type === 'activation' ? m.result : m.stats) }
+      else { pending.delete(m.id); if (m.type === 'error') p.reject(new BrowserRunError(m.code === 'cancelled' ? 'aborted' : m.code, m.message)); else p.resolve(m.type === 'activation' || m.type === 'vlm' ? m.result : m.stats) }
     }
     worker.onerror = () => {   // the worker could not start (or died): fail what waits, and run in the page from now on
       workerBroken = true

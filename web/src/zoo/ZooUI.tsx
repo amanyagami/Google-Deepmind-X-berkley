@@ -43,7 +43,7 @@ function MiniInput() {
 
 /** One big square pad: thick smooth strokes (mouse, touch, pen), live guesses from all five networks, Clear, Undo, 0 to 9. */
 function DrawPad() {
-  const { packs, digits, img } = useZoo(useShallow((s) => ({ packs: s.packs, digits: s.digits, img: s.img })))
+  const readsAll = useZoo((s) => s.reads)
   const cv = useRef<HTMLCanvasElement>(null)
   const strokes = useRef<Pt[][]>([])
   const live = useRef<Pt[] | null>(null)
@@ -101,8 +101,8 @@ function DrawPad() {
     return () => document.removeEventListener('keydown', key)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const end = () => { if (live.current) { strokes.current.push(live.current); live.current = null; later() } }
-  const reads = useMemo(() => (NETS.every((n) => packs[n.id]) ? NETS.map((n) => ({ id: n.id, r: readDigit(n.id, packs[n.id]!, img) })) : null), [img, packs])
-  const verdict = useMemo(() => (reads && inked ? consensus(reads.map((x) => x.r)) : null), [reads, inked])
+  const reads = NETS.every((n) => readsAll[n.id]) ? NETS.map((n) => ({ id: n.id, r: readsAll[n.id]! })) : null
+  const verdict = useMemo(() => (reads && inked ? consensus(reads.map((x) => x.r)) : null), [readsAll, inked]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="s6padwrap" data-pad-wrap>
       <div className="s6pad">
@@ -136,6 +136,32 @@ function DrawPad() {
 }
 
 /* ---------------------------------------------------------------------------------- outputs */
+/** The real model that matches a tiny net, run in the page on the same picture. Always computed just now: no recording. */
+function RealCard() {
+  const r = useZoo(useShallow((s) => s.real))
+  const net = useZoo((s) => s.net)
+  if ((net !== 'vit' && net !== 'vlm') || r.net !== net) return null
+  const kind = net === 'vit' ? 'picture model' : 'vision-language model'
+  return (
+    <div className="ccard" data-real-card data-real-state={r.state}>
+      <h4>The real {kind} <small>{r.title}{r.size ? `, ${r.size}` : ''}</small></h4>
+      {r.state === 'ask' && (
+        <>
+          <p className="s6line">The tiny model below is a teaching model. Real vision-language models start near 190 MB.</p>
+          <button className="btn2" data-real-run onClick={() => useZoo.getState().runReal(true)}>Tap to run the real one</button>
+        </>
+      )}
+      {r.state === 'idle' && <p className="s6line">Draw a number or pick a digit, and the real model looks at it too.</p>}
+      {r.state === 'running' && <p className="s6line" role="status">{r.dl != null ? `Downloading the real model, ${Math.round(r.dl * 100)}%.` : 'The real model is looking at your picture.'}{net === 'vlm' && r.text ? ` “${r.text}”` : ''}</p>}
+      {r.state === 'ok' && net === 'vit' && <TopBars items={r.items.slice(0, 3).map((x) => ({ token: x.token.split(',')[0], p: x.p }))} max={Math.max(1e-6, ...r.items.map((x) => x.p))} />}
+      {r.state === 'ok' && net === 'vlm' && <p className="caption-out">“{r.text}”</p>}
+      {r.state === 'ok' && <p className="s6line" data-real-live>Live, computed just now on {r.device === 'webgpu' ? 'your GPU' : 'your CPU'}{r.ms != null ? ` in ${Math.round(r.ms)} ms` : ''}. It was not trained on handwritten digits, so it may name an everyday object.</p>}
+      {(r.state === 'err' || r.state === 'off') && <p className="s6line" role="alert">{r.err}</p>}
+    </div>
+  )
+}
+
+const TINY = <p className="s6line" data-tiny-note>A tiny teaching net trained on digits. It computes live in this page from its real weights, with no recorded data.</p>
 function Output() {
   const { net, out, label, pack } = useZoo(useShallow((s) => ({ net: s.net, out: s.out, label: s.label, pack: s.packs[s.net] })))
   if (!out || !pack) return null
@@ -144,8 +170,11 @@ function Output() {
     const given = out.given ?? 0
     const add = (w: string) => { const z = useZoo.getState(); z.setWords(`${z.words.trim()} ${w}`.trim()) }
     return (
+      <>
+      <RealCard />
       <div className="ccard">
         <h4>Answer <small>your words, then the model's</small></h4>
+        {TINY}
         <p className="caption-out">“{words.map((w, i) => <span key={i}>{i && w !== ',' ? ' ' : ''}{i < given ? <b className="s6mine">{w}</b> : w}</span>)}”</p>
         <p className="s6line">Words it knows. Tap to add one (up to {VLM_MAX_WORDS}).</p>
         <div className="s6chips s6vocab" role="group" aria-label="Words it knows">
@@ -154,15 +183,20 @@ function Output() {
         </div>
         <p className="small mono">{label !== null ? `the test image is a ${label}` : 'your drawing'}<Hint>Each word is chosen from {pack.vocab!.length} possible words, given the image tokens and the words written so far.</Hint></p>
       </div>
+      </>
     )
   }
   const best = out.probs.indexOf(Math.max(...out.probs))
   return (
+    <>
+    <RealCard />
     <div className="ccard">
       <h4>Prediction <small>{label !== null ? `the test image is a ${label}` : 'your drawing'}</small></h4>
       <div className="probs">{out.probs.map((p: number, i: number) => <div key={i} className={i === best ? 'on' : ''}><i style={{ height: `${Math.max(2, p * 100)}%` }} /><span>{i}</span></div>)}</div>
       <p className="small mono">{best} · {pct(out.probs[best])} sure</p>
+      {TINY}
     </div>
+    </>
   )
 }
 
@@ -297,21 +331,22 @@ const fmtUs = (us: number) => (us >= 1000 ? `${(us / 1000).toFixed(1)} ms` : `${
 
 /* ------------------------------------------------------------------- all five, side by side */
 export function CompareCard() {
-  const { img, packs, net, label, timing } = useZoo(useShallow((s) => ({ img: s.img, packs: s.packs, net: s.net, label: s.label, timing: s.timing })))
-  const rows = useMemo(() => NETS.map((n) => ({ id: n.id, r: packs[n.id] ? readDigit(n.id, packs[n.id]!, img) : null })), [img, packs])
+  const { reads, net, label, timing } = useZoo(useShallow((s) => ({ reads: s.reads, net: s.net, label: s.label, timing: s.timing })))
+  // the same forward-pass results the 3D scene draws: nothing is recomputed here
+  const rows = NETS.map((n) => ({ id: n.id, r: reads[n.id] ?? null }))
   const digits = rows.map((x) => x.r?.digit).filter((d) => d !== undefined && d !== null)
   const agree = digits.length === 5 && digits.every((d) => d === digits[0])
   const maxUs = Math.max(1, ...NETS.map((n) => timing[n.id]?.us ?? 0))
   return (
     <div className="ccard">
-      <h4>All five networks <small>{digits.length < 5 ? 'loading…' : agree ? `all read a ${digits[0]}` : 'they disagree'}</small><Hint>Computed live in this page as you draw. Times are measured here, averaged over {timing.mlp?.n ?? '…'}+ runs; the VLM's time is for writing its whole caption. Click a row to see that network in 3D.</Hint></h4>
+      <h4>All five networks <small>{digits.length < 5 ? 'loading…' : agree ? `all read a ${digits[0]}` : 'they disagree'}</small><Hint>Computed live in this page as you draw, from the same pass the 3D view shows. For the VLM, “reads” is the digit its own caption names (– when it names none). Times are measured here, averaged over {timing.mlp?.n ?? '…'}+ runs; the VLM's time is for writing its whole caption. Click a row to see that network in 3D.</Hint></h4>
       <div className="cmp" role="table" aria-label="What each network reads, how sure it is, and how long it takes here">
         <div className="cmph" role="row"><span role="columnheader">network</span><span role="columnheader">reads</span><span role="columnheader">sure</span><span role="columnheader">time per image, this device</span></div>
         {rows.map(({ id, r }) => (
-          <button key={id} role="row" className={`cmpr ${id === net ? 'on' : ''}`} onClick={() => useZoo.getState().setNet(id)} title={r?.caption ? `caption: “${r.caption}”` : `show the ${NAME[id]} in 3D`}>
+          <button key={id} role="row" className={`cmpr ${id === net ? 'on' : ''}`} onClick={() => useZoo.getState().setNet(id)} data-net-row={id} data-read-hash={r?.hash} title={r?.caption ? `caption: “${r.caption}”${r.digit === null ? ' (names no digit)' : ''}` : `show the ${NAME[id]} in 3D`}>
             <span role="cell"><i className="sw" style={{ background: NET_COLOR[id] }} />{NAME[id]}</span>
-            <b role="cell" className={`mono dig ${label !== null && r?.digit !== null && r && r.digit !== label ? 'wrong' : ''}`}>{r ? (r.digit ?? '?') : '…'}</b>
-            <span role="cell" className="conf"><i style={{ width: `${(r?.conf ?? 0) * 100}%` }} /><em className="mono">{r ? pct(r.conf) : ''}</em></span>
+            <b role="cell" data-read-digit={r?.digit ?? '-'} className={`mono dig ${label !== null && r?.digit !== null && r && r.digit !== label ? 'wrong' : ''}`}>{r ? (r.digit ?? '–') : '…'}</b>
+            <span role="cell" className="conf" data-read-conf={r ? Math.round(r.conf * 100) : ''}><i style={{ width: `${(r?.conf ?? 0) * 100}%` }} /><em className="mono">{r ? (r.digit === null ? '–' : pct(r.conf)) : ''}</em></span>
             <span role="cell" className="spd"><i style={{ width: `${((timing[id]?.us ?? 0) / maxUs) * 100}%` }} /><em className="mono">{timing[id] ? fmtUs(timing[id]!.us) : '…'}</em></span>
           </button>
         ))}
@@ -487,8 +522,9 @@ function Status() {
 function useCurrentPlan() {
   const { spec, fit } = useStore(useShallow((s) => ({ spec: s.spec, fit: s.fit })))
   const [plan, setPlan] = useState<engine.DownloadPlan | null>(null)
+  const live = useStore((s) => s.plan)   // the run keeps this one current (cached after the download), so the button stops offering a download that is done
   useEffect(() => { setPlan(null); if (spec) useZoo.getState().planFor(spec, fit).then(setPlan, () => {}) }, [spec, fit])
-  return plan
+  return live && spec && live.repo === (spec.onnx?.repo ?? spec.repo) ? live : plan
 }
 
 const isBrowserFit = (fit: engine.Fit | null) => !!fit && (fit.where === 'webgpu' || fit.where === 'wasm')

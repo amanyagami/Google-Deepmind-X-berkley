@@ -188,20 +188,38 @@ export const FLOPS: Record<string, string> = {
 const NUM = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
 
 /** Which digit a network reads, and how sure it is. The VLM writes a caption: its digit is the number word in it. */
-export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number | null; conf: number; caption?: string; probs?: number[] } {
+/** First maximum wins on a tie: the one rule every view uses. */
+export const argmax = (a: ArrayLike<number>): number => { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[k]) k = i; return k }
+/** A short fingerprint of the picture (and the VLM's typed words), so two views can prove they looked at the same input. */
+export function inputHash(img: ArrayLike<number>, extra = ''): string {
+  let h = 2166136261
+  for (let i = 0; i < img.length; i++) h = Math.imul(h ^ Math.round(Math.max(0, Math.min(1, img[i])) * 255), 16777619)
+  for (let i = 0; i < extra.length; i++) h = Math.imul(h ^ extra.charCodeAt(i), 16777619)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+/** One forward pass of a tiny net. The result is the single source for its table row and its 3D scene. */
+export function runNet(net: NetId, p: Pack, img: number[], words = ''): any {
+  if (net === 'vlm') return vlm(p.weights, img, p.vocab!, undefined, vlmWords(words, p.vocab!).ids)
+  return ({ mlp, cnn, rnn, vit } as const)[net](p.weights, img)
+}
+export interface Read { digit: number | null; conf: number; caption?: string; probs?: number[] }
+/** What a finished forward pass says. For the four classifiers: the most likely digit and its softmax probability.
+ *  For the VLM: the digit named by a word the model wrote itself (not the words the user typed), with the chance it gave that word; '–' (null) when its caption names no digit. */
+export function readFrom(net: NetId, p: Pack, o: any): Read {
   if (net === 'vlm') {
-    const o = vlm(p.weights, img, p.vocab!)
-    const words = o.ids.slice(1).map((i: number) => p.vocab![i])
-    for (let k = 0; k < o.steps.length; k++) {
+    const words = o.ids.slice(1).map((i: number) => p.vocab![i]).filter((w: string) => w !== '<eos>')
+    for (let k = o.given ?? 0; k < o.steps.length; k++) {
       const d = NUM.indexOf(p.vocab![o.steps[k].chosen])
-      if (d >= 0) return { digit: d, conf: o.steps[k].probs[o.steps[k].chosen], caption: words.filter((w) => w !== '<eos>').join(' ') }
+      if (d >= 0) return { digit: d, conf: o.steps[k].probs[o.steps[k].chosen], caption: words.join(' ') }
     }
     return { digit: null, conf: 0, caption: words.join(' ') }
   }
-  const fn = { mlp, cnn, rnn, vit }[net]
-  const probs: number[] = fn(p.weights, img).probs
-  const d = probs.indexOf(Math.max(...probs))
+  const probs: number[] = o.probs
+  const d = argmax(probs)
   return { digit: d, conf: probs[d], probs }
+}
+export function readDigit(net: NetId, p: Pack, img: number[]): Read {
+  return readFrom(net, p, runNet(net, p, img))
 }
 
 export interface Speed { us: number; n: number }

@@ -9,7 +9,7 @@ import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { create } from 'zustand'
 import { createGuide, type Guide } from '../ui/camera'
-import { reach, useZoo, type Inspect, type NetId } from './zooStore'
+import { reach, useZoo, type DigitNet, type Inspect, type NetId } from './zooStore'
 import { useStore } from '../store'
 import { InspectTip, isInspectOn, useInspectOn } from '../ui/charts'
 
@@ -744,7 +744,7 @@ function Bars({ origin, stage, along = 'z', labels }: { origin: [number, number,
       const off = (i - 4.5) * 0.62
       d.position.set(origin[0] + (along === 'x' ? off : 0), origin[1] + h / 2, origin[2] + (along === 'z' ? off : 0)); d.scale.set(0.42, h, 0.42); d.updateMatrix(); m.current.setMatrixAt(i, d.matrix)
       if (TH.light) c.copy(i === best && r > 0.5 ? L_AMBER : L_INK).multiplyScalar(dm < 1 ? 0.75 : 1); else c.copy(i === best && r > 0.5 ? AMBER : INK).multiplyScalar((i === best && r > 0.5 ? 2.4 : 1.6) * dm); m.current.setColorAt(i, c)
-      const el = tags.current[i]; if (el) { setText(el, `${s.out?.labels?.[i] ?? labels?.[i] ?? i}${r > 0.6 ? ` · ${(pr[i] * 100).toFixed(0)}%` : ''}`); el.dataset.prio = i === best ? '2' : pr[i] > 0.05 ? '1' : '0.4'; el.style.color = i === best || pr[i] > 0.05 ? '' : 'var(--muted,#aab4d2)' }
+      const el = tags.current[i]; if (el) { setText(el, `${s.out?.labels?.[i] ?? labels?.[i] ?? i}${r > 0.6 ? ` · ${(pr[i] * 100).toFixed(0)}%` : ''}`); el.dataset.prio = i === best ? '2' : pr[i] > 0.05 ? '1' : '0.4'; el.dataset.winner = i === best && r > 0.5 ? '1' : ''; el.style.color = i === best || pr[i] > 0.05 ? '' : 'var(--muted,#aab4d2)' }
     }
     m.current.instanceMatrix.needsUpdate = true; if (m.current.instanceColor) m.current.instanceColor.needsUpdate = true
   })
@@ -757,6 +757,34 @@ function Bars({ origin, stage, along = 'z', labels }: { origin: [number, number,
       })}
     </group>
   )
+}
+
+/** The scene's verdict: what this net reads from the picture, drawn from the same stored forward pass as the table (never a second computation). */
+function Verdict({ pos }: { pos: [number, number, number] }) {
+  const me = useMe(), on = useActive()
+  const el = useRef<HTMLDivElement | null>(null)
+  useFrame(() => {
+    if (Z().net !== me || !el.current) return
+    const r = Z().reads[me as DigitNet]; if (!r) return
+    const e = el.current
+    setText(e, r.digit === null ? 'reads – (its words name no digit)' : `reads ${r.digit} · ${Math.round(r.conf * 100)}%`)
+    e.dataset.sceneDigit = String(r.digit ?? '-'); e.dataset.sceneConf = String(Math.round(r.conf * 100)); e.dataset.sceneHash = r.hash
+  })
+  return <Word pos={pos} hidden={!on} prio={3} elRef={(x) => { el.current = x; if (x) { x.dataset.sceneVerdict = '1'; x.dataset.sceneNet = me } }} />
+}
+
+/** The real small vision model's live answer on the same picture, beside the tiny net's (see runReal in the store). */
+function RealVerdict({ pos }: { pos: [number, number, number] }) {
+  const me = useMe(), on = useActive()
+  const el = useRef<HTMLDivElement | null>(null)
+  useFrame(() => {
+    if (Z().net !== me || !el.current) return
+    const r = Z().real, e = el.current
+    const top = r.items[0]
+    setText(e, r.state === 'ok' && top ? `real ViT: ${top.token.split(',')[0]} · ${Math.round(top.p * 100)}%` : r.state === 'running' ? `real ViT: ${r.dl != null ? `loading ${Math.round(r.dl * 100)}%` : 'looking…'}` : r.state === 'err' || r.state === 'off' ? 'real ViT: unavailable' : '')
+    e.dataset.realState = r.state; e.dataset.realTop = top?.token ?? ''
+  })
+  return <Word pos={pos} hidden={!on} prio={3} elRef={(x) => { el.current = x; if (x) x.dataset.realVerdict = '1' }} />
 }
 
 /** A 3x3 window frame that slides over a grid while a convolution stage plays. */
@@ -813,6 +841,7 @@ function MlpScene() {
       <Tag pos={[2.4, 0.2, 1.9]} name="Hidden layer 2" grp="h2" sub="16 neurons · ReLU" />
       <Links stage="out" compute={() => top(w()['fc3.weight'], Z().out.h2, (i) => vec(P.h2, i), (j) => V(5.6, 0.1, (j - 4.5) * 0.62), 4)} />
       <Bars origin={[5.6, 0, 0]} stage="out" />
+      <Verdict pos={[5.6, 4.1, 0]} />
       <Tag pos={[5.6, 0.2, 3.6]} name="Scores" grp="scores" sub="softmax over 10 digits" />
     </group>
   )
@@ -838,6 +867,7 @@ function CnnScene() {
       <Tiles get={() => Z().out?.pool2} count={64} place={p2} size={0.18} stage="pool2" maxAbs={maxOf(() => Z().out?.pool2)} layer="pool2" kind="cell" lift={0.2} />
       <Tag pos={[3.8, 0.2, -6.6]} name="Max pool 2" grp="pool2" sub="largest of each 2×2 · 16 maps, 4×4 → 2×2" />
       <Bars origin={[6.4, 0, 0]} stage="out" />
+      <Verdict pos={[6.4, 4.1, 0]} />
       <Tag pos={[6.4, 0.2, 3.6]} name="Scores" grp="scores" sub="one dense layer on 64 numbers" />
     </group>
   )
@@ -872,6 +902,7 @@ function RnnScene() {
       ))}
       <Tag pos={[1.5, 1.6, -3.4]} name="Hidden state (memory)" grp="hidden" sub="24 numbers, carried from step to step" />
       <Bars origin={[8.2, 0, 0]} stage="out" />
+      <Verdict pos={[8.2, 4.1, 0]} />
     </group>
   )
 }
@@ -898,7 +929,9 @@ function VitScene() {
       <Tiles get={() => Z().out?.out.flat()} count={17 * 16} place={tokCell(3.4)} size={0.1} stage="mlp" maxAbs={maxOf(() => Z().out?.out.flat())} layer="out" kind="token" lift={0.35} />
       <Tag pos={[3.4, 0.2, 6.9]} name="After the block" grp="after" sub="attention + MLP, added to each token" />
       <Bars origin={[7.0, 0, 0]} stage="out" />
+      <Verdict pos={[7.0, 4.1, 0]} />
       <Tag pos={[7.0, 0.2, 3.6]} name="Scores" grp="scores" sub="read from the summary token" />
+      <RealVerdict pos={[5.0, 4.1, -2.4]} />
     </group>
   )
 }
@@ -956,6 +989,7 @@ function VlmScene() {
         }
         return res
       }} />
+      <Verdict pos={[3.8, 1.7, 3.2]} />
       <Tag pos={[3.8, 0.2, 4.3]} grp="words" name="Language model" sub={given ? `your ${given} word${given > 1 ? 's' : ''} in blue, then it writes the rest` : `writes one word at a time · ${nWords ? nWords - 1 : 0} words`} />
     </group>
   )
