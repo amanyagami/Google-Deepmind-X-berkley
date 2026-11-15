@@ -102,7 +102,7 @@ export function makeEnv(browser, base, widths, query) {
       await ctx.addInitScript(`window.__errs=[];addEventListener('error',e=>__errs.push('error: '+e.message));addEventListener('unhandledrejection',e=>__errs.push('rejection: '+(e.reason&&e.reason.message||e.reason)))`)
       await ctx.addInitScript(`(${helpers})()`)
       if (o.profile) await ctx.addInitScript(mockScript(o.profile))
-      ctx.on('request', (r) => P.reqs.push({ url: r.url(), t: Date.now(), type: r.resourceType(), post: r.postData()?.slice(0, 2000) ?? '' }))
+      ctx.on('request', (r) => P.reqs.push({ method: r.method(), url: r.url(), t: Date.now(), type: r.resourceType(), post: r.postData()?.slice(0, 2000) ?? '' }))
       ctx.on('requestfailed', (r) => (P.failed ??= []).push(r.url()))
       if (!o.fresh) await ctx.addInitScript(`try{if(localStorage.getItem('ns.name')===null)localStorage.setItem('ns.name','Test')}catch{}`)
       if (o.theme) await ctx.addInitScript(`try{localStorage.setItem('ns.theme','${o.theme}')}catch{};const s=()=>document.documentElement&&(document.documentElement.dataset.theme='${o.theme}');s();addEventListener('DOMContentLoaded',s)`)

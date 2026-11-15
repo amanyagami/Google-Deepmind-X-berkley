@@ -381,7 +381,7 @@ export const checks = [
       return { hero: true, first, rows: rows.length, before, after: row.getAttribute('aria-expanded') ?? row.dataset.open, depth: Math.max(...[...row.querySelectorAll('[data-card],.card')].map((c) => { let d = 0; for (let e = c.parentElement; e && e !== row; e = e.parentElement) if (e.matches('[data-card],.card')) d++; return d + 1 }), 1) } })
     return ok(strip && r.hero && r.first && r.rows === 5 && r.before !== r.after && r.depth <= 2, `strip visible ${strip}; hero first ${r.first}; ${r.rows} pillar rows; expand ${r.before}->${r.after}; nesting ${r.depth}`) } },
 
-  { id: 'A31', title: 'name card first on a fresh profile, once; name in hero and share; no request carries it', needs: ['name'], run: async (env) => {
+  { id: 'A31', title: 'name card first on a fresh profile, once; name in hero and share; no request carries it (only the leaderboard POST after Test all, never with opt-out)', needs: ['name'], run: async (env) => {
     const NAME = 'Zelda Quux', p = await env.open({ fresh: true }); await p.goto('', 1000)
     const card = await p.page.evaluate(() => { const c = document.querySelector('[data-namecard]'); if (!c || !__h.vis(c)) return false; const r = c.getBoundingClientRect(); return r.top < innerHeight / 2 })
     await p.page.locator('[data-namecard] input').first().fill(NAME); await p.page.keyboard.press('Enter'); await p.page.waitForTimeout(600)
@@ -390,9 +390,18 @@ export const checks = [
     // the hero and Share appear once every test is done (C11/C1): run Test all, then open the drawer for the hero
     await p.page.locator('[data-testall]').first().click({ timeout: 15000 }).catch(() => {}); await p.page.waitForFunction(() => document.querySelector('b[data-score]') && !document.querySelector('[data-testall][disabled]'), null, { timeout: 240000, polling: 500 }).catch(() => {}); await openFor(p.page, '[data-hero]')
     const hero = await p.page.evaluate((n) => (document.querySelector('[data-hero]')?.innerText ?? '').toLowerCase().includes(n.toLowerCase()), NAME)
-    const leaks = p.reqs.filter((r) => (decodeURIComponent(r.url) + r.post).includes('Zelda') || (r.url + r.post).includes('Quux')).length
+    // the one legitimate carrier: the leaderboard submit (same-origin POST /api/scores) after a completed Test all; nothing else, ever
+    const carries = (r) => (decodeURIComponent(r.url) + r.post).toLowerCase().includes('zelda') || (r.url + r.post).toLowerCase().includes('quux')
+    const origin = new URL(env.base).origin, tested = await p.page.evaluate(() => !!document.querySelector('b[data-score]'))
+    const allowed = (r) => tested && r.method === 'POST' && r.url.startsWith(origin + '/api/scores') && !/[?#]/.test(r.url)
+    const leaks = p.reqs.filter((r) => carries(r) && !allowed(r)).length
+    // opt-out: with ns.board='off' zero requests carry the name, even after Test all
+    const q = await env.open({ fresh: true }); await q.page.addInitScript(() => { try { localStorage.setItem('ns.board', 'off') } catch {} })
+    await q.goto('', 1000); await q.page.locator('[data-namecard] input').first().fill(NAME); await q.page.keyboard.press('Enter'); await q.page.waitForTimeout(600)
+    await q.page.locator('[data-testall]').first().click({ timeout: 15000 }).catch(() => {}); await q.page.waitForFunction(() => document.querySelector('b[data-score]') && !document.querySelector('[data-testall][disabled]'), null, { timeout: 240000, polling: 500 }).catch(() => {}); await q.page.waitForTimeout(2500)
+    const optOut = q.reqs.filter(carries).length
     let png = 'share not checked'; const sb = p.page.locator('[data-share]:not([disabled])').first(); if (await sb.count()) { const [d] = await Promise.all([p.page.waitForEvent('download', { timeout: 10000 }).catch(() => null), sb.click()]); if (d) { const f = path.join(OUT, 'share-name.png'); await d.saveAs(f); png = 'PNG text is not machine-read (pixel text); file saved for review' } }
-    return ok(card && gone && !again && hero && !leaks, `name card first ${card}; hides after answer ${gone}; back after reload ${again}; name in hero ${hero}; ${leaks} requests carry it; ${png}`) } },
+    return ok(card && gone && !again && hero && !leaks && !optOut, `name card first ${card}; hides after answer ${gone}; back after reload ${again}; name in hero ${hero}; ${leaks} disallowed requests carry it (a same-origin POST /api/scores after Test all is allowed); ${optOut} carry it with the leaderboard opt-out on; ${png}`) } },
 
   { id: 'A32', title: 'draw pad: a stroked 3 gives a result <= 300 ms that says 3; pad >= 280 px at 390; Clear/Undo; touch', run: async (env) => {
     const out = []; let good = true
@@ -454,8 +463,10 @@ export const checks = [
       const pkg = 8 + rnd() * 60, f = 0.5 + rnd(), k = i % 4 === 3 ? 1.4 : i % 4 === 2 ? 1.05 : f   // every 4th sample: grossly over; every 4th+2: mildly over
       const core = Array.from({ length: 8 }, () => (pkg * k) / 8)
       await pg.evaluate((x) => { const tel = Array.from({ length: 4 }, (_, j) => ({ t: x.i + j * 0.1, cpu: [], power: { pkg_w: x.pkg, core_w: x.core } })); window.__hw.setState({ telemetry: tel }) }, { i, pkg, core })
-      await pg.waitForTimeout(420)   // the card re-renders at most 4 times a second, plus the store's own 2 Hz telemetry
-      check(await read(), `live #${i} (cores ${(k * 100).toFixed(0)}% of pkg)`, k > 1.15 ? 'unavailable' : k > 1 ? 'scaled' : 'ok')
+      // the card re-renders at most 4 times a second and a busy machine can lag: wait until it shows THIS sample's package, then judge it
+      const want = pkg.toFixed(2); let r = null
+      for (const t0 = Date.now(); Date.now() - t0 < 4000;) { await pg.waitForTimeout(150); r = await read(); if (r && r.pkg === want) break }
+      check(r, `live #${i} (cores ${(k * 100).toFixed(0)}% of pkg)`, k > 1.15 ? 'unavailable' : k > 1 ? 'scaled' : 'ok')
     }
     return ok(!bad.length, `${seen.ok} ok, ${seen.scaled} scaled, ${seen.unavailable} unavailable; ${bad.length} violations${bad[0] ? ' e.g. ' + bad.slice(0, 2).join('; ') : ''}`) } },
   { id: 'A45', title: 'browser mode: at least 4 machine labels show live numbers, and at least 3 of them change within 3.5 s, with no click and no test', run: async (env) => {
