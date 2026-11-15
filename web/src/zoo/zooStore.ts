@@ -4,7 +4,7 @@ import * as api from '../api'
 import type { DownloadPlan, Fit, ModelSpec, Task, TaskInput } from '../api'
 import type { InputCaps } from './nets'
 import { useHW } from '../hw/hwStore'
-import { accuracyAt, applyFx, cnn, FX0, mlp, rnn, SWEEP_LEVELS, timeNet, vit, vlm, type Fx, type Pack, type Speed, type Sweep } from './nets'
+import { cnn, mlp, rnn, timeNet, vit, vlm, type Pack, type Speed } from './nets'
 
 /** 'llm' is the real model loaded at the top of the page, run on the shared prompt; the others are the five tiny
  *  digit networks, all reading the same 8x8 image. */
@@ -68,10 +68,7 @@ interface Z {
   base: number[]
   img: number[]
   label: number | null
-  fx: Fx
   timing: Partial<Record<DigitNet, Speed>>
-  sweep: Sweep | null
-  sweepBusy: string | null
   out: any
   err: string | null
   t: number
@@ -83,9 +80,7 @@ interface Z {
   init: () => Promise<void>
   setNet: (n: NetId) => Promise<void>
   setImg: (img: number[], label?: number | null) => void
-  setFx: (f: Partial<Fx>) => void
   loadAll: () => Promise<void>
-  runSweep: () => Promise<void>
   recompute: () => void
   setT: (t: number) => void
   play: () => void
@@ -161,7 +156,7 @@ export const useZoo = create<Z>((set, get) => ({
     if (p && p.consent === 'size') await useStore.getState().confirmDownload()
   },
 
-  net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, fx: FX0, timing: {}, sweep: null, sweepBusy: null, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
+  net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, timing: {}, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
 
   async init() {
     if (get().digits) return
@@ -185,8 +180,7 @@ export const useZoo = create<Z>((set, get) => ({
     get().play()
   },
 
-  setImg(base, label = null) { set({ base, img: applyFx(base, get().fx), label }); get().recompute() },
-  setFx(f) { const fx = { ...get().fx, ...f }; set({ fx, img: applyFx(get().base, fx) }); get().recompute() },
+  setImg(base, label = null) { set({ base, img: base, label }); get().recompute() },
 
   /** All five networks, so they can be compared side by side; then time each one on this device. */
   async loadAll() {
@@ -199,25 +193,6 @@ export const useZoo = create<Z>((set, get) => ({
       await new Promise((r) => setTimeout(r, 0))
       set((s) => ({ timing: { ...s.timing, [n.id]: timeNet(n.id, get().packs[n.id]!, d.images) } }))
     }
-  },
-
-  /** Accuracy of every network on the test digits as noise rises. Runs in small slices so the page stays smooth. */
-  async runSweep() {
-    const d = get().digits
-    if (!d || get().sweepBusy) return
-    await get().loadAll()
-    const acc: Sweep['acc'] = {}
-    set({ sweep: { levels: SWEEP_LEVELS, acc, n: d.images.length } })
-    for (const n of NETS) {
-      acc[n.id] = []
-      for (const lv of SWEEP_LEVELS) {
-        set({ sweepBusy: `${n.short} at ${Math.round(lv * 100)}% noise` })
-        await new Promise((r) => setTimeout(r, 0))
-        acc[n.id]!.push(accuracyAt(n.id, get().packs[n.id]!, d.images, d.labels, lv))
-        set({ sweep: { levels: SWEEP_LEVELS, acc: { ...acc }, n: d.images.length } })
-      }
-    }
-    set({ sweepBusy: null })
   },
 
   recompute() {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { ZooScene } from './ZooScene'
-import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, isNeutral, readCheck, readDigit, smallerSuggestion, startLabel } from './nets'
+import { FLOPS, LAYER_LEGEND, VERDICT_WORD, checkInput, crumbs, fmtBytes, fmtEta, groupByTask, readCheck, readDigit, smallerSuggestion, startLabel } from './nets'
 import { locateZ, NETS, STAGES, totalZ, useZoo, type CatRow, type DigitNet, type NetId } from './zooStore'
 import * as engine from '../api'
 import type { Task, TaskInput } from '../api'
@@ -20,12 +20,11 @@ const paintPx = (c: CanvasRenderingContext2D, img: number[], s: number) => {
 function DrawPad() {
   const base = useZoo((s) => s.base)
   const img = useZoo((s) => s.img)
-  const stressed = useZoo((s) => !isNeutral(s.fx))
   const ref = useRef<HTMLCanvasElement>(null)
   const seen = useRef<HTMLCanvasElement>(null)
   const drawing = useRef(false)
   useEffect(() => { paintPx(ref.current!.getContext('2d')!, base, 24) }, [base])
-  useEffect(() => { if (seen.current) paintPx(seen.current.getContext('2d')!, img, 12) }, [img, stressed])
+  useEffect(() => { if (seen.current) paintPx(seen.current.getContext('2d')!, img, 12) }, [img])
   const paint = (e: React.PointerEvent) => {
     const r = ref.current!.getBoundingClientRect()
     const x = ((e.clientX - r.left) / r.width) * 8, y = ((e.clientY - r.top) / r.height) * 8
@@ -43,7 +42,6 @@ function DrawPad() {
         onPointerMove={(e) => { if (drawing.current) paint(e) }} onPointerUp={() => { drawing.current = false }} />
       <div className="col">
         <p className="small">Draw a digit<Hint>Every network recomputes as you draw. Pick a test digit below, or draw your own with the mouse.</Hint></p>
-        {stressed && <div className="seen"><canvas ref={seen} width={96} height={96} aria-label="What the networks see after the stress test" /><span className="small">they see this</span></div>}
         <button className="btn2 sm" onClick={() => useZoo.getState().setImg(new Array(64).fill(0), null)}>Clear</button>
       </div>
     </div>
@@ -236,91 +234,6 @@ export function CompareCard() {
           </button>
         ))}
       </div>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------------------- stress test */
-export function StressCard() {
-  const fx = useZoo((s) => s.fx)
-  const set = useZoo((s) => s.setFx)
-  const off = isNeutral(fx)
-  return (
-    <div className="ccard">
-      <h4>Stress test <small>{off ? 'the clean image' : 'every network sees the changed image'}</small><Hint>A CNN's filters slide, so it often survives a shift that breaks the MLP, which ties each weight to one fixed pixel.</Hint></h4>
-      <div className="fxgrid">
-        <label>Noise <input type="range" min={0} max={0.9} step={0.05} value={fx.noise} onChange={(e) => set({ noise: +e.target.value })} /><em className="mono">{Math.round(fx.noise * 100)}%</em></label>
-        <label>Shift → <input type="range" min={-2} max={2} step={1} value={fx.dx} onChange={(e) => set({ dx: +e.target.value })} /><em className="mono">{fx.dx > 0 ? '+' : ''}{fx.dx} px</em></label>
-        <label>Shift ↓ <input type="range" min={-2} max={2} step={1} value={fx.dy} onChange={(e) => set({ dy: +e.target.value })} /><em className="mono">{fx.dy > 0 ? '+' : ''}{fx.dy} px</em></label>
-        <label>Stroke <input type="range" min={-1} max={1} step={1} value={fx.thick} onChange={(e) => set({ thick: +e.target.value })} /><em className="mono">{fx.thick < 0 ? 'thinner' : fx.thick > 0 ? 'thicker' : 'as drawn'}</em></label>
-      </div>
-      <div className="row">
-        <button className="btn2 sm" disabled={!fx.noise} onClick={() => set({ seed: fx.seed + 1 })}>New noise</button>
-        <button className="btn2 sm" disabled={off} onClick={() => set({ noise: 0, dx: 0, dy: 0, thick: 0 })}>Reset</button>
-      </div>
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------------- robustness chart */
-export function RobustCard() {
-  const { sweep, busy, run } = useZoo(useShallow((s) => ({ sweep: s.sweep, busy: s.sweepBusy, run: s.runSweep })))
-  const [hx, setHx] = useState<number | null>(null)
-  const [table, setTable] = useState(false)
-  const W = 320, H = 170, L = 34, R = 18, T = 10, B = 26
-  const lv = sweep?.levels ?? []
-  const x = (i: number) => L + (i / Math.max(1, lv.length - 1)) * (W - L - R)
-  const y = (a: number) => T + (1 - a) * (H - T - B)
-  const done = NETS.filter((n) => (sweep?.acc[n.id]?.length ?? 0) > 0)
-  return (
-    <div className="ccard">
-      <h4>Which network is most robust? <small>accuracy on {sweep?.n ?? 48} test digits as noise rises</small><Hint>Runs all five networks on every test digit at six noise levels (three noise draws each), in this page. The VLM counts as right when the number word in its caption is the right digit.</Hint></h4>
-      {!sweep ? (
-        <>
-          <button className="btn2 sm" onClick={() => run()}>Run the robustness test</button>
-        </>
-      ) : (
-        <>
-          <div className="legend">{NETS.map((n) => <span key={n.id}><i style={{ background: NET_COLOR[n.id] }} />{NAME[n.id]}</span>)}</div>
-          <div className="rchart">
-            <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Accuracy of each network as noise rises"
-              onPointerMove={(e) => { const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect(); const px = ((e.clientX - r.left) / r.width) * W; setHx(Math.max(0, Math.min(lv.length - 1, Math.round(((px - L) / (W - L - R)) * (lv.length - 1))))) }}
-              onPointerLeave={() => setHx(null)}>
-              {[0, 0.25, 0.5, 0.75, 1].map((a) => <g key={a}><line x1={L} x2={W - R} y1={y(a)} y2={y(a)} className="grid" /><text x={L - 6} y={y(a) + 3} textAnchor="end">{a * 100}%</text></g>)}
-              {lv.map((l, i) => <text key={i} x={x(i)} y={H - 8} textAnchor="middle">{Math.round(l * 100)}%</text>)}
-              {hx !== null && <line x1={x(hx)} x2={x(hx)} y1={T} y2={H - B} className="cross" />}
-              {done.map((n) => {
-                const a = sweep.acc[n.id]!
-                return (
-                  <g key={n.id}>
-                    <path d={a.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ')} fill="none" stroke={NET_COLOR[n.id]} strokeWidth="2" strokeLinejoin="round" />
-                    {a.map((v, i) => <circle key={i} cx={x(i)} cy={y(v)} r={hx === i ? 5 : 4} fill={NET_COLOR[n.id]} stroke="var(--surface)" strokeWidth="2" />)}
-                  </g>
-                )
-              })}
-              <text x={W - 2} y={H - 8} textAnchor="end" className="axl">noise →</text>
-            </svg>
-            {hx !== null && done.length > 0 && (
-              <div className="rtip" style={{ left: `${(x(hx) / W) * 100}%` }}>
-                <b>{Math.round(lv[hx] * 100)}% noise</b>
-                {[...done].sort((a, b) => (sweep.acc[b.id]![hx] ?? 0) - (sweep.acc[a.id]![hx] ?? 0)).map((n) => sweep.acc[n.id]![hx] !== undefined && (
-                  <span key={n.id}><i style={{ background: NET_COLOR[n.id] }} />{NAME[n.id]}<em className="mono">{Math.round(sweep.acc[n.id]![hx] * 100)}%</em></span>
-                ))}
-              </div>
-            )}
-          </div>
-          {busy ? <p className="hint small busy"><span className="pulse" /> testing {busy}…</p> : (
-            <div className="row">
-              <button className="btn2 sm" onClick={() => setTable(!table)}>{table ? 'Hide table' : 'Show as table'}</button>
-              <button className="btn2 sm" onClick={() => run()}>Run again</button>
-            </div>
-          )}
-          {table && (
-            <table className="optab mono"><thead><tr><th>noise</th>{done.map((n) => <th key={n.id}>{n.short}</th>)}</tr></thead>
-              <tbody>{lv.map((l, i) => <tr key={i}><td>{Math.round(l * 100)}%</td>{done.map((n) => <td key={n.id}>{sweep.acc[n.id]![i] !== undefined ? `${Math.round(sweep.acc[n.id]![i] * 100)}%` : ''}</td>)}</tr>)}</tbody></table>
-          )}
-        </>
-      )}
     </div>
   )
 }
@@ -785,10 +698,8 @@ export function ZooView() {
             <DrawPad />
             <Gallery />
             <CompareCard />
-            <StressCard />
             <Output />
             <CalcCard />
-            <RobustCard />
             <p className="small">About these networks<Hint>All five learned from the same 1,500 digits. Compare how each one solves it.</Hint></p>
           </div>
         </div>}

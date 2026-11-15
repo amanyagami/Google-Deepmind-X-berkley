@@ -171,36 +171,6 @@ export const FLOPS: Record<string, string> = {
   vlm: 'vision 16 tokens ≈ 33 k · text ≈ 26 tokens × 3.5 k per word written',
 }
 
-/* ------------------------------------------------------------------------------ stress tests
- * Change the 8x8 image the way real input goes wrong, then see which networks still read it. */
-
-export interface Fx { noise: number; dx: number; dy: number; thick: number; seed: number }
-export const FX0: Fx = { noise: 0, dx: 0, dy: 0, thick: 0, seed: 1 }
-export const isNeutral = (f: Fx) => !f.noise && !f.dx && !f.dy && !f.thick
-
-/** Small deterministic random generator, so the same seed always gives the same noise. */
-function rng(seed: number) {
-  let s = (seed * 2654435761) >>> 0 || 1
-  return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296 }
-}
-
-/** Thicker or thinner strokes, then a shift by whole pixels, then noise blended in (0 = clean, 1 = pure noise). */
-export function applyFx(img: number[], f: Fx): number[] {
-  let a = img.slice(0, 64)
-  const at = (x: number[], c: number, r: number) => (c < 0 || r < 0 || c > 7 || r > 7 ? 0 : x[r * 8 + c])
-  if (f.thick) {
-    const src = a
-    a = src.map((v, i) => {
-      const c = i % 8, r = (i / 8) | 0
-      const nb = [at(src, c - 1, r), at(src, c + 1, r), at(src, c, r - 1), at(src, c, r + 1)]
-      return f.thick > 0 ? Math.max(v, ...nb.map((n) => n * 0.8)) : Math.min(v, nb.reduce((s, n) => s + n, 0) / 4)
-    })
-  }
-  if (f.dx || f.dy) { const src = a; a = src.map((_, i) => at(src, (i % 8) - f.dx, ((i / 8) | 0) - f.dy)) }
-  if (f.noise) { const r = rng(f.seed); a = a.map((v) => Math.min(1, Math.max(0, (1 - f.noise) * v + f.noise * r()))) }
-  return a
-}
-
 const NUM = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine']
 
 /** Which digit a network reads, and how sure it is. The VLM writes a caption: its digit is the number word in it. */
@@ -220,19 +190,7 @@ export function readDigit(net: NetId, p: Pack, img: number[]): { digit: number |
   return { digit: d, conf: probs[d] }
 }
 
-export const SWEEP_LEVELS = [0, 0.15, 0.3, 0.45, 0.6, 0.75]
-export interface Sweep { levels: number[]; acc: Partial<Record<NetId, number[]>>; n: number }
 export interface Speed { us: number; n: number }
-
-/** Accuracy of one network on the test digits at each noise level (3 noise draws per image, so it is not one lucky seed). */
-export function accuracyAt(net: NetId, p: Pack, images: number[][], labels: number[], level: number): number {
-  let ok = 0, tot = 0
-  const draws = level ? 3 : 1
-  images.forEach((im, k) => {
-    for (let d = 0; d < draws; d++) { tot++; if (readDigit(net, p, applyFx(im, { ...FX0, noise: level, seed: 1000 * k + d + 7 })).digit === labels[k]) ok++ }
-  })
-  return ok / Math.max(1, tot)
-}
 
 /** Time per image on this device, in microseconds: the full forward pass (for the VLM, writing the whole caption). */
 export function timeNet(net: NetId, p: Pack, images: number[][]): Speed {
