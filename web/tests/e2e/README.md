@@ -66,8 +66,8 @@ Playwright cannot stream a stubbed response, so the update rate of A9 is only ga
 | --- | --- | --- | --- |
 | A1 | contrast in dark AND light (`localStorage ns.theme`, `data-theme` on `<html>`, emulated `prefers-color-scheme`); light runs only when `[data-theme-toggle]` exists | theme | S1 (tokens), all |
 | A8' | no click: first Hub model-file request <= 2 s after navigation, `[role=progressbar]` present (rate: A9b tier 3) | auto | S4 |
-| A9 | progress bar with aria values and a Cancel button while downloading, no start click | auto | S4, S6 |
-| A10' | service worker allowed; second load with `setOffline(true)`: page renders, zero model requests, zero failed app files | sw, auto | S4 (cache), S1 (`/sw.js`; needs a hashed build) |
+| A9 | tier 3, real Hub, no click: `[role=progressbar]` with aria values, Cancel button, >= 1 update/s (tier 2 cannot stream: the model runs in a worker, which `page.route` can only answer in one chunk) | auto | S4, S6 |
+| A10' | harness serves `dist` itself, service worker allowed, then STOPS the server and reloads: page renders from cache; model files already fetched are not fetched again; page renders, zero model requests, zero failed app files | sw, auto | S4 (cache), S1 (`/sw.js`; needs a hashed build) |
 | A13' | `.pair` stages side by side at 1480 and 1100 (gap 0..16 px), stacked at 390, no `[data-drawer]` open on a fresh profile, `[data-drawer-toggle]` open+close CLS <= 0.02 | pair | S1 |
 | A27 | cards `[data-explainer]` visible on load, hidden <= 7 s, `[data-explainer-bulb]` hover shows, leave hides <= 300 ms | bulb | S7 (mounts: S5, S6, S8) |
 | A28 | rAF p95 <= 33 ms and no long task > 100 ms during `__hw.getState().runAll()`; idle p95 <= 20 ms | runAll | S8 (S5/S2 for the action) |
@@ -91,3 +91,5 @@ Extra hooks: `window.__studio.getState().autoStart` (S4), `window.__hw.getState(
 - S9: refuse a foreign `Origin` for `POST /api/*` and `/ws/*` (A25).
 
 Unit tests: `npm test` (web) and `server\.venv\Scripts\python -m pytest server/tests`.
+
+Drawers: closed by default and opening one closes the other, so checks use `openFor(page, selector)` (click `[data-drawer-toggle]` until the selector is visible). A15 additionally requires the inspector to open its drawer by itself. Every profile except A31 sets `localStorage ns.name='Test'` so the name card does not cover the page. Do not reuse port 5110 (other lanes' previews take it): run `vite preview --port 5190 --strictPort`.
