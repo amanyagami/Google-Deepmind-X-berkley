@@ -87,9 +87,13 @@ export function LiveLine({ k }: { k: LiveKey }) {
 }
 
 /** The same live readout without its own wrapper, for use inside a label chip. */
-function LiveBare({ k }: { k: LiveKey }) {
+function LiveBare({ k, part = 'all' }: { k: LiveKey; part?: 'all' | 'head' | 'rest' }) {
   const t = useHWThrottled((s) => liveOf(k, s), 250)
-  return t ? <><span className="livedot" aria-hidden />{t}</> : null
+  if (!t) return null
+  // a label shows the first reading on the board; the rest opens beside it on hover, so the labels stay small
+  const i = typeof t === 'string' ? t.indexOf(' · ') : -1
+  if (part === 'rest') return i < 0 ? null : <>{(t as string).slice(i + 3)}</>
+  return <><span className="livedot" aria-hidden />{part === 'head' && i >= 0 ? (t as string).slice(0, i) : t}</>
 }
 
 const AMBER = new THREE.Color('#ffa94d')
@@ -203,7 +207,7 @@ function Tag({ pos, name, sub, show = true, live, group, cid, prio = 1 }: { pos:
   })
   const narrow = useNarrow()
   const vis = show && !(path.length > 0 && group && path[0] !== group) && (!narrow || path.length > 0 || NARROW_TAGS.has(name))
-  return <Chip pos={pos} name={name} sub={sub} live={live ? <LiveBare k={live} /> : undefined} score={score} hidden={!vis} selected={!!group && path[0] === group} hovered={hov} prio={prio}
+  return <Chip pos={pos} name={name} sub={sub} live={live ? <LiveBare k={live} part="head" /> : undefined} liveRest={live ? <LiveBare k={live} part="rest" /> : undefined} score={score} hidden={!vis} selected={!!group && path[0] === group} hovered={hov} prio={prio}
     onClick={group ? () => open(group) : undefined} onHover={group ? (h) => useHW.getState().setHover(h ? group : null) : undefined} />
 }
 

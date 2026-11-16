@@ -100,18 +100,24 @@ export function setText(el: HTMLElement | null, t: string) {
 const CSS = `
 .nsc{position:relative;pointer-events:auto;display:flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:0;padding:0;margin:0;font:inherit;color:var(--fg,#e8ecf8);cursor:pointer;touch-action:manipulation}
 .nsc.ns-static{pointer-events:none;min-height:0;min-width:0;cursor:default}
-.nsc .box{position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,rgba(124,92,255,.55),rgba(34,211,238,.4) 55%,rgba(255,122,182,.5)) border-box;box-shadow:0 6px 18px rgba(2,4,20,.28),0 0 0 1px rgba(255,255,255,.02) inset;border-radius:10px;padding:3px 10px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 12px/1.25 var(--body,system-ui,sans-serif);text-align:center}
-.nsc b{font-weight:600;font-size:12px;display:block}
+.nsc .box{position:relative;display:flex;flex-direction:row;align-items:baseline;justify-content:center;gap:7px;border:1px solid transparent;background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 80%,transparent),color-mix(in srgb,var(--bg,#060913) 80%,transparent)) padding-box,linear-gradient(135deg,color-mix(in srgb,#f6dfae 42%,transparent),color-mix(in srgb,#ffb454 16%,transparent) 55%,color-mix(in srgb,#ff7d5a 30%,transparent)) border-box;box-shadow:0 4px 14px rgba(2,4,20,.24);border-radius:7px;padding:2px 9px 3px;animation:ns-pop .35s var(--ease,cubic-bezier(.2,.8,.2,1)) both;transition:box-shadow .15s,transform .15s;white-space:nowrap;backdrop-filter:blur(4px);font:500 11.5px/1.3 var(--body,system-ui,sans-serif);text-align:center}
+.nsc b{font-weight:600;font-size:11.5px;display:inline-block}
 .nsc .g{margin-right:5px;color:var(--gl,inherit)}
 @keyframes ns-pop{from{opacity:0;transform:scale(.94) translateY(3px)}to{opacity:1;transform:none}}
 @keyframes ns-rise{from{opacity:0;transform:translateY(8px) scale(.992)}to{opacity:1;transform:none}}
 .nsstage{animation:ns-rise .6s var(--ease,cubic-bezier(.2,.8,.2,1)) both}
 @media (prefers-reduced-motion:reduce){.nsstage,.nsc .box{animation:none;transition:none}}
-.nsc .sub{display:none;color:var(--muted,#9aa5c7);font-size:12px}
-.nsc:hover .sub,.nsc:focus-visible .sub,.nsc.on .sub{display:block}
-.nsc .lv{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
+.nsc .sub{display:block;color:var(--muted,#9aa5c7);font-size:12px;font-weight:500}
+/* the rest of a label (more of the reading, the score, what the part is) opens below it on hover or keyboard focus.
+   It sits outside the label box, so the label keeps its size and the layout never moves it away from the pointer. */
+.nsc .more{position:absolute;top:calc(100% + 5px);left:50%;transform:translateX(-50%);display:none;flex-direction:column;align-items:center;gap:2px;padding:5px 10px 6px;border-radius:8px;background:color-mix(in srgb,var(--bg,#060913) 94%,transparent);border:1px solid color-mix(in srgb,var(--gold,#f6dfae) 30%,transparent);box-shadow:0 10px 26px rgba(2,4,20,.4);pointer-events:none;z-index:3}
+.nsc:is(:hover,:focus-visible) .more:has(> :not(:empty)){display:flex}
+.nsc .more > :empty{display:none}
+.nscw:has(.nsc:is(:hover,:focus-visible)){z-index:20!important}
+.nsc .lv{display:inline-block;font:600 11px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--ok,#4ed8a0)}
+.nsc .more .lv{display:block;color:var(--fg,#e8ecf8);font-weight:500}
 .nsc .lv .livedot{width:5px;height:5px;margin:0 5px 0 0;vertical-align:1px;box-shadow:none}
-.nsc .sc{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-style:normal;color:var(--pos,#ffa94d)}
+.nsc .sc{display:block;font:600 12px var(--mono,ui-monospace,monospace);font-variant-numeric:tabular-nums;font-style:normal;color:var(--pos,#ffa94d)}
 .nsc:hover .box,.nsc.on .box,.nsc.hov .box{box-shadow:0 8px 22px rgba(2,4,20,.34),0 0 16px color-mix(in srgb,var(--pos,#ffa94d) 45%,transparent);transform:translateY(-1px)}
 .nsc.on .box{background:linear-gradient(color-mix(in srgb,var(--bg,#060913) 84%,transparent),color-mix(in srgb,var(--bg,#060913) 84%,transparent)) padding-box,linear-gradient(135deg,#f6dfae,#ffb454 55%,#ff7d5a) border-box}
 .nsc:focus-visible{outline:none}
@@ -406,7 +412,7 @@ function rove(reg: Reg | null, from: HTMLElement, dir: 1 | -1) {
 
 export interface ChipProps {
   pos: [number, number, number]; name: string; glyph?: string; sub?: string
-  live?: ReactNode; liveRef?: (el: HTMLElement | null) => void; score?: string
+  live?: ReactNode; liveRest?: ReactNode; liveRef?: (el: HTMLElement | null) => void; score?: string
   hidden?: boolean; selected?: boolean; hovered?: boolean; prio?: number; label?: string; tint?: string
   onClick?: () => void; onHover?: (on: boolean) => void; onKey?: (e: React.KeyboardEvent) => void
 }
@@ -426,14 +432,13 @@ export function Chip(p: ChipProps) {
       <span className="box">
         <b>{p.glyph && <span className="g" aria-hidden style={p.tint ? ({ '--gl': p.tint } as any) : undefined}>{p.glyph}</span>}{p.name}</b>
         {(p.live || p.liveRef) && <i className="lv" ref={p.liveRef as any}>{p.live}</i>}
-        {p.score && <i className="sc">{p.score}</i>}
-        {p.sub && <span className="sub">{p.sub}</span>}
+        <span className="more">{p.liveRest && <i className="lv">{p.liveRest}</i>}{p.score && <i className="sc">{p.score}</i>}{p.sub && <span className="sub">{p.sub}</span>}</span>
       </span>
     </>
   )
   const style = { display: p.hidden ? 'none' : undefined } as const
   return (
-    <Html position={p.pos} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
+    <Html position={p.pos} center zIndexRange={[5, 0]} wrapperClass="nscw" style={{ pointerEvents: 'none' }}>
       {p.onClick
         ? <button type="button" ref={setRef} className={cls} style={style} data-prio={p.prio ?? 1} data-label data-block={p.name} aria-label={p.label ?? [p.name, p.score, p.sub].filter(Boolean).join(', ')} aria-pressed={p.selected ? true : undefined}
             onClick={(e) => { e.stopPropagation(); p.onClick?.() }} onKeyDown={(e) => { p.onKey?.(e); if (e.defaultPrevented) return; if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); rove(reg, e.currentTarget, 1) } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); rove(reg, e.currentTarget, -1) } }} onPointerEnter={() => p.onHover?.(true)} onPointerLeave={() => p.onHover?.(false)} onFocus={() => p.onHover?.(true)} onBlur={() => p.onHover?.(false)}>{inner}</button>
