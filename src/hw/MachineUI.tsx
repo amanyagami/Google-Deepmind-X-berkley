@@ -155,7 +155,8 @@ function ModelStep({ t0 }: { t0: number }) {
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t) }, [])
   const name = (repo.split('/').pop() || 'Model').replace(/-Instruct$/i, '')
   const pct = dl?.total ? Math.round((dl.done / dl.total) * 100) : null
-  const what = dl ? `getting it${pct != null ? ` ${pct} %` : ''}` : running ? 'thinking' : 'starting'
+  const eta = dl?.etaSeconds != null && dl.etaSeconds > 4 ? (dl.etaSeconds >= 90 ? ` · ${Math.round(dl.etaSeconds / 60)} min left` : ` · ${Math.round(dl.etaSeconds)} s left`) : ''
+  const what = dl ? `getting it${pct != null ? ` ${pct} %` : ''}${eta}` : running ? 'thinking' : 'starting'
   return <>
     <b className="t5-scount mono">AI</b>
     <span className="t5-srun mono"><span className="t5-slab">{name} · {what} · {Math.round((now - t0) / 1000)} s</span>
