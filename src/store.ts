@@ -297,7 +297,10 @@ export const useStore = create<S>((set, get) => {
       if (!loaded) return
     }
     // the real model computes the answer: never the recording, whatever mode the page was in
-    const fresh = await execute({ live: true, loaded })
+    // the machine view lights the graphics card while the model runs on it
+    window.dispatchEvent(new CustomEvent('ns-model-device', { detail: { busy: true, where } }))
+    let fresh: Awaited<ReturnType<typeof execute>>
+    try { fresh = await execute({ live: true, loaded }) } finally { window.dispatchEvent(new CustomEvent('ns-model-device', { detail: { busy: false, where } })) }
     if (fresh && get().repo === s.repo && get().mode === 'replay' && get().lastStats && !get().runErrCode) set({ mode: 'live' })
   }
 

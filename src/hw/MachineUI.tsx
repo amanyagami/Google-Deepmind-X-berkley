@@ -832,7 +832,8 @@ function DiveCard() {
     : comp === 'vrm' ? (pw ? `${pw.pkg.toFixed(1)} W` : '')
     : comp === 'ram' ? (bench.dram ? `${bench.dram.copy_gbps} GB/s` : res.ram ? `${num(res.ram.value)} GB/s` : '')
     : comp === 'ssd' ? (bench.disk ? `${bench.disk.gbps} GB/s` : res.storage ? `${num(res.storage.value)} ${res.storage.unit}` : '')
-    : comp === 'nic' ? (bench.net ? `${bench.net.mbps} Mbit/s` : res.net ? `${num(res.net.value)} ${res.net.unit}` : '') : ''
+    : comp === 'nic' ? (bench.net ? `${bench.net.mbps} Mbit/s` : res.net ? `${num(res.net.value)} ${res.net.unit}` : '')
+    : comp === 'gpu' ? (res.gpu && componentScore(res.gpu) != null ? `${num(res.gpu.value)} ${res.gpu.unit}` : '') : ''
   if (isCore) {
     title = `Inside core ${path[1].slice(4)}`
     body = <Micro />
@@ -901,6 +902,21 @@ function DiveCard() {
         <Hint label="About the network card">The network card was used once, to download the weights from the Hugging Face Hub. This run happens entirely on this PC.</Hint>
       </>
     )
+  } else if (comp === 'gpu') {
+    title = 'Inside the GPU'
+    const g = useHW.getState().caps?.gpu
+    body = (
+      <>
+        <ul className="facts">
+          <li><span>chip</span><b>{g?.adapter ?? 'not reported'}{g?.discrete ? ' · separate graphics card' : g ? ' · built into the processor' : ''}</b></li>
+          {g?.other && <li><span>also found</span><b>{g.other} (the page asks for the faster one)</b></li>}
+          <li><span>WebGPU</span><b>{!g ? '…' : g.available ? (g.software ? 'software only (slow)' : `yes${g.f16 ? ' · half-size numbers' : ''}`) : 'not in this browser'}</b></li>
+          <li><span>measured</span><b>{res.gpu && componentScore(res.gpu) != null ? `${num(res.gpu.value)} ${res.gpu.unit}` : 'not tested yet'}</b></li>
+          <li><span>the AI model runs on</span><b>{g?.available && !g.software ? 'this GPU (WebGPU)' : 'the processor (WebAssembly)'}</b></li>
+        </ul>
+        <Hint label="About the GPU">A GPU has thousands of small cores that work at once. A model's math is mostly big multiplications, which split well across them, so the model runs much faster here than on the processor.</Hint>
+      </>
+    )
   } else if (comp === 'keyboard' || comp === 'display') {
     title = comp === 'keyboard' ? 'The keyboard' : 'The screen'
     body = <p className="hint">{comp === 'keyboard' ? 'key press → code → letter' : 'token IDs → text → pixels'}<Hint>{comp === 'keyboard' ? 'Each key press closes a tiny switch. The keyboard sends a code to the computer, and the operating system turns it into a letter.' : 'The model returns token IDs. They become text, the browser draws it, and the graphics hardware lights the pixels.'}</Hint></p>
@@ -921,7 +937,7 @@ function DiveCard() {
 function Crumbs() {
   const path = useHW((s) => s.path)
   const dive = useHW((s) => s.dive)
-  const names: Record<string, string> = { cpu: 'CPU', ram: 'RAM', ssd: 'Storage', nic: 'Network', keyboard: 'Keyboard', display: 'Screen', vrm: 'Regulator' }
+  const names: Record<string, string> = { cpu: 'CPU', ram: 'RAM', ssd: 'Storage', nic: 'Network', keyboard: 'Keyboard', display: 'Screen', vrm: 'Regulator', gpu: 'GPU' }
   const nm = (p: string) => names[p] ?? (p.startsWith('core') ? `Core ${p.slice(4)}` : p)
   return (
     <nav className="crumbs" aria-label="Where you are in the machine">
@@ -971,7 +987,7 @@ function SpecsTab() {
       ['Mode', 'browser only: no companion found on this PC'],
       ['CPU', `${c.threads} logical processors (the CPU model, clocks and caches are hidden from web pages)`],
       ['RAM', r.total ? `${Math.round(r.total / 2 ** 30)} GB reported · ${r.total_note}` : r.total_note],
-      ...info.gpus.map((g: any): [string, string] => ['GPU', g.name]),
+      ...info.gpus.map((g: any): [string, string] => [g.other ? 'Second GPU' : 'GPU', `${g.name}${g.discrete ? ' · separate graphics card' : g.integrated ? ' · built into the processor' : ''}${g.other ? ' · not used (the page asks for the faster one)' : g.webgpu ? ' · used through WebGPU' : ' · WebGPU not available'}`]),
       ['Storage', `browser storage, quota ${info.disks[0]?.bytes ? Math.round(info.disks[0].bytes / 1e9) + ' GB' : 'unknown'}`],
       ...info.nics.slice(0, 1).map((n: any): [string, string] => ['Network', `${n.name} ${n.link}`]),
       ['Platform', info.os],

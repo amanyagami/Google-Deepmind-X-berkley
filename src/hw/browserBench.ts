@@ -14,7 +14,9 @@ import type { Flag, Progress, TestResult } from './hwStore'
 export interface Capabilities {
   isolated: boolean; cores: number; deviceMemoryGB: number | null; simd: boolean
   timerResolutionMs: { page: number; worker: number | null }
-  gpu: { available: boolean; software: boolean; f16: boolean; timestamps: boolean; adapter: string | null; canaryOk: boolean | null; maxBuffer: number | null }
+  gpu: { available: boolean; software: boolean; f16: boolean; timestamps: boolean; adapter: string | null; canaryOk: boolean | null; maxBuffer: number | null
+    /** a separate graphics card (not built into the processor) */ discrete?: boolean
+    /** the other GPU on a two-GPU laptop (the low-power one), when the browser can see both */ other?: string | null }
   opfs: { available: boolean; syncHandle: boolean; quotaBytes: number | null }
   net: { type: string | null; saveData: boolean; online: boolean }
   battery: { charging: boolean; level: number } | null
@@ -46,20 +48,46 @@ export function webglGpuName(): string | null {
     return name && !/^webkit webgl$|^mozilla$/i.test(name) ? name : null
   } catch { return null }
 }
-async function gpuName(): Promise<string | null> {
-  const real = typeof document !== 'undefined' ? webglGpuName() : null
-  if (real) return real
+/* The GPU that does the work. Models and the GPU test ask WebGPU for the high-performance adapter, which on a laptop
+ * with two GPUs is the separate graphics card. WebGL (where the detailed chip name comes from) often runs on the
+ * built-in one instead, so its name is used only when it belongs to the same maker as the high-performance adapter. */
+const VENDOR: [RegExp, string][] = [[/nvidia|geforce|quadro|rtx|gtx/i, 'NVIDIA'], [/\bamd\b|ati\b|radeon/i, 'AMD'], [/intel|iris|uhd|\barc\b/i, 'Intel'], [/apple/i, 'Apple'], [/qualcomm|adreno/i, 'Qualcomm'], [/\barm\b|mali/i, 'Arm']]
+const vendorOf = (s: string | null | undefined) => VENDOR.find(([re]) => re.test(s ?? ''))?.[1] ?? null
+const cap = (s: string) => s.replace(/(^|[-\s])([a-z])/g, (_, a, b) => a + b.toUpperCase())
+async function adapterInfo(pref: 'high-performance' | 'low-power'): Promise<{ ad: any; info: any } | null> {
   try {
-    const ad = await (navigator as any).gpu?.requestAdapter?.()
-    const i = ad?.info ?? (await ad?.requestAdapterInfo?.())
-    if (i && (i.description || i.vendor)) return [i.vendor, i.architecture, i.description].filter(Boolean).join(' ')
-  } catch { /* fall through */ }
-  try {
-    const gl = document.createElement('canvas').getContext('webgl')
-    const ext = gl?.getExtension('WEBGL_debug_renderer_info')
-    return ext ? String(gl!.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : null
+    const ad = await (navigator as any).gpu?.requestAdapter?.({ powerPreference: pref })
+    if (!ad) return null
+    return { ad, info: ad.info ?? (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {}) ?? {} }
   } catch { return null }
 }
+/** A readable name for a WebGPU adapter: its own description, else the WebGL chip name when it is the same maker, else "NVIDIA GPU (Ampere)". */
+export function adapterName(info: any, gl: string | null): string | null {
+  if (!info) return gl
+  if (info.description) return cleanGpuName(info.description)
+  const v = vendorOf(info.vendor)
+  if (gl && v && vendorOf(gl) === v) return gl
+  if (v || info.vendor) return `${v ?? cap(String(info.vendor))} GPU${info.architecture ? ` (${cap(String(info.architecture))})` : ''}`
+  return gl
+}
+const BUILT_IN = /intel|apple|qualcomm|adreno|mali|\barm\b|radeon(?!.*\b(rx|pro w))\s*(\(tm\)\s*)?(graphics|\d{3}m|vega)|uhd|iris|780m|680m|890m/i
+export interface GpuFacts { name: string | null; webgpu: boolean; discrete: boolean; software: boolean; other: string | null }
+let gpuFactsCache: Promise<GpuFacts> | null = null
+/** What the page knows about the GPU it will use, and the second GPU if there is one. */
+export function gpuFacts(): Promise<GpuFacts> {
+  return (gpuFactsCache ??= (async () => {
+    const gl = typeof document !== 'undefined' ? webglGpuName() : null
+    const hi = await adapterInfo('high-performance'), lo = await adapterInfo('low-power')
+    const name = hi ? adapterName(hi.info, gl) : gl
+    const key = (x: any) => x ? `${x.vendor}|${x.architecture}|${x.description}` : ''
+    const two = !!(hi && lo && key(hi.info) !== key(lo.info))
+    const other = two ? adapterName(lo!.info, vendorOf(gl) === vendorOf(lo!.info.vendor) ? gl : null) : null
+    const software = !!hi && (!!(hi.ad.isFallbackAdapter ?? hi.info.isFallbackAdapter) || SOFTWARE_RE.test([hi.info.vendor, hi.info.architecture, hi.info.description].filter(Boolean).join(' ')))
+    const discrete = !software && (two || vendorOf(hi?.info.vendor) === 'NVIDIA' || (!!name && !BUILT_IN.test(name) && /nvidia|geforce|rtx|gtx|radeon rx|radeon pro|\barc a/i.test(name)))
+    return { name, webgpu: !!hi && !software, discrete, software, other }
+  })())
+}
+async function gpuName(): Promise<string | null> { return (await gpuFacts()).name }
 
 export async function browserInfo(): Promise<any> {
   const n = navigator.hardwareConcurrency || 4
@@ -70,7 +98,8 @@ export async function browserInfo(): Promise<any> {
   try { const h = await uaData?.getHighEntropyValues?.(['platform', 'platformVersion', 'architecture']); if (h) platform = `${h.platform} ${h.platformVersion ?? ''} ${h.architecture ?? ''}`.trim() } catch { /* ignore */ }
   let quota: number | null = null
   try { quota = (await navigator.storage.estimate()).quota ?? null } catch { /* ignore */ }
-  const gpu = await gpuName()
+  const gf = await gpuFacts()
+  const gpu = gf.name
   return {
     source: 'browser',
     os: platform, python: null, torch: null,
@@ -80,7 +109,8 @@ export async function browserInfo(): Promise<any> {
       peak_note: 'browsers report logical processors only', logical_only: true,
     },
     ram: { total: mem ? mem * 2 ** 30 : null, total_note: mem ? `browsers report at most 8 GB (${mem} GB reported)` : 'not reported by this browser', sticks: [], channels: null, mts: null, type: null, peak_gbps_est: null },
-    gpus: gpu ? [{ name: gpu, integrated: /intel|radeon(?!.*rx)|uhd|iris|apple|adreno|mali/i.test(gpu), used: false }] : [],
+    gpus: gpu ? [{ name: gpu, integrated: !gf.discrete && BUILT_IN.test(gpu), discrete: gf.discrete, webgpu: gf.webgpu, used: gf.webgpu },
+      ...(gf.other ? [{ name: gf.other, integrated: true, discrete: false, webgpu: true, used: false, other: true }] : [])] : [],
     disks: [{ name: 'Browser storage (OPFS)', media: 'sandboxed', bus: 'via the OS file cache', bytes: quota }],
     nics: conn ? [{ name: `${conn.effectiveType ?? 'network'}${conn.type ? ' · ' + conn.type : ''}`, link: conn.downlink ? `~${conn.downlink} Mbit/s (browser estimate)` : '' }] : [],
     pcie: [],
@@ -718,17 +748,18 @@ async function gpuCanary(device: any, f16: boolean): Promise<boolean> {
 const SOFTWARE_RE = /swiftshader|llvmpipe|software|basic render|microsoft basic|softpipe/i
 async function probeGpu(): Promise<Capabilities['gpu']> {
   const real = typeof document !== 'undefined' ? webglGpuName() : null
+  const facts = await gpuFacts().catch(() => null)
   const none = { available: false, software: false, f16: false, timestamps: false, adapter: real, canaryOk: null, maxBuffer: null }
   const gpu = (navigator as any).gpu
   if (!gpu) return none
   const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' })
   if (!adapter) return none
   const info = adapter.info ?? (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {})
-  const name = real ?? ([info.vendor, info.architecture, info.description].filter(Boolean).join(' ') || null)
+  const name = adapterName(info, real) ?? ([info.vendor, info.architecture, info.description].filter(Boolean).join(' ') || null)
   const software = !!(adapter.isFallbackAdapter ?? info.isFallbackAdapter) || SOFTWARE_RE.test([info.vendor, info.architecture, info.description].filter(Boolean).join(' '))
   let f16 = adapter.features?.has('shader-f16') ?? false
   const timestamps = adapter.features?.has('timestamp-query') ?? false
-  const out = { available: true, software, f16, timestamps, adapter: name, canaryOk: null as boolean | null, maxBuffer: (adapter.limits?.maxBufferSize as number) ?? null }
+  const out = { available: true, software, f16, timestamps, adapter: name, canaryOk: null as boolean | null, maxBuffer: (adapter.limits?.maxBufferSize as number) ?? null, discrete: facts?.discrete ?? false, other: facts?.other ?? null }
   if (software) return out
   let device: any = null
   try {

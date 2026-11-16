@@ -18,7 +18,7 @@ import { Backdrop, Chip, FirstFrame, ResetView, SCENE, fitBox, KitProvider, Lite
 
 // ---- live readout under a label: the newest OS sample, 10 times a second -------------------------------------
 /** What a 3D label can show live, straight from the OS sample that arrives 10 times a second. */
-export type LiveKey = 'cpu' | 'ram' | 'ssd' | 'nic' | 'psu' | 'kbd' | 'screen' | `core${number}`
+export type LiveKey = 'cpu' | 'ram' | 'ssd' | 'nic' | 'psu' | 'kbd' | 'screen' | 'gpu' | `core${number}`
 
 const rate = (bps: number) => (bps >= 1e9 ? `${(bps / 1e9).toFixed(1)} GB/s` : bps >= 1e6 ? `${(bps / 1e6).toFixed(1)} MB/s` : `${Math.round(bps / 1e3)} KB/s`)
 
@@ -51,6 +51,15 @@ export function liveOf(k: LiveKey, s: any): string {
     if (!companion && bl?.battery) return bl.battery.charging ? 'plugged in' : `battery ${Math.round(bl.battery.level * 100)}%`
     const w = powerNow(s).s?.pkg_w
     return w != null && w > 0 && (companion || s.benchRunning) ? `${w.toFixed(1)} W` : ''
+  }
+  if (k === 'gpu') {
+    // the GPU the page uses: busy with the GPU test or the AI model, else its name and whether WebGPU can use it
+    const g = s.caps?.gpu
+    if (s.running === 'gpu') return bw('gpu') || 'measuring'
+    if (gpuModelBusy()) return 'running the AI model'
+    if (!g) return ''
+    const nm = shortGpu(g.adapter)
+    return [nm, g.available ? (g.software ? 'software only' : 'WebGPU') : 'no WebGPU here'].filter(Boolean).join(' · ')
   }
   if (k === 'screen' && !companion) {
     // the real panel: its pixel size and the frame rate this page is drawing at
@@ -95,6 +104,15 @@ function LiveBare({ k, part = 'all' }: { k: LiveKey; part?: 'all' | 'head' | 're
   if (part === 'rest') return i < 0 ? null : <>{(t as string).slice(i + 3)}</>
   return <><span className="livedot" aria-hidden />{part === 'head' && i >= 0 ? (t as string).slice(0, i) : t}</>
 }
+
+/** True while the AI model is running on the GPU (WebGPU). Set by the model run (store.ts) through window events. */
+let gpuModel = false
+if (typeof window !== 'undefined') window.addEventListener('ns-model-device', (e: any) => {
+  gpuModel = e.detail?.busy === true && e.detail?.where === 'webgpu'
+  useHW.setState({})   // labels re-read their live line now, not at the next sensor sample
+})
+export const gpuModelBusy = () => gpuModel
+const shortGpu = (n: string | null | undefined) => (n ?? '').replace(/^(NVIDIA|AMD|Intel)\s+(?=(GeForce|Radeon|Arc|Iris|UHD))/i, '').replace(/\s+(Laptop GPU|Graphics)$/i, (m) => (m.trim() === 'Graphics' ? '' : ' Laptop')).trim()
 
 const AMBER = new THREE.Color('#ffa94d')
 const BLUE = new THREE.Color('#55a8ff')
@@ -155,6 +173,7 @@ const SSDP = V(1.2, 0, 5.0)
 const NICP = V(-6.4, 0, -3.8)
 const KEYP = V(8.0, 0, 5.6)
 const SCRP = V(8.2, 0, -4.6)
+const GPUP = V(4.95, 0, -3.05)   // on the way from the CPU to the screen: the picture goes through it
 const PHASES = 8
 const phasePos = (k: number) => (k < 5 ? V(-3.4, 0, -3.0 + k * 1.15) : V(-1.8 + (k - 5) * 1.5, 0, -3.9))
 const Y = 0.16
@@ -193,7 +212,7 @@ function Slab({ size, pos = [0, 0, 0], color = '#131b33', radius = 0.05, metal =
 }
 
 /** Which test results belong to which part of the machine (first one with a score wins). */
-const CID: Record<string, string[]> = { cpu: ['cpun', 'cpu1'], cache: ['cache'], ram: ['ram'], ssd: ['storage'], nic: ['net'] }
+const CID: Record<string, string[]> = { cpu: ['cpun', 'cpu1'], cache: ['cache'], ram: ['ram'], ssd: ['storage'], nic: ['net'], gpu: ['gpu'] }
 const open = (id: string) => useHW.getState().dive([id])
 
 /** A label chip: name + live value + the part's latest score; sub-line on hover or selection. Always mounted. Click selects. */
@@ -211,7 +230,7 @@ function Tag({ pos, name, sub, show = true, live, group, cid, prio = 1 }: { pos:
     onClick={group ? () => open(group) : undefined} onHover={group ? (h) => useHW.getState().setHover(h ? group : null) : undefined} />
 }
 
-const NARROW_TAGS = new Set(['CPU', 'RAM', 'Storage'])
+const NARROW_TAGS = new Set(['CPU', 'RAM', 'Storage', 'GPU'])
 const NARROW_Q = '(max-width: 600px)'
 /** True on phone widths, where the scene keeps only three labels. */
 function useNarrow() {
@@ -494,6 +513,41 @@ function Ram() {
   )
 }
 
+/** The graphics card: a board with two fans and a lit edge. It glows and its fans spin while the GPU test runs or the
+ *  AI model runs on it (WebGPU); at rest it idles. Its label names the chip the page found. */
+function Gpu() {
+  const body = useRef<THREE.MeshPhysicalMaterial>(null!), edge = useRef<THREE.MeshBasicMaterial>(null!)
+  const fans = useRef<THREE.Group[]>([])
+  const act = useRef(0)
+  const caps = useHW((s) => s.caps?.gpu ?? null)
+  const sub = caps ? `${caps.adapter ?? 'graphics chip'}${caps.discrete ? ', a separate graphics card' : ', built into the processor'}${caps.other ? `. Also found: ${caps.other}` : ''}` : undefined
+  useFrame((_, dt) => {
+    const h = useHW.getState()
+    const raw = h.running === 'gpu' ? 1 : gpuModelBusy() ? 0.85 : 0.04
+    const f = reduceMotion ? raw : (act.current = THREE.MathUtils.damp(act.current, raw, 6, Math.min(dt, 0.05)))
+    if (body.current) body.current.emissiveIntensity = 0.05 + f * 0.75
+    if (edge.current) edge.current.opacity = 0.25 + f * 0.75
+    if (!reduceMotion) for (const g of fans.current) if (g) g.rotation.y -= dt * (0.6 + f * 16)
+  })
+  return (
+    <Hot pos={GPUP} id="gpu">
+      <RoundedBox args={[2.6, 0.2, 1.2]} radius={0.06} smoothness={3} position={[0, 0.12, 0]}>
+        <meshPhysicalMaterial ref={body} color="#121a33" emissive={BLUE} emissiveIntensity={0.05} metalness={0.5} roughness={0.35} />
+      </RoundedBox>
+      {/* the lit edge along the front, like a card's light bar */}
+      <mesh position={[0, 0.12, 0.61]}><boxGeometry args={[2.3, 0.05, 0.02]} /><meshBasicMaterial ref={edge} color={AMBER} transparent opacity={0.3} toneMapped={false} /></mesh>
+      {[-0.62, 0.62].map((x, i) => (
+        <group key={x} position={[x, 0.235, 0]} ref={(g) => { if (g) fans.current[i] = g }}>
+          <mesh rotation-x={-Math.PI / 2}><ringGeometry args={[0.36, 0.45, 40]} /><meshPhysicalMaterial color="#2a3352" metalness={0.5} roughness={0.35} /></mesh>
+          {[0, 1, 2, 3, 4, 5, 6].map((k) => <mesh key={k} rotation-y={(k / 7) * Math.PI * 2} position={[0, 0, 0]}><boxGeometry args={[0.06, 0.02, 0.62]} /><meshPhysicalMaterial color="#3a4670" metalness={0.5} roughness={0.35} /></mesh>)}
+          <mesh position={[0, 0.02, 0]}><cylinderGeometry args={[0.1, 0.1, 0.03, 20]} /><meshPhysicalMaterial color="#c9a15a" metalness={0.5} roughness={0.35} /></mesh>
+        </group>
+      ))}
+      <Tag pos={[0, 1.0, 0]} name="GPU" sub={sub} live="gpu" group="gpu" />
+    </Hot>
+  )
+}
+
 function Small({ pos, id, name, sub, act, size, live }: { pos: THREE.Vector3; id: string; name: string; sub?: string; act: () => number; size: [number, number, number]; live?: LiveKey }) {
   const m = useRef<THREE.MeshPhysicalMaterial>(null!)
   const smoothF = useRef(0.05)
@@ -648,7 +702,7 @@ const OVERVIEW: Cam = [[0.2, 13.6, 15.8], [0.2, 0, 0.5]]
 const DIVE: Record<string, Cam> = {
   cpu: [[1.2, 7.0, 6.4], [1.2, 0.3, 0.6]], vrm: [[-3.0, 5.6, 5.0], [-2.6, 0.2, -1.4]],
   ram: [[7.4, 8.4, 9.4], [7.4, 0.8, 1.4]], ssd: [[1.2, 6.0, 11.0], [1.2, 0.1, 5.8]], nic: [[-6.4, 6.2, 4.2], [-6.4, 0.1, -2.2]],
-  keyboard: [[8.0, 7.5, 11.6], [8.0, 0.1, 6.2]], display: [[8.2, 6.5, 4.6], [8.2, 1.0, -2.6]],
+  keyboard: [[8.0, 7.5, 11.6], [8.0, 0.1, 6.2]], display: [[8.2, 6.5, 4.6], [8.2, 1.0, -2.6]], gpu: [[4.95, 6.4, 3.6], [4.95, 0.2, -1.6]],
 }
 const STAGE_CAM: Record<string, Cam> = {
   input: [[6.0, 10, 14], [5.6, 0, 3.0]], send: [[5.6, 10, 14], [5.0, 0, 2.8]], tokenize: [[1.2, 8.5, 9.4], [1.4, 0.2, -0.4]],
@@ -767,7 +821,7 @@ export function PowerScene({ active = true }: { active?: boolean }) {
               <Lightformer form="rect" intensity={1.5} position={[-8, 3, 6]} rotation-y={Math.PI / 3} scale={[10, 4, 1]} color="#ffb867" />
             </Environment>
             <Pcb />
-            <DcIn /><Vrm /><CpuChip /><Ram /><Keyboard /><Screen />
+            <DcIn /><Vrm /><CpuChip /><Ram /><Keyboard /><Screen /><Gpu />
             <Small pos={SSDP} id="ssd" name="Storage" live="ssd" act={() => activity().ssd} size={[3.2, 0.12, 0.85]} />
             <Small pos={NICP} id="nic" name="Network" live="nic" act={() => activity().nic} size={[1.2, 0.12, 1.2]} />
             <LanesHost />

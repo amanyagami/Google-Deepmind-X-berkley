@@ -12,7 +12,8 @@ const LIMIT = 300000
 
 const browser = await launch()
 const env = makeEnv(browser, base, widths, query)
-const probe = await env.open({ fresh: true }); await probe.goto(); const have = await probe.features(); await env.closeAll()
+// the score strip loads with the machine code a moment after the page: wait for its Test button (up to 8 s) so a slow start does not read as a missing feature
+const probe = await env.open({ fresh: true }); await probe.goto(); await probe.page.waitForSelector('[data-test]', { timeout: 8000 }).catch(() => {}); const have = await probe.features(); await env.closeAll()
 console.log(`base ${base} | tier ${tier} | widths ${widths.join(',')} | features: ${Object.entries(have).map(([k, v]) => `${k}${v ? '+' : '-'}`).join(' ')} | out ${OUT}\n`)
 
 const rows = []
