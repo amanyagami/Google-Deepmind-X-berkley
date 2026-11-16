@@ -5,7 +5,7 @@ import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { animate, motion } from 'framer-motion'
 import { scaleLinear, scaleLog } from 'd3'
-import { useStore } from '../store'
+import { jumpTo, useStore } from '../store'
 import { BoardStatus, closeLeaderboard, LeaderboardButton, submitScore, useBoard } from '../board'
 import { Counter, Explainer, Hint, Peek, Spark } from '../ui/charts'
 import { fixSplit, inputLimits, peaksOf, splitOf, useHWThrottled, type Snapshot, rowFor, RUN_ALL_ORDER, useHW, validateInput, type ComponentId, type InputSchema, type TestResult } from './hwStore'
@@ -14,7 +14,7 @@ import { activityAt, captionFor, layerOps } from './timeline'
 import { exportResults, finalNow, componentScore, finalScore, isUnavailable, tierOf, useScores, type PillarRow } from './score'
 import { currentSample, PowerScene } from './PowerScene'
 import { EnergyTab, MachineTimeline, PowerHUD, STAGE_NAME } from './PowerUI'
-import { followModelRuns } from './modelRun'
+import { followModelRuns, syncModelRun } from './modelRun'
 
 const fmtB = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(0)} MB` : `${(b / 1e3).toFixed(0)} KB`)
 
@@ -46,7 +46,8 @@ const relCi = (r: TestResult) => (r.value > 0 && r.ci95 ? ((r.ci95[1] - r.ci95[0
 
 /* ---- UI state: selection, the drawer tab, the running batch; the run state itself lives in useHW ---- */
 interface UIs {
-  batch: { ids: ComponentId[]; t0: number } | null; cancelled: boolean
+  /** `model`: the real language model is running first (its 3D view plays), before the hardware tests */
+  batch: { ids: ComponentId[]; t0: number; model?: boolean } | null; cancelled: boolean
   sel: { id: ComponentId; n: number } | null; tab: string
   open: string | null; more: boolean
   /** a Test all finished in this session (its score shows even if a test failed) */
@@ -87,12 +88,51 @@ if (typeof window !== 'undefined') window.addEventListener('ns-model-scored', ()
   if (f.score != null) onFinalScore(f)
 })
 
-/** Test all: the one batch. Records power while it runs (useHW.runAll), then hands the final score to onFinalScore. */
+const narrowNow = () => typeof matchMedia !== 'undefined' && matchMedia('(max-width: 999px)').matches
+let modelSkipped = false
+/** Waits until `done()` holds, or the batch is cancelled or the model step skipped. */
+async function until(done: () => boolean) {
+  while (!done() && !useUI.getState().cancelled && !modelSkipped) await new Promise((r) => setTimeout(r, 200))
+}
+/** Step 1 of Test your system: the real language model (SmolLM2) answers the prompt on this device, and its 3D view
+ *  plays while it does. Its timing becomes the Model score. Downloads the model if it is not saved yet (Skip stops that).
+ *  Any failure here is not fatal: the hardware tests still run. */
+async function modelPhase() {
+  modelSkipped = false
+  try {
+    const { useZoo } = await import('../zoo/zooStore')
+    if (useZoo.getState().net !== 'llm') await useZoo.getState().setNet('llm')
+    if (narrowNow()) jumpTo('model')
+    const st = useStore.getState
+    await until(() => !!st().spec && !st().probing)
+    const w = st().fit?.where
+    if (useUI.getState().cancelled || modelSkipped || !st().spec || st().fit?.verdict === 'too-big' || (w !== 'webgpu' && w !== 'wasm' && w !== 'companion')) return
+    await until(() => !st().running && !st().download)   // a run the page started by itself finishes first
+    if (useUI.getState().cancelled || modelSkipped) return
+    await st().run()
+    await until(() => !st().running && !st().download)
+    followModelRuns(); syncModelRun()
+  } catch { /* the model step never blocks the hardware tests */ }
+}
+/** Skip the model step: stops its download or run, and the hardware tests start. */
+function skipModel() {
+  modelSkipped = true
+  useStore.getState().cancelDownload()
+}
+
+/** Test all: the one batch. The real model runs first (its 3D view plays), then the hardware tests, recording power
+ *  while they run (useHW.runAll); the final score goes to onFinalScore. */
 async function testAll() {
   if (busyNow()) return
-  useUI.setState({ batch: { ids: TEST_IDS, t0: Date.now() }, cancelled: false })
+  useUI.setState({ batch: { ids: TEST_IDS, t0: Date.now(), model: true }, cancelled: false })
   let ran = 0
-  try { ran = await useHW.getState().runAll(TEST_IDS) } finally {
+  try {
+    await modelPhase()
+    if (useUI.getState().cancelled) return
+    useUI.setState((u) => ({ batch: u.batch ? { ...u.batch, model: false } : u.batch }))
+    if (narrowNow()) jumpTo('power')
+    ran = await useHW.getState().runAll(TEST_IDS)
+  } finally {
     const cancelled = useUI.getState().cancelled
     useUI.setState({ batch: null, cancelled: false, ...(ran && !cancelled ? { batchDone: true } : {}) })
     if (ran && !cancelled) { const h = useHW.getState(), f = computeFinal(h.results, h.history); if (f.score != null) onFinalScore(f) }
@@ -101,7 +141,25 @@ async function testAll() {
 async function runOne(id: ComponentId, input?: number | string | null) { if (!busyNow()) await useHW.getState().runComponent(id, input ?? null) }
 function cancelAll() {
   useUI.setState({ cancelled: true })
+  if (useUI.getState().batch?.model) useStore.getState().cancelDownload()
   useHW.getState().cancel()
+}
+
+/** The strip while the real model runs: its name, the download or run progress, and Skip. */
+function ModelStep({ t0 }: { t0: number }) {
+  const repo = useStore((s) => s.repo), dl = useStore((s) => s.download), running = useStore((s) => s.running)
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t) }, [])
+  const name = (repo.split('/').pop() || 'Model').replace(/-Instruct$/i, '')
+  const pct = dl?.total ? Math.round((dl.done / dl.total) * 100) : null
+  const what = dl ? `getting it${pct != null ? ` ${pct} %` : ''}` : running ? 'thinking' : 'starting'
+  return <>
+    <b className="t5-scount mono">AI</b>
+    <span className="t5-srun mono"><span className="t5-slab">{name} · {what} · {Math.round((now - t0) / 1000)} s</span>
+      <span className={`t5-bar${pct == null ? ' ind' : ''}`} role="progressbar" aria-label="Model progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}><i style={pct != null ? { width: `${pct}%` } : undefined} /></span></span>
+    <button type="button" className="t5-btn" onClick={skipModel} title="Skip the model and test the hardware">Skip</button>
+    <button type="button" className="t5-btn" onClick={cancelAll}>Cancel</button>
+  </>
 }
 /** One name per part (C8): CPU, Memory, GPU, Storage, plus Model. */
 const PILLARS: { id: string; label: string; hue: string; ids: ComponentId[] }[] = [
@@ -469,7 +527,9 @@ function ScoreStrip() {
   const browser = useHW((s) => s.source !== 'companion')
   return (
     <div className="card t5-strip" data-score-strip data-card="strip" role="group" aria-label="Device score">
-      {running
+      {batch?.model && !running
+        ? <ModelStep t0={batch.t0} />
+        : running
         ? <>
           {batch && <b className="t5-scount mono">{idx + 1}/{batch.ids.length}</b>}
           <span className="t5-srun mono"><span className="t5-slab">{infoOf(running).label}{batch ? ` · ${secs} s` : ''}</span>
@@ -481,7 +541,7 @@ function ScoreStrip() {
             : <span className="t5-sinfo"><b className="mono">{f.tested} / {f.total}</b> tested</span>} details={<>
             <p className="t5-line">{f.tested} of {f.total} tested{complete && r != null ? ` · ±${r} %` : ''}{complete && f.provisional ? '. Provisional.' : ''}</p>
             {complete && <LowestLink f={f} />}
-            {!complete && <p className="t5-line">Testing your system runs six short tests, about 30 s.</p>}
+            {!complete && <p className="t5-line">Testing your system runs a real AI model, then six short tests.</p>}
             {browser && <p className="t5-line">{BROWSER_NOTE}</p>}
           </>} />
           {complete && <button type="button" className="t5-btn t5-chart" data-open-device aria-label="Your chart" title="Your device as a chart" onClick={() => window.dispatchEvent(new CustomEvent('ns-open-device'))}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M3 3h18v18H3zM3 3l18 18M21 3L3 21M12 3l9 9-9 9-9-9z" /></svg><span>Your chart</span></button>}
@@ -563,6 +623,8 @@ const T5_CSS = `
 .t5-dim{color:var(--muted);font-size:12.5px}
 .t5-bar{height:4px;background:var(--line);border-radius:2px;overflow:hidden;flex:1}
 .t5-bar i{display:block;height:100%;background:var(--pos);transition:width var(--d2,220ms) var(--ease,ease)}
+.t5-bar.ind i{width:32%;animation:t5-ind 1.3s ease-in-out infinite}
+@keyframes t5-ind{from{transform:translateX(-100%)}to{transform:translateX(320%)}}
 .t5-prog{display:flex;align-items:center;gap:10px}
 .t5-live{font-size:12.5px;color:var(--fg);min-width:92px;text-align:right}
 .t5-chip{font:600 13px var(--mono);border-radius:999px;padding:3px 10px;white-space:nowrap}
