@@ -86,7 +86,10 @@ interface Z {
   inspect: Inspect
   setInspect(i: Inspect): void
   init: () => Promise<void>
-  setNet: (n: NetId) => Promise<void>
+  /** `quiet`: show the network without starting a real model run (the Test your system tour) */
+  setNet: (n: NetId, opts?: { quiet?: boolean }) => Promise<void>
+  /** The Test your system tour: which of the six models is on stage now (null when no tour runs) */
+  tour: { i: number; n: number; t0: number; slot: number } | null
   setImg: (img: number[], label?: number | null) => void
   loadAll: () => Promise<void>
   recompute: () => void
@@ -186,6 +189,7 @@ export const useZoo = create<Z>((set, get) => ({
 
   real: NO_REAL, reads: {},
   runReal(tap) { realKick(tap === true) },
+  tour: null,
   net: 'llm', packs: {}, digits: null, base: new Array(64).fill(0), img: new Array(64).fill(0), label: null, timing: {}, out: null, err: null, t: 0, playing: false, speed: 1, sel: null, inspect: null, setInspect(i) { set({ inspect: i }) },
 
   async init() {
@@ -199,7 +203,7 @@ export const useZoo = create<Z>((set, get) => ({
     } catch (e: any) { set({ err: e.message ?? String(e) }) }
   },
 
-  async setNet(net) {
+  async setNet(net, opts) {
     get().pause()
     if (net !== 'llm' && !get().packs[net]) {
       const p = await (await fetch(base() + `${net}.json`)).json()
@@ -208,6 +212,7 @@ export const useZoo = create<Z>((set, get) => ({
     set({ net, sel: null, t: 0, real: net === 'vit' || net === 'vlm' ? { ...NO_REAL, net } : NO_REAL })
     get().recompute()
     if (!get().out?.draft) get().play()
+    if (opts?.quiet) return
     if (net === 'vit' || net === 'vlm') realKick(false)
     else if (net === 'llm') llmAgain()
   },
@@ -420,6 +425,49 @@ async function realLoop(net: 'vit' | 'vlm') {
 }
 
 /** Back on the language-model tab: a result that is not live for this prompt is computed again by the real model. */
+/* ---------------------------------------------------------------- the Test your system tour
+ * While the hardware tests run, every model takes the stage in turn: the language model first (it ran for real just
+ * before), then the five digit networks, each computing its answer on the same handwritten digit with its own trained
+ * weights. Each gets one slot; its animation is sped up to fit it. No downloads start here (`quiet`). */
+export const TOUR: NetId[] = ['llm', 'mlp', 'cnn', 'rnn', 'vit', 'vlm']
+const SLOT = 6200
+let tourOn = false
+/** The tour's first stop: the language model, while it runs for real. */
+export async function tourBegin() {
+  const z = useZoo.getState()
+  if (z.net !== 'llm') await z.setNet('llm', { quiet: true })
+  useZoo.setState({ tour: { i: 0, n: TOUR.length, t0: performance.now(), slot: SLOT } })
+}
+/** Steps through the five digit networks until tourEnd(). */
+export async function tourDigits() {
+  if (tourOn) return
+  tourOn = true
+  const d = useZoo.getState().digits
+  if (d?.images.length) { const k = Math.floor(Math.random() * d.images.length); useZoo.getState().setImg(d.images[k], d.labels[k]) }
+  let i = 1
+  try {
+    while (tourOn) {
+      const net = TOUR[i], z = useZoo.getState()
+      z.setSpeed(2)   // every digit network plays its whole flow in its slot at 2x (a speed the menu offers)
+      await z.setNet(net, { quiet: true })
+      if (!tourOn) break
+      useZoo.setState({ tour: { i, n: TOUR.length, t0: performance.now(), slot: SLOT } })
+      const end = performance.now() + SLOT
+      while (tourOn && performance.now() < end) await new Promise((r) => setTimeout(r, 120))
+      i = (i % (TOUR.length - 1)) + 1
+    }
+  } catch { /* a network that fails to load ends the tour; the tests go on */ }
+}
+/** Ends the tour: back to the language model at normal speed. */
+export async function tourEnd() {
+  const was = tourOn || !!useZoo.getState().tour
+  tourOn = false
+  if (!was) return
+  useZoo.setState({ tour: null })
+  useZoo.getState().setSpeed(1)
+  if (useZoo.getState().net !== 'llm') await useZoo.getState().setNet('llm', { quiet: true })
+}
+
 function llmAgain() {
   const s = useStore.getState()
   const w = s.fit?.where

@@ -316,7 +316,7 @@ function ZooTimeline() {
             <i style={{ width: i < cur.i ? '100%' : i === cur.i ? `${cur.p * 100}%` : '0%' }} /><span>{s.label}</span>
           </div>
         ))}
-        <div className="tlhead" style={{ left: `${(t / T) * 100}%` }} />
+        <div className="tlrail" style={{ transform: `translateX(${Math.max(0, Math.min(100, (t / T) * 100))}%)` }}><div className="tlhead" /></div>
       </div>
     </div>
   )

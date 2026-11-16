@@ -100,8 +100,8 @@ async function until(done: () => boolean) {
 async function modelPhase() {
   modelSkipped = false
   try {
-    const { useZoo } = await import('../zoo/zooStore')
-    if (useZoo.getState().net !== 'llm') await useZoo.getState().setNet('llm')
+    const { tourBegin } = await import('../zoo/zooStore')
+    await tourBegin()
     if (narrowNow()) jumpTo('model')
     const st = useStore.getState
     await until(() => !!st().spec && !st().probing)
@@ -126,13 +126,16 @@ async function testAll() {
   if (busyNow()) return
   useUI.setState({ batch: { ids: TEST_IDS, t0: Date.now(), model: true }, cancelled: false })
   let ran = 0
+  const zoo = await import('../zoo/zooStore').catch(() => null)
   try {
     await modelPhase()
     if (useUI.getState().cancelled) return
     useUI.setState((u) => ({ batch: u.batch ? { ...u.batch, model: false } : u.batch }))
-    if (narrowNow()) jumpTo('power')
+    // while the hardware is measured, the other five models take the stage one by one
+    void zoo?.tourDigits()
     ran = await useHW.getState().runAll(TEST_IDS)
   } finally {
+    void zoo?.tourEnd()
     const cancelled = useUI.getState().cancelled
     useUI.setState({ batch: null, cancelled: false, ...(ran && !cancelled ? { batchDone: true } : {}) })
     if (ran && !cancelled) { const h = useHW.getState(), f = computeFinal(h.results, h.history); if (f.score != null) onFinalScore(f) }
@@ -541,7 +544,7 @@ function ScoreStrip() {
             : <span className="t5-sinfo"><b className="mono">{f.tested} / {f.total}</b> tested</span>} details={<>
             <p className="t5-line">{f.tested} of {f.total} tested{complete && r != null ? ` · ±${r} %` : ''}{complete && f.provisional ? '. Provisional.' : ''}</p>
             {complete && <LowestLink f={f} />}
-            {!complete && <p className="t5-line">Testing your system runs a real AI model, then six short tests.</p>}
+            {!complete && <p className="t5-line">Testing your system runs six AI models, then six short tests.</p>}
             {browser && <p className="t5-line">{BROWSER_NOTE}</p>}
           </>} />
           {complete && <button type="button" className="t5-btn t5-chart" data-open-device aria-label="Your chart" title="Your device as a chart" onClick={() => window.dispatchEvent(new CustomEvent('ns-open-device'))}><svg viewBox="0 0 24 24" width="17" height="17" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><path d="M3 3h18v18H3zM3 3l18 18M21 3L3 21M12 3l9 9-9 9-9-9z" /></svg><span>Your chart</span></button>}

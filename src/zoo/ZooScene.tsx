@@ -9,7 +9,7 @@ import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import { create } from 'zustand'
 import { createGuide, type Guide } from '../ui/camera'
-import { reach, useZoo, type DigitNet, type Inspect, type NetId } from './zooStore'
+import { reach, TOUR, useZoo, type DigitNet, type Inspect, type NetId } from './zooStore'
 import { useStore } from '../store'
 import { InspectTip, isInspectOn, useInspectOn } from '../ui/charts'
 
@@ -1146,9 +1146,75 @@ function Stage() {
     <>
       {(loaded.split(',').filter(Boolean) as NetId[]).map((n) => {
         const S = SCENES[n], def = n === 'llm' ? null : DEFS[n] ?? null
-        return <NetCtx.Provider key={n} value={n}><group visible={n === net}>{def && <DefCtx.Provider value={def}><Plates def={def} /></DefCtx.Provider>}{def ? <DefCtx.Provider value={def}><S /></DefCtx.Provider> : <S />}</group></NetCtx.Provider>
+        return <NetCtx.Provider key={n} value={n}><Rise on={n === net}>{def && <DefCtx.Provider value={def}><Plates def={def} /></DefCtx.Provider>}{def ? <DefCtx.Provider value={def}><S /></DefCtx.Provider> : <S />}</Rise></NetCtx.Provider>
       })}
     </>
+  )
+}
+
+/** A network that takes the stage grows up out of the floor (about 0.9 s, easing out), instead of popping in. */
+const easeOut = (k: number) => 1 - Math.pow(1 - k, 4)
+function Rise({ on, children }: { on: boolean; children: ReactNode }) {
+  const g = useRef<THREE.Group>(null!), t0 = useRef(-1)
+  useEffect(() => { if (on) t0.current = performance.now() }, [on])
+  useFrame(() => {
+    const G = g.current; if (!G || !on) return
+    const k = reduceMotion || t0.current < 0 ? 1 : Math.min(1, (performance.now() - t0.current) / 900)
+    const y = 0.015 + 0.985 * easeOut(k)
+    if (G.scale.y !== y) G.scale.y = y
+  })
+  return <group ref={g} visible={on}>{children}</group>
+}
+
+/** During the tour the whole stage turns a few degrees and leans in, slowly, a different way for each model. */
+function Drift({ children }: { children: ReactNode }) {
+  const g = useRef<THREE.Group>(null!)
+  useFrame((_, dt) => {
+    const G = g.current; if (!G) return
+    const t = Z().tour
+    let ry = 0, s = 1
+    if (t && !reduceMotion) { const u = Math.min(1, (performance.now() - t.t0) / t.slot); ry = (u - 0.5) * 0.11 * (t.i % 2 ? 1 : -1); s = 1 + 0.035 * easeOut(u) }
+    const a = Math.min(1, dt * 2.2)
+    G.rotation.y += (ry - G.rotation.y) * a
+    G.scale.setScalar(G.scale.x + (s - G.scale.x) * a)
+  })
+  return <group ref={g}>{children}</group>
+}
+
+/** The tour's title card: which model this is, what it does, and what it answered. One per model, with a light sweep. */
+const TOUR_INFO: Record<NetId, { name: string; line: string }> = {
+  llm: { name: 'Language model', line: 'SmolLM2 reads your words and writes the next one.' },
+  mlp: { name: 'Perceptron', line: 'Every pixel meets every neuron, layer by layer.' },
+  cnn: { name: 'Convolutional net', line: 'Small filters slide over the digit to find its strokes.' },
+  rnn: { name: 'Recurrent net', line: 'It reads the digit one row at a time, and remembers.' },
+  vit: { name: 'Vision transformer', line: 'The digit becomes patches that look at each other.' },
+  vlm: { name: 'Vision-language model', line: 'It looks at the digit, then writes what it sees.' },
+}
+function TourCard() {
+  const tour = useZoo((s) => s.tour)
+  const net = useZoo((s) => s.net)
+  const guess = useZoo((s) => {
+    const o = s.out; if (!o || !s.tour) return ''
+    if (s.net === 'llm') { const w = o.tokens?.[o.T - 1]; return typeof w === 'string' && w.trim() ? `next word “${w.trim()}”` : '' }
+    if (o.probs) { const pr: number[] = o.probs, b = pr.indexOf(Math.max(...pr)); return `reads ${o.labels?.[b] ?? b} · ${(pr[b] * 100).toFixed(0)} %` }
+    return ''
+  })
+  if (!tour) return null
+  const info = TOUR_INFO[net] ?? TOUR_INFO.llm
+  const num = <>Model {String(tour.i + 1).padStart(2, '0')} <em>of {String(tour.n).padStart(2, '0')}</em></>
+  return (
+    <div className="zt" aria-live="polite">
+      <i key={`s${tour.t0}`} className="zt-sweep" aria-hidden />
+      <div key={`h${tour.t0}`} className="zt-hero" aria-hidden><span className="zt-num">{num}</span><b>{info.name}</b></div>
+      <div key={`c${tour.t0}`} className="zt-card" data-obstacle>
+        <div className="zt-path" aria-hidden>{TOUR.map((n, k) => <span key={n}>{k > 0 && <b className={k <= tour.i ? 'done' : ''} />}<i className={k < tour.i ? 'done' : k === tour.i ? 'on' : ''} /></span>)}</div>
+        <span className="zt-num">{num}</span>
+        <b className="zt-name">{info.name}</b>
+        <span className="zt-line">{info.line}</span>
+        {guess && <span className="zt-guess">{guess}</span>}
+        <span className="zt-time" aria-hidden><i style={{ animationDuration: `${tour.slot}ms` }} /></span>
+      </div>
+    </div>
   )
 }
 
@@ -1274,12 +1340,14 @@ export function ZooScene() {
             <Environment resolution={64} environmentIntensity={0.5}>
               <Lightformer form="rect" intensity={2} position={[0, 8, 0]} rotation-x={Math.PI / 2} scale={[16, 10, 1]} color="#9fb4ff" />
             </Environment>
+            <Drift>
             {light && <RoundedBox args={[22.5, 0.2, 15.5]} radius={0.2} smoothness={3} position={[0, -0.4, 0.3]}><meshBasicMaterial color="#c3c9e4" /></RoundedBox>}
             <RoundedBox args={[22, 0.2, 15]} radius={0.15} smoothness={3} position={[0, -0.34, 0.3]}>{light ? <meshBasicMaterial color="#e9ecf8" /> : <meshPhysicalMaterial color="#0a1122" metalness={0.4} roughness={0.7} />}</RoundedBox>
             <FloorGrid light={light} />
             <Stage />
             <Chip pos={[-9.2, 0.2, 6.6]} name="▲ positive  ○ negative" sub="amber is above zero, blue is below zero" prio={0.3} />
             <Outlines />
+            </Drift>
             <Rig />
             {st.bloom && !light && (
               <EffectComposer multisampling={st.dpr > 1 ? 4 : 0}>
@@ -1291,6 +1359,7 @@ export function ZooScene() {
         </LiteCtx.Provider>
       </Canvas>
       <Tip />
+      <TourCard />
       <ResetView scene="model" onReset={reset} />
       <div className="nssr" role="img" aria-label={summary} />
     </div>
